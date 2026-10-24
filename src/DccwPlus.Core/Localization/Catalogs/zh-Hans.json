@@ -1,0 +1,23 @@
+{
+  "Calibration": "显示校准", "Presets": "预设", "References": "参考照片", "Settings": "设置",
+  "CalibrationTitle": "校准显示器", "CalibrationSubtitle": "选择显示器，准备适合它的校准预设。",
+  "Display": "显示器", "DisplayHint": "颜色模式是只读探测结果（sdr、wcg、hdr、advanced-color 或 unknown）。unknown 不是 SDR。这里的操作不会改变显示器。", "Refresh": "刷新",
+  "FoundationTitle": "校准工作区预览", "FoundationMessage": "现在可以保存和分享预设草稿。校准引擎正在开发，这些控件暂不会改变显示器效果。",
+  "TonalReference": "明暗参考", "TonalHint": "观察从黑到白的过渡是否平滑。这张参考图使用显示器当前的颜色设置呈现。",
+  "DraftParameters": "预设参数", "Red": "红色增益", "Green": "绿色增益", "Blue": "蓝色增益",
+  "PresetName": "预设名称", "Reset": "重置", "SavePreset": "保存预设",
+  "PresetsSubtitle": "保存自己的调整，也可以导入他人分享的预设。",
+  "Import": "导入预设", "Export": "导出", "LoadDraft": "载入编辑器",
+  "PresetSafety": "导入只会将预设加入列表。共享预设仍需在你自己的显示器上检查效果。",
+  "ReferenceTitle": "用真实影像观察色彩", "ReferenceMessage": "这里将加入原创摄影作品，为各个校准步骤提供视觉参考。",
+  "ReferenceCategories": "中性灰 · 自然肤色 · 深暗细节 · 明亮高光 · 饱和色彩",
+  "Language": "显示语言", "SystemLanguage": "跟随系统", "LanguageHint": "应用文字即时更新，部分系统对话框可能需要重启应用。",
+  "Startup": "登录后自动启动", "On": "开", "Off": "关",
+  "StartupHint": "校准引擎和恢复检查完成后，将支持自动恢复预设。当前版本仅记录启动状态。",
+  "StartupState_unpackaged": "安装 MSIX 版本后可管理自动启动。", "StartupState_Disabled": "已关闭登录后自动启动。",
+  "StartupState_Enabled": "已开启登录后自动启动。", "StartupState_DisabledByUser": "已在 Windows 中禁用，请在“设置 > 应用 > 启动”中启用 DCCW++。",
+  "StartupState_DisabledByPolicy": "组织策略已禁用自动启动。", "StartupState_EnabledByPolicy": "组织策略已启用自动启动。",
+  "AgentTitle": "命令行与 Agent", "AgentHint": "使用 dccwpp --help --json 查询命令。安装版本会注册 dccwpp.exe 执行别名。",
+  "Saved": "已保存预设：", "Imported": "已导入预设：", "Exported": "已导出预设：", "SelectPreset": "请先选择一个预设。",
+  "DraftLoaded": "已载入编辑器，显示器效果尚未改变。", "Error": "操作未完成：", "InvalidPresets": "部分预设文件无法载入："
+}

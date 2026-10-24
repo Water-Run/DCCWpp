@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DccwPlus.App/DccwPlus.App.csproj" />
+    <Project Path="src/DccwPlus.Cli/DccwPlus.Cli.csproj" />
+    <Project Path="src/DccwPlus.Core/DccwPlus.Core.csproj" />
+    <Project Path="src/DccwPlus.Windows/DccwPlus.Windows.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DccwPlus.Core.Tests/DccwPlus.Core.Tests.csproj" />
+  </Folder>
+</Solution>

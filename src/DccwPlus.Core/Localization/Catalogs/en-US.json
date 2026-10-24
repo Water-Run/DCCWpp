@@ -1,0 +1,23 @@
+{
+  "Calibration": "Calibration", "Presets": "Presets", "References": "Reference photos", "Settings": "Settings",
+  "CalibrationTitle": "Calibrate your display", "CalibrationSubtitle": "Choose a display and prepare a calibration preset.",
+  "Display": "Display", "DisplayHint": "Color mode is a read-only probe (sdr, wcg, hdr, advanced-color, or unknown). Unknown is not SDR. Nothing here changes the display.", "Refresh": "Refresh",
+  "FoundationTitle": "Calibration workspace preview", "FoundationMessage": "You can save and share preset drafts. These controls do not change your display yet; the calibration engine is in development.",
+  "TonalReference": "Tonal reference", "TonalHint": "Look for smooth transitions from black to white. This reference is shown through your current display settings.",
+  "DraftParameters": "Preset parameters", "Red": "Red gain", "Green": "Green gain", "Blue": "Blue gain",
+  "PresetName": "Preset name", "Reset": "Reset", "SavePreset": "Save preset",
+  "PresetsSubtitle": "Keep your adjustments together, or import a preset shared by someone else.",
+  "Import": "Import preset", "Export": "Export", "LoadDraft": "Load into editor",
+  "PresetSafety": "Importing only adds a preset to your library. A shared preset still needs to be checked on your own display.",
+  "ReferenceTitle": "Photography with a purpose", "ReferenceMessage": "Original photography will be added here as visual references for each calibration step.",
+  "ReferenceCategories": "Neutral grays · Natural skin tones · Deep shadows · Bright highlights · Saturated colors",
+  "Language": "Display language", "SystemLanguage": "Follow system", "LanguageHint": "App text updates immediately. Some system dialogs may need an app restart.",
+  "Startup": "Start when I sign in", "On": "On", "Off": "Off",
+  "StartupHint": "Automatic preset restoration will be enabled after the calibration engine and recovery checks are ready. This build only records startup status.",
+  "StartupState_unpackaged": "Startup is available in the installed MSIX version.", "StartupState_Disabled": "Sign-in startup is off.",
+  "StartupState_Enabled": "Sign-in startup is on.", "StartupState_DisabledByUser": "Disabled in Windows. Enable DCCW++ in Settings > Apps > Startup.",
+  "StartupState_DisabledByPolicy": "Startup is disabled by your organization.", "StartupState_EnabledByPolicy": "Startup is enabled by your organization.",
+  "AgentTitle": "Command line & agents", "AgentHint": "Use dccwpp --help --json to discover commands. The installed app provides the dccwpp.exe execution alias.",
+  "Saved": "Preset saved:", "Imported": "Preset imported:", "Exported": "Preset exported:", "SelectPreset": "Select a preset first.",
+  "DraftLoaded": "Preset loaded into the editor. Your display has not changed.", "Error": "Could not complete the action:", "InvalidPresets": "Some preset files could not be loaded:"
+}

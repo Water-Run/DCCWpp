@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <title>DCCW++</title><desc>A pearl monitor, a spectral color cube, and a frosted calibration card.</desc>
+  <defs>
+    <linearGradient id="frame" x1="160" y1="70" x2="430" y2="372" gradientUnits="userSpaceOnUse"><stop stop-color="#FAFCFF"/><stop offset=".4" stop-color="#DDE5F2"/><stop offset="1" stop-color="#98A9C6"/></linearGradient>
+    <linearGradient id="screen" x1="184" y1="100" x2="375" y2="335" gradientUnits="userSpaceOnUse"><stop stop-color="#087EFF"/><stop offset=".5" stop-color="#124BE4"/><stop offset="1" stop-color="#182F9C"/></linearGradient>
+    <linearGradient id="stand" x1="270" y1="345" x2="334" y2="452" gradientUnits="userSpaceOnUse"><stop stop-color="#9EAFCC"/><stop offset=".7" stop-color="#E8EDF6"/><stop offset="1" stop-color="#BBC9DF"/></linearGradient>
+    <linearGradient id="glass" x1="70" y1="234" x2="220" y2="419" gradientUnits="userSpaceOnUse"><stop stop-color="#F9FDFF"/><stop offset=".48" stop-color="#E0EDFF"/><stop offset="1" stop-color="#B5CBEF"/></linearGradient>
+    <linearGradient id="top" x1="0" y1="36" x2="156" y2="30" gradientUnits="userSpaceOnUse"><stop stop-color="#00DAF2"/><stop offset=".48" stop-color="#95F5FF"/><stop offset="1" stop-color="#F084FF"/></linearGradient>
+    <linearGradient id="left" x1="0" y1="65" x2="80" y2="125" gradientUnits="userSpaceOnUse"><stop stop-color="#00C8F4"/><stop offset=".48" stop-color="#00E9AC"/><stop offset="1" stop-color="#C1FA55"/></linearGradient>
+    <linearGradient id="right" x1="80" y1="110" x2="160" y2="73" gradientUnits="userSpaceOnUse"><stop stop-color="#FFF071"/><stop offset=".45" stop-color="#FF9D58"/><stop offset="1" stop-color="#EF44BB"/></linearGradient>
+    <g id="cube"><path d="M5 37 76 14Q80 12 84 14L155 37 80 65Z" fill="url(#top)"/><path d="M5 37 80 65V156L10 126Q5 124 5 118Z" fill="url(#left)"/><path d="m80 65 75-28v81q0 6-5 8l-70 30Z" fill="url(#right)"/><path d="m6 38 74 27 74-27M80 65v90" stroke="white" stroke-opacity=".72" stroke-width="2" stroke-linecap="round"/></g>
+  </defs>
+  <path d="m270 334-8 65-39 21q-8 5-4 12 3 6 14 8l99 13q14 2 25-5l28-17q10-7-4-12l-53-18 5-58Z" fill="url(#stand)"/>
+  <path d="m151 66 290 35q25 3 22 30l-25 227q-3 26-29 23L120 345q-24-3-21-29l26-227q3-26 26-23Z" fill="#889CBD"/>
+  <path d="m147 61 289 35q25 3 22 30l-25 227q-3 26-29 23L116 340q-24-3-21-29l26-227q3-26 26-23Z" fill="url(#frame)"/>
+  <path d="m148 78 283 34q11 1 10 14l-24 216q-1 13-14 11l-282-35q-12-1-11-14l25-214q1-13 13-12Z" fill="url(#screen)" stroke="#F7FBFF" stroke-width="3"/>
+  <path d="m148 80 226 27-207 192-55 6 24-215q1-12 12-10Z" fill="#8FD8FF" opacity=".13"/>
+  <g transform="translate(191 126) rotate(7 80 80) scale(1.25)"><use href="#cube"/></g>
+  <path d="M72 241q0-22 22-22h112q22 0 22 22v166q0 22-22 22H94q-22 0-22-22Z" fill="#8CA5CC"/>
+  <rect x="65" y="212" width="158" height="210" rx="23" fill="url(#glass)" stroke="#F4FAFF" stroke-width="3"/>
+  <path d="M87 219h113q16 0 16 18v21H72v-21q0-18 15-18Z" fill="#FFFFFF" opacity=".38"/>
+  <g transform="translate(82 267) scale(.78)"><use href="#cube"/></g>
+</svg>

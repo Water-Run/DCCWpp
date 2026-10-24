@@ -1,0 +1,63 @@
+<Window x:Class="DccwPlus.App.MainWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Grid x:Name="Root">
+    <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+    <Grid x:Name="TitleBar" Background="Transparent" Padding="16,0,0,0">
+      <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center"><Image Source="Assets/Square44x44Logo.png" Width="24" Height="24" /><TextBlock Text="DCCW++" Style="{ThemeResource CaptionTextBlockStyle}" VerticalAlignment="Center" /></StackPanel>
+    </Grid>
+    <NavigationView x:Name="Navigation" Grid.Row="1" IsBackButtonVisible="Collapsed" IsSettingsVisible="True" PaneDisplayMode="Left" OpenPaneLength="224" SelectionChanged="NavigationChanged">
+      <NavigationView.MenuItems>
+        <NavigationViewItem x:Name="CalibrationNav" Content="{Binding Text[Calibration]}" Tag="calibration"><NavigationViewItem.Icon><FontIcon Glyph="&#xE7F4;" /></NavigationViewItem.Icon></NavigationViewItem>
+        <NavigationViewItem Content="{Binding Text[Presets]}" Tag="presets"><NavigationViewItem.Icon><FontIcon Glyph="&#xE8B7;" /></NavigationViewItem.Icon></NavigationViewItem>
+        <NavigationViewItem Content="{Binding Text[References]}" Tag="references"><NavigationViewItem.Icon><FontIcon Glyph="&#xEB9F;" /></NavigationViewItem.Icon></NavigationViewItem>
+      </NavigationView.MenuItems>
+      <NavigationView.PaneFooter><StackPanel Margin="16,8,16,16" Spacing="4"><TextBlock Text="DCCW++" Style="{ThemeResource BodyStrongTextBlockStyle}" /><TextBlock Text="0.1 · GPL-3.0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Style="{ThemeResource CaptionTextBlockStyle}" /></StackPanel></NavigationView.PaneFooter>
+      <ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="32,20,32,32">
+        <StackPanel Spacing="20" MaxWidth="1120" HorizontalAlignment="Stretch">
+          <StackPanel x:Name="CalibrationPanel" Spacing="20">
+            <StackPanel Spacing="6"><TextBlock Text="{Binding Text[CalibrationTitle]}" Style="{ThemeResource TitleTextBlockStyle}" /><TextBlock Text="{Binding Text[CalibrationSubtitle]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" /></StackPanel>
+            <Border Style="{StaticResource Card}"><Grid ColumnSpacing="20"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+              <FontIcon Glyph="&#xE7F4;" FontSize="32" VerticalAlignment="Center" />
+              <StackPanel Grid.Column="1" Spacing="8"><TextBlock Text="{Binding Text[Display]}" Style="{ThemeResource BodyStrongTextBlockStyle}" /><ComboBox x:Name="DisplayPicker" ItemsSource="{Binding Displays}" HorizontalAlignment="Stretch" AutomationProperties.Name="{Binding Text[Display]}"><ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{Binding Name}" /><TextBlock Text="{Binding ColorState}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" /></StackPanel></DataTemplate></ComboBox.ItemTemplate></ComboBox><TextBlock Text="{Binding Text[DisplayHint]}" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" /></StackPanel>
+              <Button Grid.Column="2" Click="RefreshClicked" Content="{Binding Text[Refresh]}" VerticalAlignment="Center" />
+            </Grid></Border>
+            <InfoBar IsOpen="True" IsClosable="False" Severity="Informational" Title="{Binding Text[FoundationTitle]}" Message="{Binding Text[FoundationMessage]}" />
+            <Border Style="{StaticResource Card}"><StackPanel Spacing="16">
+              <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><TextBlock Text="{Binding Text[TonalReference]}" Style="{ThemeResource SubtitleTextBlockStyle}" /><TextBlock Grid.Column="1" Text="{Binding SelectedItem.ColorState, ElementName=DisplayPicker}" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" /></Grid>
+              <Border CornerRadius="6" Height="132"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="#000000" Offset="0" /><GradientStop Color="#FFFFFF" Offset="1" /></LinearGradientBrush></Border.Background></Border>
+              <TextBlock Text="{Binding Text[TonalHint]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel></Border>
+            <Border Style="{StaticResource Card}"><StackPanel Spacing="16">
+              <TextBlock Text="{Binding Text[DraftParameters]}" Style="{ThemeResource SubtitleTextBlockStyle}" />
+              <Grid ColumnSpacing="20"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="120" /></Grid.ColumnDefinitions><Slider x:Name="GammaSlider" Header="Gamma" Minimum="1" Maximum="3" StepFrequency="0.05" Value="2.2" AutomationProperties.Name="Gamma" /><NumberBox Grid.Column="1" Value="{Binding ElementName=GammaSlider, Path=Value, Mode=TwoWay}" Minimum="1" Maximum="3" SmallChange="0.05" SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="Gamma" /></Grid>
+              <Grid ColumnSpacing="24"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <Slider x:Name="RedSlider" Header="{Binding Text[Red]}" Minimum="0.5" Maximum="1.5" StepFrequency="0.01" Value="1" AutomationProperties.Name="{Binding Text[Red]}" />
+                <Slider x:Name="GreenSlider" Grid.Column="1" Header="{Binding Text[Green]}" Minimum="0.5" Maximum="1.5" StepFrequency="0.01" Value="1" AutomationProperties.Name="{Binding Text[Green]}" />
+                <Slider x:Name="BlueSlider" Grid.Column="2" Header="{Binding Text[Blue]}" Minimum="0.5" Maximum="1.5" StepFrequency="0.01" Value="1" AutomationProperties.Name="{Binding Text[Blue]}" />
+              </Grid>
+              <Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><TextBox x:Name="PresetName" PlaceholderText="{Binding Text[PresetName]}" MaxLength="100" AutomationProperties.Name="{Binding Text[PresetName]}" /><Button Grid.Column="1" Content="{Binding Text[Reset]}" Click="ResetClicked" /><Button Grid.Column="2" Content="{Binding Text[SavePreset]}" Style="{ThemeResource AccentButtonStyle}" Click="SaveClicked" /></Grid>
+            </StackPanel></Border>
+          </StackPanel>
+          <StackPanel x:Name="PresetsPanel" Visibility="Collapsed" Spacing="20">
+            <StackPanel Spacing="6"><TextBlock Text="{Binding Text[Presets]}" Style="{ThemeResource TitleTextBlockStyle}" /><TextBlock Text="{Binding Text[PresetsSubtitle]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" /></StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="12"><Button Content="{Binding Text[Import]}" Click="ImportClicked" Style="{ThemeResource AccentButtonStyle}" /><Button Content="{Binding Text[Export]}" Click="ExportClicked" /><Button Content="{Binding Text[LoadDraft]}" Click="LoadClicked" /><Button Content="{Binding Text[Refresh]}" Click="RefreshClicked" /></StackPanel>
+            <ListView x:Name="PresetList" ItemsSource="{Binding Presets}" SelectionMode="Single" MinHeight="180" AutomationProperties.Name="{Binding Text[Presets]}"><ListView.ItemTemplate><DataTemplate><StackPanel Padding="12" Spacing="6"><TextBlock Text="{Binding Name}" Style="{ThemeResource BodyStrongTextBlockStyle}" /><TextBlock Text="{Binding Description}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" /><TextBlock Text="{Binding Id}" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" /></StackPanel></DataTemplate></ListView.ItemTemplate></ListView>
+            <TextBlock Text="{Binding Text[PresetSafety]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+          </StackPanel>
+          <StackPanel x:Name="ReferencesPanel" Visibility="Collapsed" Spacing="20">
+            <TextBlock Text="{Binding Text[References]}" Style="{ThemeResource TitleTextBlockStyle}" />
+            <Border Style="{StaticResource Card}"><StackPanel Spacing="16"><FontIcon Glyph="&#xEB9F;" FontSize="44" HorizontalAlignment="Left" /><TextBlock Text="{Binding Text[ReferenceTitle]}" Style="{ThemeResource SubtitleTextBlockStyle}" /><TextBlock Text="{Binding Text[ReferenceMessage]}" TextWrapping="Wrap" /><TextBlock Text="{Binding Text[ReferenceCategories]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" /></StackPanel></Border>
+          </StackPanel>
+          <StackPanel x:Name="SettingsPanel" Visibility="Collapsed" Spacing="20">
+            <TextBlock Text="{Binding Text[Settings]}" Style="{ThemeResource TitleTextBlockStyle}" />
+            <Border Style="{StaticResource Card}"><StackPanel Spacing="12"><TextBlock Text="{Binding Text[Language]}" Style="{ThemeResource BodyStrongTextBlockStyle}" /><ComboBox x:Name="LanguagePicker" SelectionChanged="LanguageChanged" MinWidth="220" AutomationProperties.Name="{Binding Text[Language]}"><ComboBoxItem Tag="system" Content="{Binding Text[SystemLanguage]}" /><ComboBoxItem Tag="en-US" Content="English" /><ComboBoxItem Tag="zh-Hans" Content="简体中文" /><ComboBoxItem Tag="zh-Hant" Content="繁體中文" /></ComboBox><TextBlock Text="{Binding Text[LanguageHint]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" /></StackPanel></Border>
+            <Border Style="{StaticResource Card}"><StackPanel Spacing="12"><ToggleSwitch x:Name="StartupToggle" Header="{Binding Text[Startup]}" OnContent="{Binding Text[On]}" OffContent="{Binding Text[Off]}" Toggled="StartupChanged" /><TextBlock x:Name="StartupStateText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" /><TextBlock Text="{Binding Text[StartupHint]}" TextWrapping="Wrap" /></StackPanel></Border>
+            <Border Style="{StaticResource Card}"><StackPanel Spacing="12"><TextBlock Text="{Binding Text[AgentTitle]}" Style="{ThemeResource BodyStrongTextBlockStyle}" /><TextBlock Text="dccwpp status --json" FontFamily="Cascadia Mono, Consolas" IsTextSelectionEnabled="True" /><TextBlock Text="{Binding Text[AgentHint]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" /><TextBlock Text="{Binding DataDirectory}" IsTextSelectionEnabled="True" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" /></StackPanel></Border>
+          </StackPanel>
+          <TextBlock Text="{Binding Status}" TextWrapping="Wrap" IsTextSelectionEnabled="True" AutomationProperties.LiveSetting="Polite" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+        </StackPanel>
+      </ScrollViewer>
+    </NavigationView>
+  </Grid>
+</Window>

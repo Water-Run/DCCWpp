@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "fab9b080-5c79-4b3d-af29-77f34c6aa919",
+  "name": "Neutral draft",
+  "description": "Example preset intent. Not a measured display profile.",
+  "author": "DCCW++",
+  "createdAt": "2026-10-23T00:00:00Z",
+  "calibration": { "colorMode": "sdr", "gamma": 2.2, "redGain": 1, "greenGain": 1, "blueGain": 1 }
+}

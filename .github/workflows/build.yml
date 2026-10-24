@@ -1,0 +1,31 @@
+name: Build
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.4xx'
+      - name: Build and test
+        shell: pwsh
+        run: ./scripts/Build.ps1 -Configuration Release -Test
+      - name: Package
+        shell: pwsh
+        run: ./scripts/Build.ps1 -Configuration Release -Package
+      - name: Verify CLI process contract
+        shell: pwsh
+        run: python scripts/smoke_cli.py artifacts/cli/win-x64/dccwpp.exe
+      - name: Verify package contents
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem artifacts/packages -Recurse -Filter '*.msix' | Select-Object -First 1
+          if (-not $package) { throw 'MSIX missing' }
+          python scripts/verify_package.py $package.FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DCCWPlus-development-msix-x64
+          path: artifacts/packages/
