@@ -43,6 +43,8 @@ public sealed class GammaCalibrationStore(string root) : IGammaCalibrationJourna
             or "confirmed" or "reverted" or "superseded" or "recovery-pending")) throw new InvalidDataException("Invalid calibration status.");
         if (session.Original.DisplayId is not { Length: 16 } || !session.Original.DisplayId.All(Uri.IsHexDigit)
             || !ProfilePreviewPolicy.IsHash(session.Original.TopologyFingerprint)
+            || (session.Original.ActiveTopologySha256 is { } activeTopology && !ProfilePreviewPolicy.IsHash(activeTopology))
+            || (session.Original.ProfileDeviceSha256 is { } profileDevice && !ProfilePreviewPolicy.IsHash(profileDevice))
             || string.IsNullOrWhiteSpace(session.Original.TargetKey) || session.Original.TargetKey.Length > 80)
             throw new InvalidDataException("Invalid calibration display identity.");
         PresetCodec.Validate(session.Preset);

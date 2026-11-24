@@ -33,6 +33,14 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         return ReadSnapshot(display, displays);
     }
 
+    public GammaDeviceState ReadRecoveryTarget(GammaDeviceState original)
+    {
+        WindowsDisplaySession.RequireLocal();
+        var displays = new WindowsDisplayService().Enumerate();
+        var display = WindowsDisplayService.ResolveRecoveryDisplay(displays, original.DisplayId, original.PersistenceKey, original.ProfileDeviceSha256);
+        return ReadSnapshot(display, displays);
+    }
+
     private static GammaDeviceState ReadSnapshot(DisplayInfo display, IReadOnlyList<DisplayInfo> displays)
     {
         if (display.TargetKey is null || display.SourceId is null)
@@ -43,9 +51,12 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             ReadTopologyFingerprint(displays), CalibrationService.IsExplicitSdr(display),
             display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1,
             ReadRamp(display.DeviceName), display.ProfileName, display.ProfileScope, display.SourceId, display.PersistenceKey,
-            display.Profile?.Mhc2Present, display.SelectedProfileScope);
+            display.Profile?.Mhc2Present, display.SelectedProfileScope,
+            ActiveTopologySha256: WindowsDisplayService.ComputeTopologyHash(display.Topology, displays),
+            ProfileDeviceSha256: WindowsDisplayService.HashProfileDeviceKey(display.ProfileDeviceKey));
     }
 
+    // Older journals only contain this fingerprint. Keep its input stable for recovery.
     internal static string ReadTopologyFingerprint(IReadOnlyList<DisplayInfo> displays)
     {
         string material = string.Join('\n', displays.OrderBy(d => d.Id, StringComparer.Ordinal).Select(d =>
@@ -245,7 +256,9 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
     public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected)
     {
         string directory = _store.DirectoryFor(session.Id);
-        var current = Read(session.Original.DisplayId);
+        var current = Read(expected.DisplayId);
+        if (!GammaCalibrationTransaction.SameRecoveryTarget(expected, current))
+            throw new ProfilePreviewException("recovery_target_changed", new LocalizationService()["DisplayUnavailable"]);
         bool expectedState = GammaCalibrationTransaction.SameTarget(expected, current)
             && GammaCalibrationTransaction.SameProfile(expected, current)
             && current.Ramp.Matches(expected.Ramp, GammaCalibrationTransaction.ReadbackTolerance);
@@ -268,9 +281,19 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             return false;
         }
         bool changed = session.UndoOf is Guid calibrationId
-            ? RestoreUndoProfile(session, calibrationId, current)
-            : RestoreSavedAssociation(session.Original, ReadAssociationBackup(session), current, session.Original.ProfileName);
+            ? RestoreUndoProfile(session, calibrationId, expected, current)
+            : RestoreSavedAssociation(expected, ResolveRecoveryAssociation(session.Original, current, ReadAssociationBackup(session)),
+                current, session.Original.ProfileName);
         return changed && expectedState && !GammaCalibrationTransaction.SameProfile(session.Original, current);
+    }
+
+    internal static IccAssociationBackup ResolveRecoveryAssociation(GammaDeviceState original, GammaDeviceState current, IccAssociationBackup backup)
+    {
+        if (GammaCalibrationTransaction.SameRecoveryTarget(original, current)) return backup;
+        if (!GammaCalibrationTransaction.SameRelocatedTarget(original, current)
+            || !string.Equals(WindowsDisplayService.HashProfileDeviceKey(backup.DeviceKey), original.ProfileDeviceSha256, StringComparison.OrdinalIgnoreCase))
+            throw new ProfilePreviewException("recovery_target_changed", new LocalizationService()["DisplayUnavailable"]);
+        return backup with { TargetKey = current.TargetKey, SourceId = current.SourceId!.Value };
     }
 
     private bool RestoreSavedAssociation(GammaDeviceState original, IccAssociationBackup backup, GammaDeviceState current,
@@ -354,6 +377,8 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             || (session.Original.SourceId is uint source && backup.SourceId != source)
             || backup.CandidateName != "DCCWPlus-" + session.Id.ToString("N") + ".icc"
             || (session.InstalledProfile is not null && !ProfilePreviewPolicy.EqualName(backup.CandidateName, session.InstalledProfile))
+            || (session.Original.ProfileDeviceSha256 is { } device
+                && !string.Equals(WindowsDisplayService.HashProfileDeviceKey(backup.DeviceKey), device, StringComparison.OrdinalIgnoreCase))
             || backup.DeviceKey?.StartsWith(@"\Registry\Machine\System\", StringComparison.OrdinalIgnoreCase) != true)
             throw new InvalidDataException("Invalid ICC association recovery record.");
         return backup;

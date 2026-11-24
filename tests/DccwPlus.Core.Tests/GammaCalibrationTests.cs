@@ -383,6 +383,35 @@ public sealed class GammaCalibrationTests
         Assert.Equal("reverted", fixture.Engine.Tick().Status);
         Assert.True(fixture.Backend.State.Ramp.Matches(GammaRamp.Identity()));
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ActiveTopologyChangePreventsConfirmingTheCurve(bool hasIdentity)
+    {
+        var fixture = new Fixture();
+        string originalTopology = new('A', 64);
+        fixture.Backend.State = fixture.Backend.State with
+        {
+            ActiveTopologySha256 = originalTopology,
+            PersistenceKey = hasIdentity ? fixture.Backend.State.PersistenceKey : null
+        };
+        var started = fixture.Begin();
+        fixture.Backend.State = fixture.Backend.State with { ActiveTopologySha256 = new string('B', 64) };
+
+        var result = fixture.Engine.Confirm();
+
+        Assert.False(fixture.Backend.Committed);
+        if (!hasIdentity)
+        {
+            Assert.Equal("recovery-pending", result.Status);
+            Assert.True(fixture.Backend.State.Ramp.Matches(started.Candidate));
+            fixture.Backend.State = fixture.Backend.State with { ActiveTopologySha256 = originalTopology };
+            result = new GammaCalibrationTransaction(fixture.Backend, fixture.Journal).Recover(result);
+        }
+        Assert.Equal("reverted", result.Status);
+        Assert.True(fixture.Backend.State.Ramp.Matches(started.Original.Ramp));
+    }
     [Theory]
     [InlineData("disconnected")]
     [InlineData("remote_session_blocked")]
@@ -431,6 +460,37 @@ public sealed class GammaCalibrationTests
         Assert.True(fixture.Backend.ProfileRestoreCalled);
         Assert.Null(fixture.Backend.State.ProfileName);
         Assert.True(fixture.Backend.State.Ramp.Matches(GammaRamp.Identity()));
+    }
+
+    [Theory]
+    [InlineData("matched")]
+    [InlineData("device-changed")]
+    [InlineData("hdr")]
+    [InlineData("legacy")]
+    [InlineData("path-changes-again")]
+    public void InterruptedSaveChecksTheReassignedPathBeforeRestoring(string condition)
+    {
+        var fixture = new Fixture();
+        string hash = new('F', 64);
+        fixture.Backend.State = fixture.Backend.State with { ProfileDeviceSha256 = condition == "legacy" ? null : hash };
+        var interrupted = BeginInterruptedCommit(fixture);
+        var remapped = fixture.Backend.State with
+        {
+            DisplayId = "fedcba9876543210", DeviceName = @"\\.\DISPLAY2", TargetKey = "00000000:00000002:2", SourceId = 4,
+            ProfileDeviceSha256 = condition == "device-changed" ? new string('E', 64) : hash,
+            ExplicitSdr = condition != "hdr"
+        };
+        fixture.Backend.State = remapped;
+        fixture.Backend.Remapped = true;
+        if (condition == "path-changes-again")
+            fixture.Backend.AfterRestoreProfile = () => fixture.Backend.State = fixture.Backend.State with { SourceId = 5 };
+
+        var result = new GammaCalibrationTransaction(fixture.Backend, fixture.Journal).Recover(interrupted);
+
+        Assert.Equal(interrupted.Original, result.Original);
+        Assert.Equal(condition is "matched" or "path-changes-again", fixture.Backend.ProfileRestoreCalled);
+        Assert.Equal(condition == "matched" ? "reverted" : "recovery-pending", result.Status);
+        Assert.True(fixture.Backend.State.Ramp.Matches(condition == "matched" ? interrupted.Original.Ramp : remapped.Ramp));
     }
     [Fact] public void ExternalCurveAndTopologyChangesAreNotOverwritten()
     {
@@ -489,11 +549,14 @@ public sealed class GammaCalibrationTests
         string root = Path.Combine(Path.GetTempPath(), "dccwpp-gamma-tests", Guid.NewGuid().ToString("N"));
         try
         {
-            var fixture = new Fixture(); fixture.Begin(); var session = fixture.Journal.LastApplying!; var store = new GammaCalibrationStore(root);
+            var fixture = new Fixture();
+            fixture.Backend.State = fixture.Backend.State with { ActiveTopologySha256 = new string('B', 64) };
+            fixture.Begin(); var session = fixture.Journal.LastApplying!; var store = new GammaCalibrationStore(root);
             store.Save(session); var loaded = store.Load(session.Id);
             Assert.True(loaded.Candidate.Matches(session.Candidate)); Assert.True(loaded.NeedsRecovery);
             Assert.True(loaded.BeforeWrite!.Matches(session.Original.Ramp));
             Assert.Equal(fixture.Backend.State.PersistenceKey, loaded.Original.PersistenceKey);
+            Assert.Equal(fixture.Backend.State.ActiveTopologySha256, loaded.Original.ActiveTopologySha256);
             Assert.Throws<InvalidDataException>(() => store.Save(session with { Preset = session.Preset with { Calibration = new() { Gamma = 1.1 } } }));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
@@ -566,14 +629,17 @@ public sealed class GammaCalibrationTests
         public GammaDeviceState State { get; set; } = new("0123456789abcdef", @"\\.\DISPLAY1", "00000000:00000001:1",
             new string('A', 64), true, false, GammaRamp.Identity(), SourceId: 1, PersistenceKey: "path:" + new string('D', 64));
         public bool Committed, FailCommit, FailNextWrite, ProfileRestoreCalled, Disconnected, MisreportCommit;
+        public bool Remapped;
         public Action? BeforeRead, BeforeWrite, BeforeRestoreProfile, AfterRestoreProfile, BeforeCommit;
         public GammaRamp? RestoredProfileRamp;
         public GammaDeviceState Read(string displayId)
         {
             BeforeRead?.Invoke();
-            if (Disconnected) throw new ProfilePreviewException("display_disconnected", "Display disconnected.");
+            if (Disconnected || (Remapped && displayId != State.DisplayId))
+                throw new ProfilePreviewException("display_disconnected", "Display disconnected.");
             return State with { Ramp = State.Ramp.Copy() };
         }
+        public GammaDeviceState ReadRecoveryTarget(GammaDeviceState original) => Read(Remapped ? State.DisplayId : original.DisplayId);
         public void Write(GammaDeviceState expected, GammaRamp ramp)
         {
             BeforeWrite?.Invoke();

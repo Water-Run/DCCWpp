@@ -79,6 +79,32 @@ public sealed class BindingRestoreTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void UnreadableIccIsReportedSeparatelyFromUnavailablePresetData(bool dryRun)
+    {
+        var test = new Fixture();
+        test.ReadHash = () => throw new IOException("The installed ICC could not be read.");
+
+        var result = test.Restorer.Restore(test.Binding, dryRun);
+
+        Assert.Equal("failed", result.Status);
+        Assert.Equal("profile_file_unavailable", result.ReasonCode);
+        Assert.Equal(0, test.Backend.Writes);
+        Assert.Empty(test.Journal.Sessions);
+
+        test.ReadHash = null;
+        test.ReadPreset = () => throw new FileNotFoundException("The local preset is missing.");
+        Assert.Equal("restore_data_unavailable", test.Restorer.Restore(test.Binding, dryRun).ReasonCode);
+        Assert.Equal(0, test.Backend.Writes);
+
+        test.ReadPreset = null;
+        Assert.Equal(dryRun ? "planned" : "restored", test.Restorer.Restore(test.Binding, dryRun).Status);
+        if (dryRun) Assert.Equal(0, test.Backend.Writes);
+        else Assert.True(test.Backend.State.Ramp.Matches(test.Binding.Ramp));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void AHardwareCalibrationProfileBlocksAutomaticRestoreAndItsDryRun(bool dryRun)
     {
         var test = new Fixture();
@@ -100,6 +126,8 @@ public sealed class BindingRestoreTests
         public CalibrationBindingRestorer Restorer { get; }
         public CalibrationBinding Binding { get; }
         public string ProfileHash { get; set; } = new('A', 64);
+        public Func<string>? ReadHash { get; set; }
+        public Func<CalibrationPreset>? ReadPreset { get; set; }
 
         public Fixture()
         {
@@ -120,7 +148,7 @@ public sealed class BindingRestoreTests
                 SourceId: 1, PersistenceKey: key, PersistenceKind: "device-path")];
             Backend = new(new(id, device, target, new string('D', 64), true, false,
                 original, name, "current-user", SourceId: 1, PersistenceKey: key));
-            Restorer = new(Displays, Backend, Journal, _ => ProfileHash, _ => preset);
+            Restorer = new(Displays, Backend, Journal, _ => ReadHash?.Invoke() ?? ProfileHash, _ => ReadPreset?.Invoke() ?? preset);
         }
     }
 

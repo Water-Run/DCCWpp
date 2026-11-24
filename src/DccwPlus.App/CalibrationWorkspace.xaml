@@ -32,12 +32,12 @@
           <TextBlock Text="{Binding Text[WizardSubtitle]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
           <Border Style="{StaticResource Card}">
             <StackPanel Spacing="8">
-              <ComboBox x:Name="DisplayPicker" ItemsSource="{Binding Displays}" Header="{Binding Text[Display]}"
+              <ComboBox x:Name="DisplayPicker" Header="{Binding Text[Display]}"
                         HorizontalAlignment="Stretch" SelectionChanged="DisplayChanged" AutomationProperties.Name="{Binding Text[Display]}">
                 <ComboBox.ItemTemplate><DataTemplate>
                   <StackPanel Spacing="2">
                     <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
-                    <TextBlock Text="{Binding DeviceName}" Style="{ThemeResource CaptionTextBlockStyle}" />
+                    <TextBlock Text="{Binding Details}" Style="{ThemeResource CaptionTextBlockStyle}" TextTrimming="CharacterEllipsis" />
                   </StackPanel>
                 </DataTemplate></ComboBox.ItemTemplate>
               </ComboBox>

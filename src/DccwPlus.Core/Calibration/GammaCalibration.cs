@@ -6,7 +6,9 @@ namespace DccwPlus.Core.Calibration;
 public sealed record GammaDeviceState(string DisplayId, string DeviceName, string TargetKey,
     string TopologyFingerprint, bool ExplicitSdr, bool SharedSource, GammaRamp Ramp,
     string? ProfileName = null, string? ProfileScope = null, uint? SourceId = null, string? PersistenceKey = null,
-    bool? ProfileMhc2Present = null, string? SelectedProfileScope = null);
+    bool? ProfileMhc2Present = null, string? SelectedProfileScope = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ActiveTopologySha256 = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProfileDeviceSha256 = null);
 
 public sealed record BindingSaveIntent(string? PreviousProfileName);
 public sealed record GammaCalibrationSession
@@ -42,6 +44,8 @@ public sealed record GammaCalibrationSession
 public interface IGammaCalibrationBackend
 {
     GammaDeviceState Read(string displayId);
+    // Interrupted recovery may resolve a unique current path for the original display and profile device.
+    GammaDeviceState ReadRecoveryTarget(GammaDeviceState original) => Read(original.DisplayId);
     void Write(GammaDeviceState expected, GammaRamp ramp);
     string? Commit(GammaCalibrationSession session);
     // Returns true when the effective selection needed restoring and the pre-restore state still matched expected.
@@ -168,15 +172,20 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         catch { Revert("commit_failed"); throw; }
         return Session!;
     }
-    public GammaCalibrationSession Revert(string reason = "user_reverted")
+    public GammaCalibrationSession Revert(string reason = "user_reverted") => Revert(reason, interrupted: false);
+
+    private GammaCalibrationSession Revert(string reason, bool interrupted)
     {
         if (Session is null) throw new InvalidOperationException("No calibration preview exists.");
         if (!Session.NeedsRecovery) return Session;
         try
         {
             try { Persist("recovering", reason); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-            var current = backend.Read(Session.Original.DisplayId);
-            if (!SameRecoveryTarget(Session.Original, current)) return Pending("recovery_target_changed");
+            var original = Session.Original;
+            var current = interrupted ? backend.ReadRecoveryTarget(original) : backend.Read(original.DisplayId);
+            bool originalPath = SameRecoveryTarget(original, current);
+            if (!originalPath && !(interrupted && SameRelocatedTarget(original, current))) return Pending("recovery_target_changed");
+            var target = originalPath ? original : current;
             bool profileCommit = Session.ProfileCommitStarted && !Session.IsBindingRestore;
             if (!profileCommit && !SameProfile(Session.Original, current)) return Superseded("external_profile_change");
 
@@ -187,9 +196,9 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
             {
                 // Even if the curve has changed, remove an association created by an interrupted commit.
                 selectionRestored = backend.RestoreProfile(Session, current);
-                current = backend.Read(Session.Original.DisplayId);
+                current = backend.Read(target.DisplayId);
             }
-            if (!SameRecoveryTarget(Session.Original, current)) return Pending("recovery_target_changed");
+            if (!SameRecoveryTarget(target, current)) return Pending("recovery_target_changed");
             if (!SameProfile(Session.Original, current)) return Pending("profile_restore_not_verified");
             if (!current.Ramp.Matches(Session.Original.Ramp, ReadbackTolerance))
             {
@@ -207,13 +216,14 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
                 }
                 backend.Write(current, Session.Original.Ramp);
             }
-            var restored = backend.Read(Session.Original.DisplayId);
-            if (!SameRecoveryTarget(Session.Original, restored) || !SameProfile(Session.Original, restored)
+            var restored = backend.Read(target.DisplayId);
+            if (!SameRecoveryTarget(target, restored) || !SameProfile(Session.Original, restored)
                 || !restored.Ramp.Matches(Session.Original.Ramp, ReadbackTolerance)) return Pending("restore_not_verified");
             Persist("reverted", reason, true);
         }
         catch (ProfilePreviewException ex) when (ex.Code == "external_profile_change") { return Superseded(ex.Code); }
-        catch (ProfilePreviewException ex) when (ex.Code is "display_disconnected" or "remote_session_blocked") { return Pending(ex.Code); }
+        catch (ProfilePreviewException ex) when (ex.Code is "display_disconnected" or "remote_session_blocked" or "display_identity_ambiguous"
+            or "recovery_target_changed" or "profile_device_unavailable") { return Pending(ex.Code); }
         catch (ProfilePreviewException ex) when (ex.Code is "profile_state_unavailable" or "profile_scope_unavailable"
             or "profile_file_changed" or "profile_file_unavailable" or "previous_system_profile_changed")
         { return Pending(ex.Code); }
@@ -223,7 +233,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
     public GammaCalibrationSession Recover(GammaCalibrationSession saved)
     {
         if (Session is not null) throw new InvalidOperationException("This transaction already has a session.");
-        Session = saved; return saved.NeedsRecovery ? Revert("interrupted_preview") : saved;
+        Session = saved; return saved.NeedsRecovery ? Revert("interrupted_preview", interrupted: true) : saved;
     }
     private bool RevertIfExpired() => RevertIfExpired(_time.GetTimestamp(), _time.GetUtcNow());
     private bool RevertIfExpired(long now, DateTimeOffset utcNow)
@@ -252,14 +262,20 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
     }
     public static bool SameTarget(GammaDeviceState before, GammaDeviceState now) =>
         SamePath(before, now)
-        && before.TopologyFingerprint == now.TopologyFingerprint && now.ExplicitSdr && !now.SharedSource;
+        && before.TopologyFingerprint == now.TopologyFingerprint
+        && (before.ActiveTopologySha256 is null || before.ActiveTopologySha256 == now.ActiveTopologySha256)
+        && now.ExplicitSdr && !now.SharedSource;
     public static bool SameRecoveryTarget(GammaDeviceState before, GammaDeviceState now) =>
         SameTarget(before, now) || (now.ExplicitSdr && !now.SharedSource && SamePath(before, now)
             && before.SourceId is not null && before.PersistenceKey is not null);
+    public static bool SameRelocatedTarget(GammaDeviceState before, GammaDeviceState now) =>
+        now.ExplicitSdr && !now.SharedSource && now.ProfileMhc2Present != true && now.SourceId is not null
+        && MonitorIdentity.SameProfileDevice(before.PersistenceKey, now.PersistenceKey, before.ProfileDeviceSha256, now.ProfileDeviceSha256);
     private static bool SamePath(GammaDeviceState before, GammaDeviceState now) =>
         before.DisplayId == now.DisplayId && before.TargetKey == now.TargetKey && before.DeviceName == now.DeviceName
         && (before.SourceId is null || before.SourceId == now.SourceId)
-        && (before.PersistenceKey is null || before.PersistenceKey == now.PersistenceKey);
+        && (before.PersistenceKey is null || before.PersistenceKey == now.PersistenceKey)
+        && (before.ProfileDeviceSha256 is null || string.Equals(before.ProfileDeviceSha256, now.ProfileDeviceSha256, StringComparison.OrdinalIgnoreCase));
     public static bool SameProfile(GammaDeviceState before, GammaDeviceState now) =>
         ProfilePreviewPolicy.EqualName(before.ProfileName, now.ProfileName) && before.ProfileScope == now.ProfileScope
         && (before.SelectedProfileScope is null || before.SelectedProfileScope == now.SelectedProfileScope);

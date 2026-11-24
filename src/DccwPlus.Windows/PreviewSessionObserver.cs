@@ -30,15 +30,9 @@ public sealed class PreviewSessionObserver(string root)
         var timer = Stopwatch.StartNew();
         while (true)
         {
-            var session = load();
+            var (session, workerRunning) = PreviewWorkerFiles.Observe(directory, load, hasPendingWork);
             if (!hasPendingWork(session)) return (session, "finished");
-            if (!PreviewWorkerFiles.IsLocked(directory, "worker"))
-            {
-                // Re-read after observing the unlocked worker file. The final journal write can
-                // land between our first read and the worker releasing its lock.
-                session = load();
-                return (session, hasPendingWork(session) ? "recovery_required" : "finished");
-            }
+            if (!workerRunning) return (session, "recovery_required");
 
             if (waitSeconds == 0) return (session, "in_progress");
             var remaining = timeout - timer.Elapsed;

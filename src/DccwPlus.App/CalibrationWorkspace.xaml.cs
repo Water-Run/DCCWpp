@@ -34,6 +34,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private bool UndoActive => Active && _session?.UndoOf is not null;
     private bool ReviewSelected => StepPicker.SelectedIndex == 5;
     private bool IsReviewing => Active && _session?.IsReviewing == true;
+    private DisplayInfo? SelectedDisplay => (DisplayPicker.SelectedItem as DisplayOption)?.Display;
     private bool AnnounceWizardChanges => _calibrationPageVisible && ReferenceEquals(_activeWindow, _window);
     private bool PreviewUpdatePending => Active && !UndoActive && (_dirty || ReviewSelected != IsReviewing);
     internal bool HasActivePreview => Active;
@@ -57,12 +58,16 @@ public sealed partial class CalibrationWorkspace : UserControl
         GammaTargetPattern.SetPattern(ReferencePatternKind.Gamma, GammaExample.Balanced);
         GammaHighPattern.SetPattern(ReferencePatternKind.Gamma, GammaExample.TooHigh);
         PresetName.Text = model.Text["DefaultPresetName"];
-        if (model.Displays.Count > 0) DisplayPicker.SelectedIndex = 0;
+        UpdateDisplayOptions(model.Displays.FirstOrDefault());
         UpdateStepLabels();
         _timer = DispatcherQueue.CreateTimer(); _timer.Interval = TimeSpan.FromSeconds(1); _timer.Tick += TimerTick;
         _debounce = DispatcherQueue.CreateTimer(); _debounce.Interval = TimeSpan.FromMilliseconds(180); _debounce.IsRepeating = false;
         _debounce.Tick += async (_, _) => await PushAsync();
-        model.Text.LanguageChanged += (_, _) => { UpdateStepLabels(); UpdateStep(); UpdateUi(); RefreshRecovery(); };
+        model.Text.LanguageChanged += (_, _) =>
+        {
+            UpdateDisplayOptions(SelectedDisplay);
+            UpdateStepLabels(); UpdateStep(); UpdateUi(); RefreshRecovery();
+        };
         window.Closed += (_, _) => ClosePatternWindow();
         window.Activated += (_, e) =>
         {
@@ -107,14 +112,13 @@ public sealed partial class CalibrationWorkspace : UserControl
     private async void StartClicked(object sender, RoutedEventArgs e)
     {
         if (_model is null || _client is null || _busy || Active) return;
-        if (DisplayPicker.SelectedItem is not DisplayInfo selected) { Show("SelectDisplay", InfoBarSeverity.Warning); return; }
+        if (SelectedDisplay is not { } selected) { Show("SelectDisplay", InfoBarSeverity.Warning); return; }
         _busy = true; UpdateUi();
         try
         {
             var connected = new WindowsDisplayService().Enumerate();
-            var display = connected.SingleOrDefault(d => d.Id == selected.Id);
-            if (display is null || (selected.PersistenceKey is not null && selected.PersistenceKey != display.PersistenceKey))
-            { Show("DisplayUnavailable", InfoBarSeverity.Warning); return; }
+            var display = CheckSelectedDisplay(selected, connected);
+            if (display is null) return;
             if (!CalibrationService.IsExplicitSdr(display)) { Show("SdrRequired", InfoBarSeverity.Warning); return; }
             if (display.Topology == "clone" || connected.Count(d => d.DeviceName == display.DeviceName) > 1)
             { Show("MirroredDisplay", InfoBarSeverity.Warning); return; }
@@ -229,15 +233,17 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
     private async void UndoCalibrationClicked(object sender, RoutedEventArgs e)
     {
-        if (Active || _busy || _client is null || _window is null || DisplayPicker.SelectedItem is not DisplayInfo selected) return;
+        if (Active || _busy || _client is null || _window is null || SelectedDisplay is not { } selected) return;
         _busy = true;
         UpdateUi();
         try
         {
+            var display = CheckSelectedDisplay(selected, new WindowsDisplayService().Enumerate());
+            if (display is null) return;
             var backend = new WindowsGammaCalibrationBackend(DataPaths.DefaultRoot);
-            var current = backend.Read(selected.Id);
+            var current = backend.Read(display.Id);
             var saved = new GammaCalibrationStore(DataPaths.DefaultRoot).Sessions().FirstOrDefault(s =>
-                s.Status == "confirmed" && !s.IsBindingRestore && s.UndoOf is null && MonitorIdentity.MatchesSavedDisplay(s.Original, selected)
+                s.Status == "confirmed" && !s.IsBindingRestore && s.UndoOf is null && MonitorIdentity.MatchesSavedDisplay(s.Original, display)
                 && s.InstalledProfile is not null && ProfilePreviewPolicy.EqualName(s.InstalledProfile, current.ProfileName));
             if (saved is null)
             {
@@ -245,7 +251,7 @@ public sealed partial class CalibrationWorkspace : UserControl
                 return;
             }
             var plan = backend.PlanUndo(saved.Id);
-            if (!plan.CanPreview || plan.DisplayId != selected.Id)
+            if (!plan.CanPreview || plan.DisplayId != display.Id)
             {
                 Show("UndoUnavailable", InfoBarSeverity.Warning);
                 return;
@@ -256,7 +262,7 @@ public sealed partial class CalibrationWorkspace : UserControl
                 return;
             }
             OriginalToggle.IsOn = false;
-            _session = await _client.BeginUndoAsync(saved.Id, windowOwned: true, expectedDisplayId: selected.Id);
+            _session = await _client.BeginUndoAsync(saved.Id, windowOwned: true, expectedDisplayId: display.Id);
             if (Active)
             {
                 StepPicker.SelectedIndex = 5;
@@ -328,7 +334,8 @@ public sealed partial class CalibrationWorkspace : UserControl
     private void UpdateUi()
     {
         if (_model is null) return;
-        bool hasDisplay = DisplayPicker.SelectedItem is DisplayInfo;
+        var display = SelectedDisplay;
+        bool hasDisplay = display is not null;
         bool undo = UndoActive;
         bool updatingComparison = Active && ReviewSelected && !undo && (!IsReviewing || ((_dirty || _pushing)
             && (_session!.Preset.Calibration != CurrentPreset().Calibration || OriginalToggle.IsOn != _session.ShowingOriginal)));
@@ -339,7 +346,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         RefreshDisplaysButton.IsEnabled = !Active && !_busy;
         RecoveryButton.IsEnabled = !Active && !_busy;
         FullScreenButton.IsEnabled = hasDisplay && !_busy;
-        StartButton.IsEnabled = !Active && !HasPendingPreviewRecovery && !_busy && !remote && DisplayPicker.SelectedItem is DisplayInfo display
+        StartButton.IsEnabled = !Active && !HasPendingPreviewRecovery && !_busy && !remote && display is not null
             && CalibrationService.IsExplicitSdr(display) && display.Topology != "clone"
             && display.Profile?.Mhc2Present != true && display.ProfileQueryStatus != "unavailable";
         StartButton.Visibility = Active ? Visibility.Collapsed : Visibility.Visible;
@@ -421,14 +428,40 @@ public sealed partial class CalibrationWorkspace : UserControl
     private void DisplayChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_model is null || _setting) return;
+        UpdateDisplaySelection();
+    }
+    private void UpdateDisplaySelection()
+    {
         ClosePatternWindow();
         Outcome.IsOpen = false;
         UpdateUi();
     }
+    private void UpdateDisplayOptions(DisplayInfo? selected)
+    {
+        var options = _model!.Displays.Select(display =>
+        {
+            List<string> details = [];
+            if (display.IsPrimary) details.Add(_model.Text["PrimaryDisplay"]);
+            if (display.PositionX is int x && display.PositionY is int y)
+                details.Add(string.Format(_model.Text["DisplayDesktopPosition"], x, y));
+            if (details.Count == 0)
+                details.Add(display.DeviceName.StartsWith(@"\\.\", StringComparison.Ordinal) ? display.DeviceName[4..] : display.DeviceName);
+            return new DisplayOption(display, string.Join(" · ", details));
+        }).ToArray();
+
+        bool previousSetting = _setting;
+        _setting = true;
+        try
+        {
+            DisplayPicker.ItemsSource = options;
+            DisplayPicker.SelectedItem = options.FirstOrDefault(option => option.Display == selected);
+        }
+        finally { _setting = previousSetting; }
+    }
     private void UpdateDisplaySummary(bool remote)
     {
         var text = _model!.Text;
-        if (DisplayPicker.SelectedItem is not DisplayInfo display)
+        if (SelectedDisplay is not { } display)
         {
             DisplaySummary.Text = text["SelectDisplay"];
             DisplaySettingsLink.Visibility = Visibility.Collapsed;
@@ -446,8 +479,6 @@ public sealed partial class CalibrationWorkspace : UserControl
         };
         string details = text[mode];
         if (display.Width is int width && display.Height is int height) details += $" · {width} × {height}";
-        if (display.PositionX is int x && display.PositionY is int y)
-            details += " · " + string.Format(text["DisplayDesktopPosition"], x, y);
         if (display.Topology == "clone") details += " · " + text["MirroredDisplay"];
         DisplaySummary.Text = details;
         string? guidance = mode switch
@@ -467,9 +498,11 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
     private void MoveDisplayClicked(object sender, RoutedEventArgs e)
     {
-        if (_window is null || DisplayPicker.SelectedItem is not DisplayInfo display || Active) return;
+        if (_window is null || SelectedDisplay is not { } selected || Active) return;
         try
         {
+            var display = CheckSelectedDisplay(selected, new WindowsDisplayService().Enumerate());
+            if (display is null) return;
             if (!DisplayWindowPlacement.MoveToDisplay(_window, display.DeviceName)) Show("DisplayUnavailable", InfoBarSeverity.Warning);
         }
         catch (Exception ex) { ShowError(ex); }
@@ -477,15 +510,38 @@ public sealed partial class CalibrationWorkspace : UserControl
     private void RefreshClicked(object sender, RoutedEventArgs e)
     {
         if (_model is null || Active) return;
-        string? selected = (DisplayPicker.SelectedItem as DisplayInfo)?.Id;
-        try { _model.Refresh(); DisplayPicker.SelectedItem = _model.Displays.FirstOrDefault(d => d.Id == selected) ?? _model.Displays.FirstOrDefault(); }
+        var selected = SelectedDisplay;
+        try
+        {
+            _model.RefreshDisplays();
+            var current = MonitorIdentity.ResolveSelectedDisplay(selected, _model.Displays);
+            UpdateDisplayOptions(current);
+            UpdateDisplaySelection();
+            if (selected is not null && current is null) Show("DisplayUnavailable", InfoBarSeverity.Warning);
+        }
         catch (Exception ex) { ShowError(ex); }
         RefreshRecovery();
     }
+    private DisplayInfo? CheckSelectedDisplay(DisplayInfo selected, IReadOnlyList<DisplayInfo> connected)
+    {
+        var current = MonitorIdentity.ResolveSelectedDisplay(selected, connected);
+        if (current?.Id == selected.Id) return current;
+        Show("DisplayUnavailable", InfoBarSeverity.Warning);
+        return null;
+    }
     private void FullScreenClicked(object sender, RoutedEventArgs e)
     {
-        if (_model is null || DisplayPicker.SelectedItem is not DisplayInfo display) return;
-        if (_patternWindow is not null) { _patternWindow.Activate(); return; }
+        if (_model is null || SelectedDisplay is not { } selected) return;
+        DisplayInfo? display;
+        try { display = CheckSelectedDisplay(selected, new WindowsDisplayService().Enumerate()); }
+        catch (Exception ex) { ShowError(ex); return; }
+        if (display is null) { ClosePatternWindow(); return; }
+        if (Active && (!OnPreviewDisplay() || display.TargetKey != _session!.Original.TargetKey
+            || display.SourceId != _session.Original.SourceId || display.DeviceName != _session.Original.DeviceName))
+        { ClosePatternWindow(); Show("DisplayUnavailable", InfoBarSeverity.Warning); return; }
+        if (_patternWindow is not null && DisplayWindowPlacement.IsOnDisplay(_patternWindow, display.DeviceName))
+        { _patternWindow.Activate(); return; }
+        ClosePatternWindow();
         var text = _model.Text;
         var pattern = new PatternSurface();
         pattern.SetPattern((ReferencePatternKind)Math.Max(0, StepPicker.SelectedIndex));

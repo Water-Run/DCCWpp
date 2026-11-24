@@ -56,6 +56,52 @@ public sealed class AssociationFingerprintTests
             () => ResolveUndoAssociation(State, backup, [active])).Code);
     }
 
+    [Fact]
+    public void RecoveryMapsAnAssociationToTheCurrentAdapterAndSourceWithoutChangingTheBackup()
+    {
+        var saved = State with
+        {
+            PersistenceKey = "edid:" + ProfileHash,
+            ProfileDeviceSha256 = WindowsDisplayService.HashProfileDeviceKey(Display.ProfileDeviceKey)
+        };
+        var current = saved with { DisplayId = "fedcba9876543210", TargetKey = "00000000:00000002:2", SourceId = 4 };
+        var backup = new IccAssociationBackup(0, null, State.SourceId!.Value, State.TargetKey, "candidate.icc", Display.ProfileDeviceKey!);
+
+        Assert.Equal(backup with { TargetKey = current.TargetKey, SourceId = 4 }, ResolveRecoveryAssociation(saved, current, backup));
+        Assert.Equal("recovery_target_changed", Assert.Throws<ProfilePreviewException>(() => ResolveRecoveryAssociation(saved, current,
+            backup with { DeviceKey = @"\Registry\Machine\System\OtherDevice" })).Code);
+        Assert.Equal(State.TargetKey, backup.TargetKey);
+    }
+
+    [Theory]
+    [InlineData("matched", null)]
+    [InlineData("reused-path", "display_disconnected")]
+    [InlineData("legacy", "display_disconnected")]
+    [InlineData("device-changed", "profile_device_unavailable")]
+    [InlineData("duplicate-identity", "display_identity_ambiguous")]
+    [InlineData("duplicate-device", "profile_device_unavailable")]
+    public void RecoveryResolvesOnlyTheSameUniqueDisplayAndProfileDevice(string condition, string? reason)
+    {
+        string identity = "edid:" + ProfileHash;
+        var moved = Display with { Id = "fedcba9876543210", TargetKey = "00000000:00000002:2", SourceId = 4,
+            PersistenceKey = identity, ProfileDeviceKey = Display.ProfileDeviceKey!.ToLowerInvariant() };
+        var other = Display with { PersistenceKey = "path:" + OtherHash, ProfileDeviceKey = @"\Registry\Machine\System\OtherDevice" };
+        var connected = condition switch
+        {
+            "reused-path" => [other],
+            "legacy" => new[] { moved },
+            "device-changed" => [moved with { ProfileDeviceKey = other.ProfileDeviceKey }],
+            "duplicate-identity" => [moved, other with { PersistenceKey = identity }],
+            "duplicate-device" => [moved, other with { ProfileDeviceKey = Display.ProfileDeviceKey }],
+            _ => [moved, other]
+        };
+        string? device = condition == "legacy" ? null : WindowsDisplayService.HashProfileDeviceKey(Display.ProfileDeviceKey);
+        DisplayInfo Resolve() => WindowsDisplayService.ResolveRecoveryDisplay(connected, Display.Id, identity, device);
+
+        if (reason is null) Assert.Equal(moved, Resolve());
+        else Assert.Equal(reason, Assert.Throws<ProfilePreviewException>(() => Resolve()).Code);
+    }
+
     [Theory]
     [InlineData("different-monitor", "display_disconnected")]
     [InlineData("ambiguous", "undo_target_changed")]
@@ -194,6 +240,29 @@ public sealed class AssociationFingerprintTests
             scope => scope == 1 ? "user.icc" : change == "selection" ? "different.icc" : "system.icc",
             () => change == "scope" && ++scopeReads == 2 ? 1 : 0));
         Assert.Equal(reason, error.Code);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InstalledProfileInspectionReportsMhc2InTheAssociatedProfile(bool hasMhc2)
+    {
+        byte[] bytes = DisplayProfile();
+        if (hasMhc2)
+        {
+            Array.Resize(ref bytes, 148);
+            BinaryPrimitives.WriteUInt32BigEndian(bytes, (uint)bytes.Length);
+            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(128), 1);
+            "MHC2"u8.CopyTo(bytes.AsSpan(132));
+            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(136), 144);
+            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(140), 4);
+        }
+
+        var profile = WindowsProfileAssociationBackend.InspectProfile("panel.icc", bytes);
+
+        Assert.True(profile.CanSelect);
+        Assert.Equal(hasMhc2, profile.Mhc2Present);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(bytes)), profile.Sha256);
     }
 
     private static byte[] DisplayProfile()

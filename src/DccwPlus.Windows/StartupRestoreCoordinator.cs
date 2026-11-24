@@ -55,7 +55,7 @@ public sealed class StartupRestoreCoordinator
             string? configuration = _readConfiguration();
             if (trigger is null && configuration is not null && configuration != lastConfiguration)
                 trigger = "display_changed";
-            lastConfiguration = configuration ?? lastConfiguration;
+            lastConfiguration = configuration;
 
             if (pending is null && trigger is not null) pending = Start(trigger);
             else if (pending is not null && trigger == "resume") pending = pending with { Trigger = trigger };
@@ -79,13 +79,16 @@ public sealed class StartupRestoreCoordinator
         }
 
         bool settling = report.Reason == "recovery_required"
-            || report.Bindings.Any(binding => binding.ReasonCode is "display_disconnected" or "display_state_changed")
-            || report.Recoveries.Any(item => item is { Kind: "binding", NeedsRecovery: true, ReasonCode: "display_disconnected"
-                or "display_state_changed" or "profile_device_unavailable" or "profile_state_unavailable" or "profile_file_unavailable" });
+            || report.Bindings.Any(binding => IsSettlingReason(binding.ReasonCode))
+            || report.Recoveries.Any(item => item is { Kind: "binding", NeedsRecovery: true } && IsSettlingReason(item.ReasonCode));
         return settling && pending.SettlingRetries < 2
             ? pending with { ScheduledAt = now, Delay = SettleInterval, SettlingRetries = pending.SettlingRetries + 1 }
             : null;
     }
+
+    private static bool IsSettlingReason(string reason) => reason is "display_disconnected" or "display_state_changed"
+        or "profile_device_unavailable" or "profile_scope_unavailable" or "profile_state_unavailable" or "profile_file_unavailable"
+        or "curve_read_failed";
 
     private sealed record PendingRestore(string Trigger, long StartedAt, long ScheduledAt, TimeSpan Delay, int SettlingRetries);
 }

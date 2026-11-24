@@ -84,7 +84,7 @@ public sealed class CalibrationCaptureTests
     [Fact]
     public void TopologyHashCoversAllPathsEvenWithOneDisplaySampled()
     {
-        var display = Display() with { Width = 1920, Height = 1080, PositionX = 0, PositionY = 0 };
+        var display = Display() with { Width = 1920, Height = 1080, PositionX = 0, PositionY = 0, RefreshMillihertz = 60_000 };
         var secondary = display with { Id = "fedcba9876543210", TargetKey = "00000000:00000001:2", SourceId = 2,
             DeviceName = "Secondary", PositionX = -1920, IsPrimary = false };
         DisplayProbe probe = new("extend", [secondary, display]);
@@ -95,6 +95,8 @@ public sealed class CalibrationCaptureTests
         probe = new("extend", [display, secondary with { ProfileName = "other.icc" }]);
         Assert.Equal(first.TopologySha256, capture.Read().TopologySha256);
         probe = new("extend", [display, secondary with { PositionX = 1920 }]);
+        Assert.NotEqual(first.TopologySha256, capture.Read(display.Id).TopologySha256);
+        probe = new("extend", [display, secondary with { RefreshMillihertz = 120_000 }]);
         Assert.NotEqual(first.TopologySha256, capture.Read(display.Id).TopologySha256);
     }
 

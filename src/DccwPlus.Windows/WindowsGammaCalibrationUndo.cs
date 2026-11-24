@@ -88,12 +88,12 @@ public sealed partial class WindowsGammaCalibrationBackend
         return restored.ProfileName;
     }
 
-    private bool RestoreUndoProfile(GammaCalibrationSession undo, Guid calibrationId, GammaDeviceState current)
+    private bool RestoreUndoProfile(GammaCalibrationSession undo, Guid calibrationId, GammaDeviceState expected, GammaDeviceState current)
     {
         var saved = _store.Load(calibrationId);
         CalibrationUndoPolicy.VerifySource(saved);
         var (_, backup) = ResolveUndoAssociation(saved.Original, ReadAssociationBackup(saved), new WindowsDisplayService().Enumerate());
-        VerifyAssociationTarget(undo.Original, backup, current);
+        VerifyAssociationTarget(expected, backup, current);
         if (!undo.Candidate.Matches(saved.Original.Ramp)
             || !ProfilePreviewPolicy.EqualName(undo.Original.ProfileName, backup.CandidateName)
             || undo.Original.ProfileScope != "current-user")

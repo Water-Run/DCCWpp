@@ -19,11 +19,12 @@ public static class ProfilePreviewHost
         var store = new ProfilePreviewStore(root);
         string directory = store.DirectoryFor(id);
         DisplayMutationLock? gate = null;
+        FileStream? worker = null;
         ProfilePreviewTransaction? transaction = null;
         try
         {
             if (id == Guid.Empty) throw new InvalidDataException("Invalid preview request identity.");
-            using var worker = PreviewWorkerFiles.TryLock(directory, "worker");
+            worker = PreviewWorkerFiles.TryLock(directory, "worker");
             if (worker is null) return PreviewWorkerFiles.JoinedExistingWorker;
             var request = ProfilePreviewStore.Read<ProfilePreviewRequest>(Path.Combine(directory, "request.json"));
             if (request.Id != id) throw new InvalidDataException("Invalid preview request identity.");
@@ -42,7 +43,7 @@ public static class ProfilePreviewHost
             transaction.Begin(id, request.DisplayId, request.CandidateProfile, request.Seconds);
             while (transaction.Session?.Status == "previewing")
             {
-                transaction.Tick(OwnerAlive(request));
+                if (transaction.Tick(OwnerAlive(request)).Status != "previewing") break;
                 if (store.Requested(id, "revert")) transaction.Revert();
                 else if (store.Requested(id, "confirm")) transaction.Confirm();
                 if (transaction.Session?.Status == "previewing") Thread.Sleep(150);
@@ -59,7 +60,11 @@ public static class ProfilePreviewHost
             AtomicFile.Write(PreviewWorkerFiles.ErrorPath(directory, attemptId), JsonSerializer.SerializeToUtf8Bytes(error, ProfilePreviewStore.Json));
             return 4;
         }
-        finally { gate?.Dispose(); }
+        finally
+        {
+            gate?.Dispose();
+            worker?.Dispose();
+        }
     }
 
     private static bool OwnerAlive(ProfilePreviewRequest request)
@@ -111,16 +116,27 @@ public sealed class ProfilePreviewClient(string root, string workerExecutable)
     public ProfilePreviewSession Status(Guid id) => _store.Load(id);
     public async Task<ProfilePreviewSession> CommandAsync(Guid id, string action)
     {
-        var before = _store.Load(id);
-        if (!before.NeedsRecovery) return before;
+        string directory = _store.DirectoryFor(id);
+        var before = ReadCommandState();
+        if (!NeedsWorker(before)) return before;
         _store.Request(id, action);
         for (int i = 0; i < 40; i++)
         {
             await Task.Delay(100);
-            var state = _store.Load(id);
-            if (state.Status != "previewing" && state.Status != "applying" && state.Status != "prepared" && state.Status != "recovering") return state;
+            var state = ReadCommandState();
+            if (!NeedsWorker(state)) return state;
         }
         throw new ProfilePreviewException("worker_not_responding", "The preview worker did not acknowledge the request. Check status and recover if necessary.");
+
+        ProfilePreviewSession ReadCommandState()
+        {
+            var (state, workerRunning) = PreviewWorkerFiles.Observe(directory, () => _store.Load(id), NeedsWorker);
+            if (!workerRunning && NeedsWorker(state))
+                throw new ProfilePreviewException("recovery_required", new LocalizationService()["RecoveryMessage"]);
+            return state;
+        }
+
+        static bool NeedsWorker(ProfilePreviewSession state) => state.NeedsRecovery && state.Status != "recovery-pending";
     }
     public Task<ProfilePreviewSession> RecoverAsync(Guid id) => Task.Run(() => new PreviewRecoveryService(root).RecoverProfile(id));
 

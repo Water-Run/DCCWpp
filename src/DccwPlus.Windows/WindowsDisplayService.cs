@@ -1,7 +1,9 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using DccwPlus.Core.Calibration;
+using DccwPlus.Core.Localization;
 
 namespace DccwPlus.Windows;
 
@@ -25,6 +27,45 @@ public sealed class WindowsDisplayService : IDisplayService
     {
         string? stamp = DisplayConfigurationQuery.ReadActivePathStamp();
         return stamp is null ? null : (WindowsDisplaySession.IsRemote() ? "remote:" : "local:") + stamp;
+    }
+
+    internal static string? ComputeTopologyHash(string topology, IReadOnlyList<DisplayInfo> displays)
+    {
+        if (topology == "unknown" || displays.Count == 0 || displays.Any(display => display.TargetKey is null
+            || display.SourceId is null || display.Width is null || display.Height is null || display.PositionX is null || display.PositionY is null))
+            return null;
+
+        // Sample the full desktop independently of the selected monitor and its ICC association.
+        var paths = displays.OrderBy(display => display.Id, StringComparer.Ordinal).Select(display => new
+        {
+            display.Id, display.DeviceName, display.TargetKey, display.SourceId, display.PersistenceKey, display.IsPrimary,
+            display.Output, display.Width, display.Height, display.PositionX, display.PositionY, display.RefreshMillihertz, display.CloneGroup,
+            display.ColorState, display.HdrActive, display.AdvancedColorActive
+        });
+        return Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new { topology, paths })));
+    }
+
+    internal static string? HashProfileDeviceKey(string? key) =>
+        key?.StartsWith(@"\Registry\Machine\System\", StringComparison.OrdinalIgnoreCase) == true
+            ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key.ToUpperInvariant()))) : null;
+
+    internal static DisplayInfo ResolveRecoveryDisplay(IReadOnlyList<DisplayInfo> connected, string originalId,
+        string? persistenceKey, string? profileDeviceSha256)
+    {
+        if (!MonitorIdentity.IsPersistenceKey(persistenceKey) || !ProfilePreviewPolicy.IsHash(profileDeviceSha256))
+            return connected.SingleOrDefault(display => display.Id == originalId)
+                ?? throw new ProfilePreviewException("display_disconnected", new LocalizationService()["DisplayUnavailable"]);
+
+        var matches = connected.Where(display => MonitorIdentity.SamePersistentIdentity(persistenceKey, display.PersistenceKey)).ToArray();
+        if (matches.Length == 0)
+            throw new ProfilePreviewException("display_disconnected", new LocalizationService()["DisplayUnavailable"]);
+        if (matches.Length != 1)
+            throw new ProfilePreviewException("display_identity_ambiguous", new LocalizationService()["DisplayUnavailable"]);
+        var target = matches[0];
+        if (!string.Equals(HashProfileDeviceKey(target.ProfileDeviceKey), profileDeviceSha256, StringComparison.OrdinalIgnoreCase)
+            || connected.Count(display => string.Equals(display.ProfileDeviceKey, target.ProfileDeviceKey, StringComparison.OrdinalIgnoreCase)) != 1)
+            throw new ProfilePreviewException("profile_device_unavailable", new LocalizationService()["ProfileDeviceUnavailable"]);
+        return target;
     }
 
     private IReadOnlyList<DisplayInfo> EnumerateGdi(string colorState)

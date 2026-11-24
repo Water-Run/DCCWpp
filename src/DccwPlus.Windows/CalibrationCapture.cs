@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Text.Json;
 using DccwPlus.Core.Calibration;
 using DccwPlus.Core.Localization;
 
@@ -50,24 +49,8 @@ public sealed class CalibrationCapture
 
         var report = new CalibrationCaptureReport(1, DateTimeOffset.UtcNow, Environment.OSVersion.Version.Build,
             RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant(), before.Topology, samples,
-            TopologyHash(before.Topology, displays), remote);
+            WindowsDisplayService.ComputeTopologyHash(before.Topology, displays), remote);
         return new(report, evidence);
-    }
-
-    private static string? TopologyHash(string topology, DisplayInfo[] displays)
-    {
-        if (topology == "unknown" || displays.Length == 0 || displays.Any(display => display.TargetKey is null
-            || display.SourceId is null || display.Width is null || display.Height is null || display.PositionX is null || display.PositionY is null))
-            return null;
-
-        // Hash the full active desktop even when the caller samples only one monitor.
-        var paths = displays.Select(display => new
-        {
-            display.Id, display.DeviceName, display.TargetKey, display.SourceId, display.PersistenceKey, display.IsPrimary,
-            display.Output, display.Width, display.Height, display.PositionX, display.PositionY, display.RefreshMillihertz, display.CloneGroup,
-            display.ColorState, display.HdrActive, display.AdvancedColorActive
-        });
-        return Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new { topology, paths })));
     }
 
     private static DisplayInfo[] Select(DisplayInfo[] displays, string? id) =>

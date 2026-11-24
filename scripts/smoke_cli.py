@@ -307,20 +307,36 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
                     currentProfile=original_profile, scope="current-user", explicitSdr=True, sharedSource=False,
                     profiles=[dict(fileName=original_profile, sha256="A" * 64, canSelect=True),
                               dict(fileName=candidate_profile, sha256="B" * 64, canSelect=True)])
-    profile_state.write_text(json.dumps(dict(schemaVersion=1, id=str(profile_id), original=original,
-                                             candidateProfile=candidate_profile, candidateSha256="B" * 64,
-                                             expiresAt=created["createdAt"], status="reverted")), encoding="utf-8")
+    profile_journal = dict(schemaVersion=1, id=str(profile_id), original=original,
+                           candidateProfile=candidate_profile, candidateSha256="B" * 64,
+                           expiresAt=created["createdAt"], status="reverted")
+    profile_state.write_text(json.dumps(profile_journal), encoding="utf-8")
     profile_request = profile_state.with_name("request.json")
     profile_reservation = json.dumps(dict(id=str(profile_id), displayId=profile_display, candidateProfile=candidate_profile,
                                           seconds=30, allowRetries=True)).encode()
     profile_request.write_bytes(profile_reservation)
     profile_args = ("profiles", "preview", candidate_profile, "--display", profile_display, "--request-id", str(profile_id))
     prior = call("profiles", "status", str(profile_id))
+    assert all("mhc2Present" not in item for item in prior["original"]["profiles"])
     assert call(*profile_args) == prior
     assert call("profiles", "observe", str(profile_id)) == dict(outcome="finished", session=prior)
     assert call(*profile_args, "--seconds", "20", expected=4)["code"] == "request_id_conflict"
     assert call(*profile_args, "--dry-run", expected=4)["code"] == "display_disconnected"
     assert profile_request.read_bytes() == profile_reservation
+
+    inspected_original = dict(original, profiles=[dict(original["profiles"][0], mhc2Present=False),
+                                                  dict(original["profiles"][1], mhc2Present=True)])
+    interrupted_profile = json.dumps(dict(profile_journal, status="previewing", original=inspected_original)).encode()
+    profile_state.write_bytes(interrupted_profile)
+    observed = call("profiles", "observe", str(profile_id))
+    assert observed["outcome"] == "recovery_required" and observed["session"]["status"] == "previewing"
+    assert [item["mhc2Present"] for item in observed["session"]["original"]["profiles"]] == [False, True]
+    for action in ("confirm", "revert"):
+        assert call("profiles", action, str(profile_id), expected=4)["code"] == "recovery_required"
+        assert not profile_state.with_name(f"{action}.request").exists()
+    assert profile_state.read_bytes() == interrupted_profile
+    profile_state.write_text(json.dumps(profile_journal), encoding="utf-8")
+
     displays = call("displays", "list")
     allowed = {"sdr", "wcg", "hdr", "advanced-color", "unknown", "not-probed"}
     profile_statuses = {"read", "not-found", "too-large", "truncated", "unreadable"}

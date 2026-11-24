@@ -218,6 +218,114 @@ public sealed class GammaWorkerTests : IDisposable
     }
 
     [Fact]
+    public void ProfileWorkerRejectsMhc2BeforeCreatingACalibrationJournal()
+    {
+        var backend = new SimulatedProfileBackend();
+        backend.State = backend.State with { Profiles = [backend.State.Profiles[0], backend.State.Profiles[1] with { Mhc2Present = true }] };
+        var store = new ProfilePreviewStore(_root);
+        var id = Guid.NewGuid();
+        var attempt = Guid.NewGuid();
+        string directory = store.DirectoryFor(id);
+        AtomicFile.Write(Path.Combine(directory, "request.json"), JsonSerializer.SerializeToUtf8Bytes(
+            new ProfilePreviewRequest(id, backend.State.DisplayId, "candidate.icc", 30), ProfilePreviewStore.Json));
+
+        Assert.Equal(4, ProfilePreviewHost.Run(_root, id, attempt, () => backend));
+
+        var error = ProfilePreviewStore.Read<ProfileWorkerError>(PreviewWorkerFiles.ErrorPath(directory, attempt));
+        Assert.Equal("mhc2_profile_blocked", error.Code);
+        Assert.Contains("MHC2", error.Message);
+        Assert.Null(store.Find(id));
+        Assert.Equal("original.icc", backend.State.CurrentProfile);
+    }
+
+    [Fact]
+    public async Task ProfileWorkerRetainsOwnershipThroughErrorRecovery()
+    {
+        var backend = new SimulatedProfileBackend();
+        var store = new ProfilePreviewStore(_root);
+        var id = Guid.NewGuid();
+        string path = Path.Combine(store.DirectoryFor(id), "request.json");
+        AtomicFile.Write(path, JsonSerializer.SerializeToUtf8Bytes(
+            new ProfilePreviewRequest(id, backend.State.DisplayId, "candidate.icc", 30), ProfilePreviewStore.Json));
+        var restoring = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        int reads = 0;
+        backend.BeforeRead = () =>
+        {
+            switch (++reads)
+            {
+                case 2: throw new IOException("The first candidate verification could not read the association.");
+                case 3: throw new ProfilePreviewException("display_disconnected", "The display was temporarily disconnected.");
+                case 4:
+                    restoring.SetResult();
+                    if (!release.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("The test did not release restoration.");
+                    break;
+            }
+        };
+        var worker = Task.Run(() => ProfilePreviewHost.Run(_root, id, Guid.NewGuid(), () => backend));
+
+        try
+        {
+            await restoring.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var observation = await new PreviewSessionObserver(_root).ObserveProfileAsync(id, 0);
+            Assert.Equal("recovering", observation.Session.Status);
+            Assert.Equal("in_progress", observation.Outcome);
+        }
+        finally
+        {
+            release.Set();
+            await worker.WaitAsync(TimeSpan.FromSeconds(8));
+        }
+
+        Assert.Equal(4, await worker);
+        Assert.Equal("reverted", store.Load(id).Status);
+        Assert.Equal("original.icc", backend.State.CurrentProfile);
+    }
+
+    [Theory]
+    [InlineData("confirm")]
+    [InlineData("revert")]
+    public async Task ProfileCommandDoesNotQueueForAnAbandonedSession(string action)
+    {
+        var backend = new SimulatedProfileBackend();
+        var store = new ProfilePreviewStore(_root);
+        var id = Guid.NewGuid();
+        var session = new ProfilePreviewTransaction(backend, store).Begin(id, backend.State.DisplayId, "candidate.icc", 30);
+        var client = new ProfilePreviewClient(_root, "unused");
+
+        var error = await Assert.ThrowsAsync<ProfilePreviewException>(() => client.CommandAsync(id, action));
+        Assert.Equal("recovery_required", error.Code);
+        Assert.False(store.Requested(id, action));
+        Assert.Equal("previewing", store.Load(id).Status);
+
+        store.Save(session with { Status = "recovery-pending", ReasonCode = "display_disconnected" });
+        Assert.Equal("display_disconnected", (await client.CommandAsync(id, action)).ReasonCode);
+        Assert.False(store.Requested(id, action));
+    }
+
+    [Fact]
+    public async Task ProfileCommandDetectsAWorkerExitAfterSubmission()
+    {
+        var backend = new SimulatedProfileBackend();
+        var store = new ProfilePreviewStore(_root);
+        var id = Guid.NewGuid();
+        new ProfilePreviewTransaction(backend, store).Begin(id, backend.State.DisplayId, "candidate.icc", 30);
+        var client = new ProfilePreviewClient(_root, "unused");
+        Task<ProfilePreviewSession> confirm;
+        using (var worker = PreviewWorkerFiles.TryLock(store.DirectoryFor(id), "worker"))
+        {
+            Assert.NotNull(worker);
+            confirm = client.CommandAsync(id, "confirm");
+            Assert.True(store.Requested(id, "confirm"));
+            Assert.False(confirm.IsCompleted);
+        }
+
+        var error = await Assert.ThrowsAsync<ProfilePreviewException>(() => confirm.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal("recovery_required", error.Code);
+        Assert.Equal("previewing", store.Load(id).Status);
+    }
+
+    [Fact]
     public async Task CommonRecoveryRestoresBothJournalsAndPreservesTheProfileRequest()
     {
         var gamma = new SimulatedGammaBackend();
@@ -380,16 +488,20 @@ public sealed class GammaWorkerTests : IDisposable
 
     private sealed class SimulatedProfileBackend : IProfileAssociationBackend
     {
-        public ProfileAssociationState State { get; private set; } = new("0123456789abcdef", "simulated-profile-target",
+        public ProfileAssociationState State { get; set; } = new("0123456789abcdef", "simulated-profile-target",
             1, new string('A', 64), "original.icc", "current-user", true, false,
             [new("original.icc", new string('B', 64), true), new("candidate.icc", new string('C', 64), true)],
             PersistenceKey: "path:" + new string('D', 64));
 
         public bool Disconnected { get; set; }
+        public Action? BeforeRead { get; set; }
         public void ChangeLayout() => State = State with { TopologyFingerprint = new string('E', 64) };
-        public ProfileAssociationState Read(string displayId) => Disconnected
-            ? throw new ProfilePreviewException("display_disconnected", "Simulated disconnected display.")
-            : State;
+        public ProfileAssociationState Read(string displayId)
+        {
+            BeforeRead?.Invoke();
+            if (Disconnected) throw new ProfilePreviewException("display_disconnected", "Simulated disconnected display.");
+            return State;
+        }
         public void SetDefault(ProfileAssociationState expected, string profile, string sha256) =>
             State = State with { CurrentProfile = profile };
     }

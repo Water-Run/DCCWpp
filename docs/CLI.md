@@ -110,7 +110,9 @@ Windows 重新分配活动路径后，本地记录恢复按唯一的持久显示
 
 `bindings restore --dry-run` 生成恢复报告。去掉 `--dry-run` 会先尝试恢复中断预览，再为已启用且符合条件的绑定写回已确认的绝对曲线。只有原目标可唯一识别、当前为独立 SDR 路径、已确认的用户 ICC 仍被选用且摘要一致、当前曲线匹配已知基线时才写入。报告通过 `reason` 和每屏 `status` 表示结果，退出码 0 表示已生成报告。Windows 登录任务使用同一路径。`startup last-restore` 返回后台最近一次报告及触发原因，尚无报告时为 `null`。
 
-后台定期只读检查活动路径、分辨率、桌面位置、刷新率和色彩模式。即使系统未发通知，检测到变化也会触发 `display_changed` 并重新核对绑定。SDR 路径检测到 MHC2 时，预演和实际恢复都会报告 `mhc2_profile_blocked`。[Windows 显示路径与模式](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/relationship-of-mode-information-to-path-information)
+后台定期只读检查活动路径、分辨率、桌面位置、刷新率和色彩模式。即使系统未发通知，检测到变化也会触发 `display_changed` 并重新核对绑定。路径查询短暂不可用后重新可读时，原布局也会重新检查。SDR 路径检测到 MHC2 时，预演和实际恢复都会报告 `mhc2_profile_blocked`。[Windows 显示路径与模式](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/relationship-of-mode-information-to-path-information)
+
+逐屏报告以 `profile_file_unavailable` 标识 ICC 文件无法读取，以 `restore_data_unavailable` 标识预设等本机数据无法读取。后台遇到 ICC 文件、关联状态或逻辑曲线暂时不可读时，每隔 3 秒重试，最多两次。确认摘要不匹配后保留 `profile_file_changed`，等待后续显示事件或手动操作。
 
 后台收到 `preview_busy` 后每 15 秒重试，同一批请求最多等待 31 分钟。等待期间合并显示通知，保留 `resume` 作为优先触发原因。每次尝试前重新读取 Windows 自启动状态和当前绑定。关闭自启动会结束待处理请求，最近一条后台报告可显示 `startup_disabled`。手动执行 `bindings restore` 仍立即返回本次结果。[Windows 登录任务状态](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptaskstate?view=winrt-26100)
 
@@ -160,6 +162,10 @@ GUI 在校准页编辑时使用心跳维持预览，单次会话最多 30 分钟
 
 拓扑变化会结束活动预览。恢复会核对原始显示器身份、目标和源路径、SDR 模式、ICC 关联和曲线。兼容旧版会话日志。检测到其他程序选择了新配置或写入新曲线时，状态可变为 `superseded`。
 
+Windows 提供完整活动路径与桌面几何信息时，Gamma 和 ICC 预览日志的 `original.activeTopologySha256` 使用与 `calibration capture` 相同的全桌面摘要。只改变刷新率也会结束活动预览。原显示器身份及独立 SDR 路径仍匹配时，可按回滚检查恢复。会话记录了该摘要但缺少可验证的持久身份时，需要原拓扑可再次验证。旧会话沿用原有拓扑检查。
+
+恢复中断的预览时，如果日志同时保存了持久显示身份和 Windows 配置设备摘要，可在同一显示器的新活动路径上处理。恢复要求这两项在当前桌面均能唯一匹配，继续核对独立 SDR、ICC 作用域和相关文件摘要或逻辑曲线。失败可能报告 `display_disconnected`、`display_identity_ambiguous`、`profile_device_unavailable` 或 `recovery_target_changed`。旧日志缺少设备证据时继续使用原路径。会话 ID 和日志中的原始目标保持原样。
+
 `calibration undo` 接收已确认的原校准会话 ID。先用 `--dry-run` 查看 `canPreview` 和 `reasonCode`。去掉预演选项后会启动一个新会话并临时显示之前的曲线。对新会话执行 `confirm` 才会恢复之前的 ICC、作用域和曲线。`revert`、确认时限结束或预览进程退出会触发回退。撤回会话会在 JSON 中记录 `undoOf`。撤回成功会清除仍指向被撤回配置的自动恢复绑定，已保存的预设和 ICC 文件仍可保留。
 
 撤回可用 `--request-id` 指定新会话的 UUID。以相同 UUID、原校准 ID 和时限重试会返回已有会话，不会再启动预览或延长时限。`apply` 和 `calibration undo` 共用会话 ID 范围。尝试复用已被另一条校准请求占用的 UUID 会返回 `request_id_conflict`。预演不占用 UUID。
@@ -188,6 +194,10 @@ dccwpp profiles recover <session-id> --json
 ```
 
 这条路径限于已关联的、可验证原默认配置的当前用户 SDR 显示器。它试用默认 ICC 关联，不生成新的校准曲线。
+
+`profiles list` 中的 `profiles[].mhc2Present` 表示是否检测到 MHC2 标签。读不到标签目录或记录来自旧版本时可能缺少该字段。`canSelect` 表示文件满足结构检查，实际预览还会检查显示器、作用域和 MHC2。当前或候选 ICC 含 MHC2 时，`--dry-run` 给出 `canPreview: false` 和 `mhc2_profile_blocked`，实际预览在建立日志和写入默认关联前返回退出码 4。旧会话仍可核对原配置、候选文件摘要和目标后回滚。[Windows 硬件色彩校准加载器](https://learn.microsoft.com/en-us/windows/win32/wcs/display-calibration-mhc#enhanced-windows-display-calibration-loader)
+
+确认前会再次核对关联。若核对跨过截止时间，工作进程会尝试恢复原 ICC。回退成功时记录 `preview_expired`。若工作进程已经退出且日志仍处于进行状态，`profiles confirm` 和 `profiles revert` 返回退出码 4 和 `recovery_required`。可用 `profiles observe` 查看日志，再用 `profiles recover` 尝试恢复。已记录为 `recovery-pending` 的会话会返回原状态和原因。
 
 桌面布局改变会结束正在进行的 ICC 预览。新会话记录了可唯一识别的显示器时，恢复可在同一显示器、同一目标和源路径上继续，条件是当前仍为独立 SDR 且作用域一致。缺少该身份的旧日志仍要求原拓扑。回滚前核对当前候选 ICC 与将恢复的原 ICC 摘要。任务仍需处理时，`profiles recover` 返回 `recovery-pending` 和 `reasonCode`，例如 `display_disconnected`、`recovery_target_changed` 或 `profile_file_changed`。检测到其他配置已被选中时，报告 `superseded`。
 

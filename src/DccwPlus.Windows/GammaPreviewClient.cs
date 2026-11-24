@@ -73,15 +73,9 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
 
     public GammaCalibrationSession Status(Guid id) => _store.Load(id);
 
-    public (GammaCalibrationSession Session, bool WorkerRunning) Observe(Guid id)
-    {
-        var session = _store.Load(id);
-        if (!session.NeedsRecovery || session.Status == "recovery-pending") return (session, false);
-        if (PreviewWorkerFiles.IsLocked(_store.DirectoryFor(id), "worker")) return (session, true);
-
-        // A worker may publish its final state immediately before releasing the lock.
-        return (_store.Load(id), false);
-    }
+    public (GammaCalibrationSession Session, bool WorkerRunning) Observe(Guid id) =>
+        PreviewWorkerFiles.Observe(_store.DirectoryFor(id), () => _store.Load(id),
+            session => session.NeedsRecovery && session.Status != "recovery-pending");
 
     public Task<GammaCalibrationSession> BeginUndoAsync(Guid calibrationId, int seconds = 30, bool windowOwned = false,
         Guid? requestId = null, string? expectedDisplayId = null)
@@ -239,6 +233,16 @@ internal static class PreviewWorkerFiles
 {
     // A redundant worker exits without publishing an error to the active worker's client.
     public const int JoinedExistingWorker = 10;
+
+    public static (T State, bool WorkerRunning) Observe<T>(string directory, Func<T> load, Func<T, bool> mayHaveWorker)
+    {
+        var state = load();
+        if (!mayHaveWorker(state)) return (state, false);
+        if (IsLocked(directory, "worker")) return (state, true);
+
+        // The final journal write may land between our initial read and the worker releasing its lock.
+        return (load(), false);
+    }
 
     public static string ErrorPath(string directory, Guid? attemptId) => Path.Combine(directory,
         attemptId is Guid id ? $"attempt-{id:N}.error.json" : "error.json");

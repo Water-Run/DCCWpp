@@ -110,6 +110,33 @@ public sealed class CalibrationCompletionTests : IDisposable
     }
 
     [Fact]
+    public void RefreshRateChangeAfterCommitDefersTheBindingUntilReplay()
+    {
+        var display = _displays.Items[0] with
+        {
+            Topology = "internal", Width = 1920, Height = 1080, PositionX = 0, PositionY = 0, RefreshMillihertz = 60_000
+        };
+        var session = _session with
+        {
+            Original = _session.Original with
+            {
+                TopologyFingerprint = WindowsGammaCalibrationBackend.ReadTopologyFingerprint([display]),
+                ActiveTopologySha256 = WindowsDisplayService.ComputeTopologyHash(display.Topology, [display])
+            }
+        };
+        Assert.NotNull(session.Original.ActiveTopologySha256);
+        _displays.Items = [display with { RefreshMillihertz = 120_000 }];
+
+        var pending = _service.CompleteLocked(session, replay: false);
+
+        Assert.True(pending.NeedsBindingCompletion);
+        Assert.Equal("display_state_changed", pending.BindingReasonCode);
+        Assert.Empty(_bindings.List());
+        var completed = _service.CompleteLocked(_sessions.Load(session.Id), replay: true);
+        Assert.Equal("saved", completed.BindingStatus);
+    }
+
+    [Fact]
     public void ReplayCanFinishAfterWindowsReassignsTheAdapterAndSource()
     {
         var oldPath = _displays.Items[0];

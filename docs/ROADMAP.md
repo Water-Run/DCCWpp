@@ -44,7 +44,9 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 - 对已确认但本地记录仍待保存的事务，检查持久意图和当前 ICC，尝试补齐预设与绑定。验收应覆盖写入绑定后进程退出、用户随后删除记录、断开重连、较新的绑定以及撤回后的旧绑定清理。
 - 确认保存或撤回后中断本地写入，重启或等 Windows 重新分配显示路径，再运行登录恢复或 `calibration recover`。核对匹配设备且 ICC 摘要一致时补齐记录，配置状态暂不可用时保留待处理状态，文件变化时保留用户当前设置。
 - 拔出显示器时记录待恢复状态，目标重新出现且身份匹配后再恢复。克隆、远程会话、HDR/Advanced Color、目标不明确或驱动拒绝时，返回可操作的提示和稳定原因码。
-- 对独立的 ICC 关联预览，验证布局改变后可在同一源与目标路径恢复。覆盖同名 ICC 文件替换、不同屏或作用域、克隆和 HDR。没有持久身份的旧会话沿用原拓扑校验。
+- 在 Gamma 预览、ICC 预览和 ICC 保存或撤回中断后，重建活动显示路径并运行恢复。分别验证同一配置设备匹配、旧路径被另一屏复用、设备身份重复、原设备已变及恢复过程中路径再次改变。原 ICC、作用域和曲线按照读回结果分别验收。
+- 预览期间在所选屏及另一屏分别只改变刷新率。核对 Gamma 和 ICC 预览均停止接受确认，并按原显示器身份和路径决定回滚或保留待恢复状态。用采样摘要核对刷新率变化已被记录。
+- 对独立的 ICC 关联预览，验证布局改变后可在同一源与目标路径恢复。覆盖同名 ICC 文件替换、不同屏或作用域、克隆和 HDR。当前或候选 ICC 包含 MHC2 时验证预演与实际预览都给出相同原因码。旧会话仍需验证回滚。没有持久身份的旧会话沿用原拓扑校验。验证确认读取跨过截止时间时回退，以及观察和命令能识别工作进程中断。
 - 确认 `SetDeviceGammaRamp` 仅在受控 SDR 兼容路径使用。确定回读容差、驱动拒写后的处理，以及休眠、分辨率变化和外部工具覆盖后的预期行为。使用 ICC 和 Windows 关联作为持久化路线。微软记录了 Gamma Ramp 静默拒写、系统覆盖和 HDR 行为未定义等限制。[Gamma Ramp 文档](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp) · [默认 ICC 关联](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-colorprofilesetdisplaydefaultassociation)
 
 验收以独立的 SDR 显示器完成整轮校准、退出后恢复、确认后重新加载和恢复原关联为准。单独中断预览工作进程，确认向导保留恢复入口，CLI 返回 `recovery_required`，恢复后核对原曲线和 ICC。验证撤回已确认校准时，取消和超时可回到撤回前状态，确认可还原前一个 ICC、作用域和曲线。扩展桌面至少验证两台屏幕，确认另一屏的 ICC 和曲线保持原状。模拟测试覆盖失败分支，真实写入仅在人工实机验收中进行。
@@ -72,6 +74,10 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 | 前后对比 | 比较同一目标屏的原始状态和候选状态。从全屏图案切换曲线、查看原会话倒计时或取消并恢复。确认全屏图案随步骤更新，切到参考照片页后按现有期限恢复，并在其他页面验证取消反馈。 |
 | 完成、取消与 ClearType | 确认后可在 Windows 中识别新 ICC，取消恢复原状态。完成后可按用户选择打开 ClearType。 |
 
+选择非主屏后刷新列表。核对原屏重建路径且持久身份唯一时保留选中，原屏掉线或身份不明确时清空选中。旧 ID 被别的屏复用时仍按原选中身份查找。移动、全屏和启动预览前重新核对活动路径。
+
+用 UI Automation 检查选屏控件展开和收起时的名称。三种语言均应读到显示器名称、主屏标识和可用的桌面坐标，刷新和切换语言后保留选中。用两台同型号显示器验证坐标能区分桌面位置。[Windows 无障碍名称指引](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/basic-accessibility-information)
+
 依照 WinUI Gallery 的控件和交互习惯完善布局。实测浅色、深色、高对比度、窄窗口、键盘导航、Narrator、焦点和三种语言。新文案同步维护三个 catalog，CLI 的字段和原因码保持语言无关。[WinUI Gallery](https://github.com/microsoft/WinUI-Gallery)
 
 切换 Windows 对比主题时核对向导和全屏说明的文字、按钮及背景都使用系统配色。以每种主题下的画面采样比对 Gamma、亮度和对比度图案的渲染像素，另行在人工作业中验收物理显示效果。[Windows 对比主题指引](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/high-contrast-themes)
@@ -94,6 +100,7 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 - 绑定目标使用可靠的持久身份并校验已确认 ICC 的名称和摘要。恢复已确认的绝对曲线，避免重复叠加相对参数。设备路径是较弱的回退身份，换端口或同型号匹配不明确时需要重新确认。
 - 处理登录、续睡、屏幕重连、扩展/复制切换和驱动重置。先对账未完成预览，再检查已确认绑定。合并重复事件，限制重试，避免与 GUI、CLI 的活动预览争用。没有系统通知时，轮询活动路径、布局和色彩模式的变化。[Windows 显示路径与模式](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/relationship-of-mode-information-to-path-information)
 - 验收恢复事件发生时已有活动预览的情况。预览结束后，后台在有上限的等待期内重新评估同一请求。等待期间关闭 Windows 自启动或对应显示器的绑定也需验证。
+- 验收路径短暂不可读后恢复到相同布局且系统未发通知的情况。核对后台重新评估绑定，ICC 或逻辑曲线暂时不可读时按限次重试，同名 ICC 已更改时保留现有设置。
 - 恢复前重新核对 SDR、用户选用的配置、曲线及目标。用户改默认配置或系统改变当前模式时暂停并记录原因。提供暂停、移除绑定和最近一次恢复结果。
 - 验收覆盖首次启用、Windows 禁用后再次登录、重启、睡眠唤醒、拔插、换端口、两个同型号屏和升级。登录不会弹出向导，失败有可查询原因。[StartupTask 状态](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptaskstate)
 

@@ -16,10 +16,29 @@ public static class MonitorIdentity
     public static bool SamePersistentIdentity(string? saved, string? current) =>
         IsPersistenceKey(saved) && string.Equals(saved, current, StringComparison.OrdinalIgnoreCase);
 
+    public static bool SameProfileDevice(string? savedIdentity, string? currentIdentity, string? savedDevice, string? currentDevice) =>
+        SamePersistentIdentity(savedIdentity, currentIdentity) && ProfilePreviewPolicy.IsHash(savedDevice)
+        && string.Equals(savedDevice, currentDevice, StringComparison.OrdinalIgnoreCase);
+
     public static bool MatchesSavedDisplay(GammaDeviceState saved, DisplayInfo current) =>
         saved.PersistenceKey is not null ? SamePersistentIdentity(saved.PersistenceKey, current.PersistenceKey)
             : saved.DisplayId == current.Id && saved.TargetKey == current.TargetKey && saved.DeviceName == current.DeviceName
               && (saved.SourceId is null || saved.SourceId == current.SourceId);
+
+    public static DisplayInfo? ResolveSelectedDisplay(DisplayInfo? selected, IReadOnlyList<DisplayInfo> connected)
+    {
+        if (selected is null) return null;
+        var exact = connected.FirstOrDefault(display => display.Id == selected.Id);
+        if (selected.PersistenceKey is not { } key)
+            return exact is not null && exact.TargetKey == selected.TargetKey && exact.SourceId == selected.SourceId
+                && string.Equals(exact.DeviceName, selected.DeviceName, StringComparison.OrdinalIgnoreCase)
+                && (selected.ProfileDeviceKey is null || string.Equals(exact.ProfileDeviceKey, selected.ProfileDeviceKey, StringComparison.OrdinalIgnoreCase))
+                ? exact : null;
+        if (exact is not null && SamePersistentIdentity(key, exact.PersistenceKey)) return exact;
+
+        var matches = connected.Where(display => SamePersistentIdentity(key, display.PersistenceKey)).Take(2).ToArray();
+        return matches.Length == 1 ? matches[0] : null;
+    }
 
     public static MonitorPersistenceIdentity FromEdid(ReadOnlySpan<byte> edid, string devicePath)
     {

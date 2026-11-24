@@ -72,10 +72,11 @@ public sealed class ProfilePreviewStore(string root) : IProfilePreviewJournal
         IccProfileInspector.ValidateFileName(s.CandidateProfile);
         if (!ProfilePreviewPolicy.IsHash(s.CandidateSha256)
             || !ProfilePreviewPolicy.IsHash(s.Original.TopologyFingerprint)
+            || (s.Original.ActiveTopologySha256 is { } activeTopology && !ProfilePreviewPolicy.IsHash(activeTopology))
+            || (s.Original.ProfileDeviceSha256 is { } profileDevice && !ProfilePreviewPolicy.IsHash(profileDevice))
             || s.Original.PersistenceKey is not null && !MonitorIdentity.IsPersistenceKey(s.Original.PersistenceKey)
             || s.Original.Profiles is null || s.Original.Profiles.Count > 256
-            || !ProfilePreviewPolicy.Plan(s.Original, s.CandidateProfile).CanPreview
-            || ProfilePreviewPolicy.ValidProfile(s.Original, s.CandidateProfile)?.Sha256 != s.CandidateSha256)
+            || !ProfilePreviewPolicy.HasRecordedAssociation(s.Original, s.CandidateProfile, s.CandidateSha256))
             throw new InvalidDataException("The journal does not contain a recoverable original association.");
     }
 }

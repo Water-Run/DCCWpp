@@ -44,6 +44,27 @@ public sealed class ProfilePreviewTests
         Assert.Equal("reverted", setup.Transaction.Tick().Status);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CandidateReadCrossingTheDeadlineRestoresOriginal(bool confirm)
+    {
+        var setup = new Fixture();
+        setup.Start();
+        setup.Backend.BeforeRead = () =>
+        {
+            setup.Clock.Advance(TimeSpan.FromSeconds(30));
+            setup.Backend.BeforeRead = null;
+        };
+
+        var state = confirm ? setup.Transaction.Confirm() : setup.Transaction.Tick();
+
+        Assert.Equal("reverted", state.Status);
+        Assert.Equal("preview_expired", state.ReasonCode);
+        Assert.Equal(new[] { "candidate.icc", "original.icc" }, setup.Backend.Writes);
+        Assert.Equal("original.icc", setup.Backend.State.CurrentProfile);
+    }
+
     [Fact] public void WindowOwnerDeathReverts()
     {
         var setup = new Fixture(); setup.Start();
@@ -68,7 +89,7 @@ public sealed class ProfilePreviewTests
         Assert.Equal("recovery-pending", result.Status);
         Assert.True(result.NeedsRecovery);
         Assert.Single(setup.Backend.Writes);
-        setup.Backend.State = setup.Backend.State with { TopologyFingerprint = new string('A', 64) };
+        setup.Backend.State = setup.Backend.State with { TopologyFingerprint = new string('A', 64), ActiveTopologySha256 = new string('D', 64) };
         var recovered = new ProfilePreviewTransaction(setup.Backend, setup.Journal).Recover(result);
         Assert.Equal("reverted", recovered.Status);
         Assert.Equal("original.icc", setup.Backend.State.CurrentProfile);
@@ -86,6 +107,34 @@ public sealed class ProfilePreviewTests
         Assert.Equal("reverted", result.Status);
         Assert.Equal("display_state_changed", result.ReasonCode);
         Assert.True(result.AssociationVerified);
+        Assert.Equal(new[] { "candidate.icc", "original.icc" }, setup.Backend.Writes);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ActiveTopologyChangePreventsConfirmingTheProfile(bool hasIdentity)
+    {
+        var setup = new Fixture();
+        string originalTopology = new('A', 64);
+        setup.Backend.State = setup.Backend.State with
+        {
+            ActiveTopologySha256 = originalTopology,
+            PersistenceKey = hasIdentity ? PersistenceKey : null
+        };
+        setup.Start();
+        setup.Backend.State = setup.Backend.State with { ActiveTopologySha256 = new string('D', 64) };
+
+        var result = setup.Transaction.Confirm();
+
+        if (!hasIdentity)
+        {
+            Assert.Equal("recovery-pending", result.Status);
+            Assert.Single(setup.Backend.Writes);
+            setup.Backend.State = setup.Backend.State with { ActiveTopologySha256 = originalTopology };
+            result = new ProfilePreviewTransaction(setup.Backend, setup.Journal).Recover(result);
+        }
+        Assert.Equal("reverted", result.Status);
         Assert.Equal(new[] { "candidate.icc", "original.icc" }, setup.Backend.Writes);
     }
 
@@ -124,6 +173,34 @@ public sealed class ProfilePreviewTests
         var restored = new ProfilePreviewTransaction(setup.Backend, setup.Journal).Recover(pending);
         Assert.Equal("reverted", restored.Status);
         Assert.Equal(new[] { "candidate.icc", "original.icc" }, setup.Backend.Writes);
+    }
+
+    [Theory]
+    [InlineData("matched", "reverted", "interrupted_preview")]
+    [InlineData("scope-changed", "recovery-pending", "recovery_target_changed")]
+    [InlineData("file-changed", "recovery-pending", "profile_file_changed")]
+    [InlineData("other-selection", "superseded", "external_profile_change")]
+    public void InterruptedIccPreviewChecksTheSelectionAndFilesOnTheReassignedPath(string change, string status, string reason)
+    {
+        var setup = new Fixture();
+        setup.Backend.State = setup.Backend.State with { PersistenceKey = PersistenceKey, ProfileDeviceSha256 = new string('F', 64) };
+        var preview = setup.Start();
+        var moved = setup.Backend.State with { DisplayId = "fedcba9876543210", TargetKey = "00000000:00000002:2", SourceId = 4 };
+        setup.Backend.State = change switch
+        {
+            "scope-changed" => moved with { Scope = "system-wide" },
+            "file-changed" => moved with { Profiles = [moved.Profiles[0], moved.Profiles[1] with { Sha256 = new string('D', 64) }] },
+            "other-selection" => moved with { CurrentProfile = "other.icc" },
+            _ => moved
+        };
+        setup.Backend.Remapped = true;
+
+        var result = new ProfilePreviewTransaction(setup.Backend, setup.Journal).Recover(preview);
+
+        Assert.Equal(preview.Original, result.Original);
+        Assert.Equal(status, result.Status);
+        Assert.Equal(reason, result.ReasonCode);
+        Assert.Equal(change == "matched" ? new[] { "candidate.icc", "original.icc" } : ["candidate.icc"], setup.Backend.Writes);
     }
 
     [Theory]
@@ -214,16 +291,63 @@ public sealed class ProfilePreviewTests
         Assert.Empty(setup.Backend.Writes);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void BothOriginalAndCandidateMhc2ProfilesBlockNewPreviewsBeforeJournaling(int index)
+    {
+        var setup = new Fixture();
+        var profiles = setup.Backend.State.Profiles.ToArray();
+        profiles[index] = profiles[index] with { Mhc2Present = true };
+        setup.Backend.State = setup.Backend.State with { Profiles = profiles };
+
+        var plan = ProfilePreviewPolicy.Plan(setup.Backend.State, "candidate.icc");
+        Assert.False(plan.CanPreview);
+        Assert.Equal("mhc2_profile_blocked", plan.ReasonCode);
+        Assert.Equal(plan.ReasonCode, Assert.Throws<ProfilePreviewException>(() => setup.Start()).Code);
+        Assert.Null(setup.Journal.Last);
+        Assert.Empty(setup.Backend.Writes);
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(0, true)]
+    [InlineData(1, false)]
+    [InlineData(1, true)]
+    public void InterruptedAssociationCanRestoreTheRecordedOriginalEvenWhenMhc2IsDetected(int index, bool recordedTag)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "dccwpp-mhc2-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var setup = new Fixture();
+            var interrupted = setup.Start();
+            var profiles = setup.Backend.State.Profiles.ToArray();
+            profiles[index] = profiles[index] with { Mhc2Present = true };
+            setup.Backend.State = setup.Backend.State with { Profiles = profiles };
+            if (recordedTag) interrupted = interrupted with { Original = interrupted.Original with { Profiles = profiles } };
+            var store = new ProfilePreviewStore(directory);
+            store.Save(interrupted);
+
+            var result = new ProfilePreviewTransaction(setup.Backend, store).Recover(store.Load(interrupted.Id));
+
+            Assert.Equal("reverted", result.Status);
+            Assert.Equal("original.icc", setup.Backend.State.CurrentProfile);
+            Assert.Equal(new[] { "candidate.icc", "original.icc" }, setup.Backend.Writes);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    }
+
     [Fact] public void JournalRoundTripsAndRejectsAnAlteredCandidateHash()
     {
         string directory = Path.Combine(Path.GetTempPath(), "dccwpp-preview-tests", Guid.NewGuid().ToString("N"));
         try
         {
             var setup = new Fixture();
-            setup.Backend.State = setup.Backend.State with { PersistenceKey = PersistenceKey };
+            setup.Backend.State = setup.Backend.State with { PersistenceKey = PersistenceKey, ActiveTopologySha256 = new string('D', 64) };
             var session = setup.Start(); var store = new ProfilePreviewStore(directory);
             store.Save(session); Assert.Equal(session.Id, store.Load(session.Id).Id);
             Assert.Equal(PersistenceKey, store.Load(session.Id).Original.PersistenceKey);
+            Assert.Equal(setup.Backend.State.ActiveTopologySha256, store.Load(session.Id).Original.ActiveTopologySha256);
             Assert.Throws<InvalidDataException>(() => store.Save(session with { Original = session.Original with { PersistenceKey = "invalid" } }));
             Assert.Single(store.Incomplete()); store.Request(session.Id, "revert"); store.Request(session.Id, "revert");
             Assert.True(store.Requested(session.Id, "revert"));
@@ -247,9 +371,16 @@ public sealed class ProfilePreviewTests
         public List<string> Writes { get; } = []; public Action? BeforeWrite { get; set; }
         public bool FailFirstAfterWrite { get; set; }
         public bool Disconnected { get; set; }
-        public ProfileAssociationState Read(string id) => Disconnected
-            ? throw new ProfilePreviewException("display_disconnected", "Simulated disconnected display.")
-            : State;
+        public bool Remapped { get; set; }
+        public Action? BeforeRead { get; set; }
+        public ProfileAssociationState Read(string id)
+        {
+            BeforeRead?.Invoke();
+            if (Disconnected || (Remapped && id != State.DisplayId))
+                throw new ProfilePreviewException("display_disconnected", "Simulated disconnected display.");
+            return State;
+        }
+        public ProfileAssociationState ReadRecoveryTarget(ProfileAssociationState original) => Read(Remapped ? State.DisplayId : original.DisplayId);
         public void SetDefault(ProfileAssociationState expected, string profile, string hash)
         {
             BeforeWrite?.Invoke(); Writes.Add(profile); State = State with { CurrentProfile = profile };

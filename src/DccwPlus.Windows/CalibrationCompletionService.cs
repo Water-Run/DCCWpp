@@ -168,7 +168,8 @@ internal sealed class CalibrationCompletionService(string root, IDisplayService 
             throw new ProfilePreviewException("profile_state_unavailable", text["ProfileStateUnavailable"]);
         if (!replay && (display.Id != original.DisplayId || display.DeviceName != original.DeviceName || display.TargetKey != original.TargetKey
             || (original.SourceId is not null && display.SourceId != original.SourceId)
-            || WindowsGammaCalibrationBackend.ReadTopologyFingerprint(connected) != original.TopologyFingerprint))
+            || WindowsGammaCalibrationBackend.ReadTopologyFingerprint(connected) != original.TopologyFingerprint
+            || (original.ActiveTopologySha256 is { } activeTopology && WindowsDisplayService.ComputeTopologyHash(display.Topology, connected) != activeTopology)))
             throw new ProfilePreviewException("display_state_changed", text["DisplayUnavailable"]);
         return display;
     }

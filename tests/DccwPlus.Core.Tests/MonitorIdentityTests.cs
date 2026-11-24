@@ -22,6 +22,45 @@ public sealed class MonitorIdentityTests
         byte[] invalid = Edid(1234); invalid[20] ^= 1;
         Assert.Equal("device-path", MonitorIdentity.FromEdid(invalid, "device").Kind);
     }
+
+    [Fact]
+    public void RefreshFollowsTheSameUniqueDisplayEvenWhenItsOldPathIsReused()
+    {
+        var selected = SelectedDisplay();
+        var replacement = selected with { PersistenceKey = "edid:" + new string('B', 64) };
+        var moved = selected with { Id = "new-path", TargetKey = "new-target", DeviceName = "DISPLAY3", SourceId = 3 };
+
+        Assert.Same(moved, MonitorIdentity.ResolveSelectedDisplay(selected, [replacement, moved]));
+        Assert.Null(MonitorIdentity.ResolveSelectedDisplay(selected, [replacement]));
+        Assert.Null(MonitorIdentity.ResolveSelectedDisplay(null, [replacement]));
+    }
+
+    [Fact]
+    public void RefreshKeepsAnExactSelectionAndDeclinesAnAmbiguousReassignment()
+    {
+        var selected = SelectedDisplay();
+        var other = selected with { Id = "other-path" };
+        var duplicate = selected with { Id = "duplicate-path" };
+        var exact = selected with { Width = 1920 };
+
+        Assert.Same(exact, MonitorIdentity.ResolveSelectedDisplay(selected, [other, exact]));
+        Assert.Null(MonitorIdentity.ResolveSelectedDisplay(selected, [other, duplicate]));
+    }
+
+    [Fact]
+    public void WithoutPersistentIdentityRefreshRequiresTheSameSourceAndProfileDevice()
+    {
+        var selected = SelectedDisplay() with { PersistenceKey = null };
+        var samePath = selected with { Width = 1920, ProfileDeviceKey = selected.ProfileDeviceKey!.ToUpperInvariant() };
+
+        Assert.Same(samePath, MonitorIdentity.ResolveSelectedDisplay(selected, [samePath]));
+        Assert.Null(MonitorIdentity.ResolveSelectedDisplay(selected, [samePath with { SourceId = 5 }]));
+        Assert.Null(MonitorIdentity.ResolveSelectedDisplay(selected, [samePath with { ProfileDeviceKey = "new-device" }]));
+    }
+
+    private static DisplayInfo SelectedDisplay() => new("selected-path", "Selected display", "DISPLAY1", false, "sdr",
+        TargetKey: "selected-target", SourceId: 1, ProfileDeviceKey: "selected-device", PersistenceKey: "edid:" + new string('A', 64));
+
     private static byte[] Edid(uint serial)
     {
         var bytes = new byte[128]; new byte[] { 0, 255, 255, 255, 255, 255, 255, 0 }.CopyTo(bytes, 0);

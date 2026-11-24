@@ -27,13 +27,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (settings.Language == "system" || LocalizationService.Languages.Contains(settings.Language)) Text.Language = settings.Language;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException) { Status = ex.Message; }
-        Refresh();
-    }
-    public void Refresh()
-    {
-        Displays.Clear();
-        foreach (var display in new WindowsDisplayService().Enumerate()) Displays.Add(display);
+        RefreshDisplays();
         RefreshPresets();
+    }
+    public void RefreshDisplays()
+    {
+        var connected = new WindowsDisplayService().Enumerate();
+        Displays.Clear();
+        foreach (var display in connected) Displays.Add(display);
     }
     public void RefreshPresets()
     {

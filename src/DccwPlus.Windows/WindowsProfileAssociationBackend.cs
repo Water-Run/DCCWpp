@@ -15,6 +15,19 @@ public sealed class WindowsProfileAssociationBackend : IProfileAssociationBacken
         var displays = new WindowsDisplayService().Enumerate();
         var display = displays.SingleOrDefault(d => d.Id == displayId)
             ?? throw new ProfilePreviewException("display_disconnected", "The display is no longer connected.");
+        return ReadAssociation(display, displays);
+    }
+
+    public ProfileAssociationState ReadRecoveryTarget(ProfileAssociationState original)
+    {
+        WindowsDisplaySession.RequireLocal();
+        var displays = new WindowsDisplayService().Enumerate();
+        var display = WindowsDisplayService.ResolveRecoveryDisplay(displays, original.DisplayId, original.PersistenceKey, original.ProfileDeviceSha256);
+        return ReadAssociation(display, displays);
+    }
+
+    private static ProfileAssociationState ReadAssociation(DisplayInfo display, IReadOnlyList<DisplayInfo> displays)
+    {
         if (display.TargetKey is null || display.SourceId is null)
             throw new ProfilePreviewException("display_identity_unavailable", "Windows did not report a display source identity.");
         var adapter = Adapter(display.TargetKey);
@@ -22,6 +35,7 @@ public sealed class WindowsProfileAssociationBackend : IProfileAssociationBacken
         // A profile preview requires a rollback destination in the same association scope.
         string? current = ReadDefault(adapter, display.SourceId.Value, scope);
         var profiles = List(adapter, display.SourceId.Value, scope).Select(Inspect).ToArray();
+        // Older ICC journals only contain this fingerprint.
         string topology = string.Join('\n', displays.OrderBy(d => d.Id, StringComparer.Ordinal).Select(d =>
             FormattableString.Invariant($"{d.Id}|{d.TargetKey}|{d.SourceId}|{d.Topology}|{d.ColorState}|{d.HdrActive}|{d.AdvancedColorActive}|{d.Width}|{d.Height}|{d.PositionX}|{d.PositionY}")));
         string? persistence = display.PersistenceKey;
@@ -30,7 +44,8 @@ public sealed class WindowsProfileAssociationBackend : IProfileAssociationBacken
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(topology))), current,
             scope == CurrentUser ? "current-user" : "system-wide", CalibrationService.IsExplicitSdr(display),
             display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1, profiles, persistence,
-            WindowsDisplaySession.IsRemote());
+            WindowsDisplaySession.IsRemote(), ActiveTopologySha256: WindowsDisplayService.ComputeTopologyHash(display.Topology, displays),
+            ProfileDeviceSha256: WindowsDisplayService.HashProfileDeviceKey(display.ProfileDeviceKey));
     }
 
     public void SetDefault(ProfileAssociationState expected, string profile, string sha256)
@@ -51,16 +66,17 @@ public sealed class WindowsProfileAssociationBackend : IProfileAssociationBacken
 
     private static AssociatedProfile Inspect(string fileName)
     {
-        try
-        {
-            byte[] bytes = InstalledProfileReader.ReadBytes(fileName);
-            var report = IccProfileInspector.Inspect(fileName, bytes);
-            bool valid = report.ReadStatus == "read" && report.SignatureValid && report.DeviceClass == "mntr"
-                && report.ColorSpace == "RGB" && report.VcgtPresent is not null && report.TrcPresent is not null;
-            return new(fileName, Convert.ToHexString(SHA256.HashData(bytes)), valid);
-        }
+        try { return InspectProfile(fileName, InstalledProfileReader.ReadBytes(fileName)); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
         { return new(fileName, null, false); }
+    }
+
+    internal static AssociatedProfile InspectProfile(string fileName, ReadOnlySpan<byte> bytes)
+    {
+        var report = IccProfileInspector.Inspect(fileName, bytes);
+        bool valid = report.ReadStatus == "read" && report.SignatureValid && report.DeviceClass == "mntr"
+            && report.ColorSpace == "RGB" && report.Mhc2Present is not null;
+        return new(fileName, Convert.ToHexString(SHA256.HashData(bytes)), valid, report.Mhc2Present);
     }
 
     internal static IReadOnlyList<string> List(string targetKey, uint source, int scope) => List(Adapter(targetKey), source, scope);

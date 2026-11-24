@@ -1,3 +1,4 @@
+using DccwPlus.Core.Localization;
 using DccwPlus.Core.Presets;
 using DccwPlus.Core.Storage;
 
@@ -65,7 +66,13 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
         {
             if (state.ProfileScope != "current-user" || !ProfilePreviewPolicy.EqualName(state.ProfileName, binding.ProfileName))
                 throw new ProfilePreviewException("profile_selection_changed", "The confirmed profile is no longer selected for this user.");
-            if (!string.Equals(hashInstalledProfile(binding.ProfileName), binding.ProfileSha256, StringComparison.OrdinalIgnoreCase))
+            string hash;
+            try { hash = hashInstalledProfile(binding.ProfileName); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                throw new ProfilePreviewException("profile_file_unavailable", new LocalizationService()["IccFileUnavailable"]);
+            }
+            if (!string.Equals(hash, binding.ProfileSha256, StringComparison.OrdinalIgnoreCase))
                 throw new ProfilePreviewException("profile_file_changed", "The confirmed profile file has changed.");
         }
 

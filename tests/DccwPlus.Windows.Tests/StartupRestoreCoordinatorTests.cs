@@ -77,8 +77,12 @@ public sealed class StartupRestoreCoordinatorTests
     [InlineData("recovery_required", null, 3)]
     [InlineData("restore_finished", "display_disconnected", 3)]
     [InlineData("restore_finished", "display_state_changed", 3)]
+    [InlineData("restore_finished", "profile_state_unavailable", 3)]
+    [InlineData("restore_finished", "profile_file_unavailable", 3)]
+    [InlineData("restore_finished", "curve_read_failed", 3)]
     [InlineData("restore_finished", "external_curve_change", 1)]
     [InlineData("restore_finished", "profile_selection_changed", 1)]
+    [InlineData("restore_finished", "profile_file_changed", 1)]
     public async Task OnlyTransientResultsReceiveTheShortRetries(string reason, string? bindingReason, int expectedAttempts)
     {
         var clock = new FakeTime();
@@ -91,6 +95,21 @@ public sealed class StartupRestoreCoordinatorTests
         });
 
         Assert.Equal(Enumerable.Range(0, expectedAttempts).Select(attempt => TimeSpan.FromSeconds(attempt * 3)), attempts);
+    }
+
+    [Fact]
+    public async Task APreviouslyUnavailablePathTriggersRestoreEvenWhenTheLayoutReturnsUnchanged()
+    {
+        var clock = new FakeTime();
+        List<(TimeSpan Time, string Trigger)> attempts = [];
+        await RunAsync(clock, TimeSpan.FromSeconds(60), (enabled, trigger) =>
+        {
+            Assert.True(enabled);
+            attempts.Add((clock.Now, trigger));
+            return Report("restore_finished");
+        }, readConfiguration: () => clock.Now == TimeSpan.FromSeconds(15) ? null : "same-layout");
+
+        Assert.Equal(new[] { (TimeSpan.Zero, "sign_in"), (TimeSpan.FromSeconds(30), "display_changed") }, attempts);
     }
 
     [Fact]
@@ -113,10 +132,10 @@ public sealed class StartupRestoreCoordinatorTests
     }
 
     private static Task RunAsync(FakeTime clock, TimeSpan stopAt, Func<bool, string, CalibrationRestoreReport> restore,
-        Func<TimeSpan, Task<string?>>? wait = null)
+        Func<TimeSpan, Task<string?>>? wait = null, Func<string?>? readConfiguration = null)
     {
         var coordinator = new StartupRestoreCoordinator(() => Task.FromResult(clock.Now < stopAt),
-            (enabled, trigger) => Task.FromResult(restore(enabled, trigger)), () => "same-layout", clock);
+            (enabled, trigger) => Task.FromResult(restore(enabled, trigger)), readConfiguration ?? (() => "same-layout"), clock);
         return coordinator.RunAsync(wait ?? clock.WaitAsync);
     }
 
