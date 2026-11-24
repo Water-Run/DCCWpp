@@ -62,10 +62,12 @@ $fixture = dotnet run --file ./scripts/New-IccTestFixture.cs -- ./artifacts/icc-
 在同一份源码上重建双架构开发包和对应源码压缩包。
 
 ```powershell
-python ./scripts/build_release_evidence.py review-01
+python ./scripts/build_release_evidence.py review-01 --commit HEAD
 ```
 
-结果位于 `artifacts/release-evidence/review-01/`。脚本先归档 Git 跟踪文件及源码目录中未忽略的新文件，再使用同一快照构建。校验通过才写入 `evidence.json`，其中记录源码、MSIX 和依赖声明的 SHA-256。该命令使用开发身份，可用 `--architecture x64` 只重验 x64。
+结果位于 `artifacts/release-evidence/review-01/`。`--commit` 从指定 Git 提交提取源码并在同一个快照上构建。省略它时可验收当前工作区中的改动。脚本运行单元测试、x64 CLI 进程检查以及两种架构的包内容和版本校验。全部通过才写入 `evidence.json`，其中记录源码、MSIX 和依赖声明的 SHA-256。该命令使用开发身份，可用 `--architecture x64` 只重验 x64。
+
+GitHub Actions 的 **Build** 使用触发构建的 Git 提交生成 `DCCWPlus-development-evidence`。该工件包含 x64 和 ARM64 MSIX、对应源码压缩包和 `evidence.json`。`DCCWPlus-build-logs` 包含构建及校验日志。可在 Actions 中用 **Run workflow** 重建所选分支上的开发工件。
 
 ## 生成提交包
 

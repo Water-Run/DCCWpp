@@ -87,7 +87,8 @@ Capture the installed candidate on a clean Windows 11 desktop in each listing la
 
 | View | en-US caption | zh-CN caption | zh-TW caption |
 | --- | --- | --- | --- |
-| Display and gamma | Choose a display and match the gamma reference pattern | 选择显示器并按参考图调整 Gamma | 選取顯示器並依參考圖調整 Gamma |
+| Gamma | Match the gamma reference pattern | 按参考图调整 Gamma | 依參考圖調整 Gamma |
+| Gray balance | Use the RGB controls to balance neutral grays | 用 RGB 控件调整中性灰阶 | 使用 RGB 控制項調整中性灰階 |
 | Comparison | Compare the original and adjusted curves before saving | 保存前比较原始和调整后的曲线 | 儲存前比較原始與調整後的曲線 |
 | Presets | Import and export presets from your library | 在预设库导入和导出预设 | 在預設庫匯入及匯出預設 |
 | Sign-in settings | Choose which displays may restore a saved calibration | 选择登录时可恢复校准的显示器 | 選擇登入時可回復校準的顯示器 |

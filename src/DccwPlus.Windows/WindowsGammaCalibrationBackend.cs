@@ -39,13 +39,18 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             throw new ProfilePreviewException("display_identity_unavailable", "The display source identity is unavailable.");
         if (display.ProfileQueryStatus == "unavailable")
             throw new ProfilePreviewException("profile_state_unavailable", "Windows could not read the display's current color profile or scope.");
-        string material = string.Join('\n', displays.OrderBy(d => d.Id, StringComparer.Ordinal).Select(d =>
-            FormattableString.Invariant($"{d.Id}|{d.TargetKey}|{d.SourceId}|{d.DeviceName}|{d.Topology}|{d.ColorState}|{d.Width}|{d.Height}|{d.PositionX}|{d.PositionY}|{d.HdrActive}|{d.AdvancedColorActive}")));
         return new(display.Id, display.DeviceName, display.TargetKey,
-            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material))), CalibrationService.IsExplicitSdr(display),
+            ReadTopologyFingerprint(displays), CalibrationService.IsExplicitSdr(display),
             display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1,
             ReadRamp(display.DeviceName), display.ProfileName, display.ProfileScope, display.SourceId, display.PersistenceKey,
             display.Profile?.Mhc2Present, display.SelectedProfileScope);
+    }
+
+    internal static string ReadTopologyFingerprint(IReadOnlyList<DisplayInfo> displays)
+    {
+        string material = string.Join('\n', displays.OrderBy(d => d.Id, StringComparer.Ordinal).Select(d =>
+            FormattableString.Invariant($"{d.Id}|{d.TargetKey}|{d.SourceId}|{d.DeviceName}|{d.Topology}|{d.ColorState}|{d.Width}|{d.Height}|{d.PositionX}|{d.PositionY}|{d.HdrActive}|{d.AdvancedColorActive}")));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
     }
 
     internal GammaDeviceState CheckPreviewStart(string displayId, CalibrationPreset preset)
@@ -186,9 +191,16 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             || associated.ProfileScope != "current-user" || !ProfilePreviewPolicy.EqualName(associated.ProfileName, candidate))
             throw new ProfilePreviewException("association_not_verified", "Windows did not report the saved calibration profile as default.");
         VerifyProfileFingerprint(candidate, backup.CandidateHash, InstalledProfileReader.ReadSha256);
-        // Profile notification may reload calibration. Reapply only this same confirmed curve.
-        if (!associated.Ramp.Matches(session.Candidate, 257)) Write(associated, session.Candidate);
+        if (NeedsCurveWriteAfterAssociation(session, associated.Ramp, "external_curve_change")) Write(associated, session.Candidate);
         return candidate;
+    }
+
+    internal static bool NeedsCurveWriteAfterAssociation(GammaCalibrationSession session, GammaRamp ramp, string conflictCode)
+    {
+        const int tolerance = GammaCalibrationTransaction.ReadbackTolerance;
+        if (ramp.Matches(session.Candidate, tolerance)) return false;
+        if (ramp.Matches(session.Original.Ramp, tolerance) || ramp.Matches(GammaRamp.Identity(), tolerance)) return true;
+        throw new ProfilePreviewException(conflictCode, new LocalizationService()["CurveChangedDuringProfileSwitch"]);
     }
 
     internal static (IccAssociationBackup Backup, byte[] Profile) PrepareIcc(DisplayInfo device, GammaDeviceState current,
@@ -228,21 +240,15 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         }
     }
 
-    internal string ReadConfirmedProfileHash(GammaCalibrationSession session) =>
-        VerifyProfileFingerprint(session.InstalledProfile, ReadSavedProfileFingerprint(session), InstalledProfileReader.ReadSha256);
+    internal string? ReadSavedProfileFingerprint(GammaCalibrationSession session) => ReadAssociationBackup(session).CandidateHash;
 
-    internal string? ReadSavedProfileFingerprint(GammaCalibrationSession session)
-    {
-        var backup = ReadAssociationBackup(session);
-        if (!ProfilePreviewPolicy.EqualName(backup.CandidateName, session.InstalledProfile))
-            throw new InvalidDataException("Invalid ICC association recovery record.");
-        return backup.CandidateHash;
-    }
-
-    public void RestoreProfile(GammaCalibrationSession session)
+    public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected)
     {
         string directory = _store.DirectoryFor(session.Id);
         var current = Read(session.Original.DisplayId);
+        bool expectedState = GammaCalibrationTransaction.SameTarget(expected, current)
+            && GammaCalibrationTransaction.SameProfile(expected, current)
+            && current.Ramp.Matches(expected.Ramp, GammaCalibrationTransaction.ReadbackTolerance);
         if (!File.Exists(Path.Combine(directory, "association-mutation-started")))
         {
             if (!GammaCalibrationTransaction.SameProfile(session.Original, current))
@@ -259,29 +265,30 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
                 if (original.EffectiveDefaultHash is not null)
                     VerifyProfileFingerprint(original.EffectiveDefault, original.EffectiveDefaultHash, InstalledProfileReader.ReadSha256);
             }
-            return;
+            return false;
         }
-        if (session.UndoOf is Guid calibrationId)
-        {
-            RestoreUndoProfile(session, calibrationId, current);
-            return;
-        }
-        RestoreSavedAssociation(session, ReadAssociationBackup(session), current);
+        bool changed = session.UndoOf is Guid calibrationId
+            ? RestoreUndoProfile(session, calibrationId, current)
+            : RestoreSavedAssociation(session.Original, ReadAssociationBackup(session), current, session.Original.ProfileName);
+        return changed && expectedState && !GammaCalibrationTransaction.SameProfile(session.Original, current);
     }
 
-    private void RestoreSavedAssociation(GammaCalibrationSession session, IccAssociationBackup backup, GammaDeviceState current)
+    private bool RestoreSavedAssociation(GammaDeviceState original, IccAssociationBackup backup, GammaDeviceState current,
+        string? originalProfile, Guid? undoSession = null)
     {
-        VerifyAssociationTarget(session, backup, current);
+        VerifyAssociationTarget(original, backup, current);
         var adapter = Adapter(backup.TargetKey);
         string? currentUser = ReadDefault(adapter, backup.SourceId, 1);
         int currentScope = ReadScope(adapter, backup.SourceId);
         if (currentScope == 0 && backup.Scope == 1)
             throw new ProfilePreviewException("external_profile_change", "Another application changed the color profile scope.");
         bool candidateIsDefault = ProfilePreviewPolicy.EqualName(currentUser, backup.CandidateName);
+        if (undoSession is not null && (currentScope != CurrentUser || !candidateIsDefault))
+            throw new ProfilePreviewException("external_profile_change", "Another application selected a different profile during undo.");
         if (!candidateIsDefault && !ProfilePreviewPolicy.EqualName(currentUser, backup.UserDefault)
             && !ProfilePreviewPolicy.EqualName(currentUser, backup.EffectiveDefault))
             throw new ProfilePreviewException("external_profile_change", "Another application selected a different profile during recovery.");
-        if (!PreviousSystemDefaultMatches(backup, session.Original.ProfileName, () => ReadDefault(adapter, backup.SourceId, SystemWide)))
+        if (!PreviousSystemDefaultMatches(backup, originalProfile, () => ReadDefault(adapter, backup.SourceId, SystemWide)))
             throw new ProfilePreviewException("previous_system_profile_changed", new LocalizationService()["OriginalSystemProfileChanged"]);
 
         var associations = WindowsProfileAssociationBackend.List(backup.TargetKey, backup.SourceId, 1);
@@ -289,6 +296,8 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         VerifyOriginalFingerprints(backup, InstalledProfileReader.ReadSha256);
         if ((candidateIsAssociated || candidateIsDefault) && backup.CandidateHash is not null)
             VerifyProfileFingerprint(backup.CandidateName, backup.CandidateHash, InstalledProfileReader.ReadSha256);
+        if (undoSession is Guid id)
+            AtomicFile.Write(Path.Combine(_store.DirectoryFor(id), "association-mutation-started"), []);
 
         if (candidateIsDefault && backup.UserDefault is not null)
         {
@@ -304,6 +313,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             || (backup.UserDefault is null && ProfilePreviewPolicy.EqualName(restoredUserDefault, backup.EffectiveDefault));
         if (restoredScope != backup.Scope || !defaultRestored)
             throw new IOException("The original color profile association or scope was not restored.");
+        return candidateIsAssociated || (candidateIsDefault && backup.UserDefault is not null) || currentScope != backup.Scope;
     }
 
     internal static bool PreviousSystemDefaultMatches(IccAssociationBackup backup, string? originalProfile, Func<string?> readSystemDefault) =>
@@ -336,21 +346,23 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         return actual;
     }
 
-    private IccAssociationBackup ReadAssociationBackup(GammaCalibrationSession session)
+    internal IccAssociationBackup ReadAssociationBackup(GammaCalibrationSession session)
     {
         string path = Path.Combine(_store.DirectoryFor(session.Id), "association.json");
         var backup = ProfilePreviewStore.Read<IccAssociationBackup>(path);
         if (backup.TargetKey != session.Original.TargetKey || backup.Scope is not (0 or 1)
+            || (session.Original.SourceId is uint source && backup.SourceId != source)
             || backup.CandidateName != "DCCWPlus-" + session.Id.ToString("N") + ".icc"
+            || (session.InstalledProfile is not null && !ProfilePreviewPolicy.EqualName(backup.CandidateName, session.InstalledProfile))
             || backup.DeviceKey?.StartsWith(@"\Registry\Machine\System\", StringComparison.OrdinalIgnoreCase) != true)
             throw new InvalidDataException("Invalid ICC association recovery record.");
         return backup;
     }
 
-    private static void VerifyAssociationTarget(GammaCalibrationSession session, IccAssociationBackup backup, GammaDeviceState current)
+    private static void VerifyAssociationTarget(GammaDeviceState original, IccAssociationBackup backup, GammaDeviceState current)
     {
         var device = new WindowsDisplayService().Enumerate().SingleOrDefault(d => d.Id == current.DisplayId);
-        if (!GammaCalibrationTransaction.SameRecoveryTarget(session.Original, current) || current.SourceId != backup.SourceId
+        if (!GammaCalibrationTransaction.SameRecoveryTarget(original, current) || current.SourceId != backup.SourceId
             || device is null || device.TargetKey != backup.TargetKey || device.SourceId != backup.SourceId
             || !string.Equals(device.ProfileDeviceKey, backup.DeviceKey, StringComparison.OrdinalIgnoreCase))
             throw new ProfilePreviewException("recovery_target_changed", "The original ICC association target is unavailable.");

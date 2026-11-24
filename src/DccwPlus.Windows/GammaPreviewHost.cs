@@ -9,7 +9,7 @@ namespace DccwPlus.Windows;
 
 public sealed record GammaPreviewRequest(Guid Id, string DisplayId, CalibrationPreset? Preset, int Seconds,
     int? OwnerPid = null, long? OwnerStartTicks = null, bool Recover = false, bool AllowRetries = false, Guid? UndoOf = null,
-    bool InlineParameters = false);
+    bool InlineParameters = false, string? ExpectedUndoDisplayId = null);
 public sealed record GammaPreviewCommand(Guid Id, string Action, CalibrationPreset? Preset = null, bool ShowOriginal = false);
 public sealed record GammaPreviewAck(Guid CommandId, string? ErrorCode, string? Message);
 
@@ -21,11 +21,12 @@ public static class GammaPreviewHost
         var store = new GammaCalibrationStore(root);
         string directory = store.DirectoryFor(id);
         DisplayMutationLock? gate = null;
+        FileStream? worker = null;
         GammaCalibrationTransaction? transaction = null;
         try
         {
             if (id == Guid.Empty) throw new InvalidDataException("Invalid calibration request.");
-            using var worker = PreviewWorkerFiles.TryLock(directory, "worker");
+            worker = PreviewWorkerFiles.TryLock(directory, "worker");
             if (worker is null)
             {
                 if (!recover) return PreviewWorkerFiles.JoinedExistingWorker;
@@ -49,7 +50,9 @@ public static class GammaPreviewHost
                 if (backend is not WindowsGammaCalibrationBackend windows || request.Preset is not null || saved.Original.DisplayId != request.DisplayId)
                     throw new InvalidDataException("Invalid undo request.");
                 var current = windows.CheckUndoStart(saved);
-                transaction.Begin(id, saved.Preset, request.DisplayId, request.Seconds, saved.Original.Ramp, current, calibrationId);
+                if (request.ExpectedUndoDisplayId is { } expected && current.DisplayId != expected)
+                    throw new ProfilePreviewException("undo_target_changed", new LocalizationService()["UndoUnavailable"]);
+                transaction.Begin(id, saved.Preset, current.DisplayId, request.Seconds, saved.Original.Ramp, current, calibrationId);
             }
             else
             {
@@ -75,8 +78,8 @@ public static class GammaPreviewHost
                             {
                                 case "update": transaction.Update(command.Preset ?? throw new InvalidDataException("Preset is required."), command.ShowOriginal, renew: true); break;
                                 case "heartbeat": transaction.Renew(); break;
-                                case "review": transaction.SetReviewMode(true); break;
-                                case "edit": transaction.SetReviewMode(false); break;
+                                case "review": transaction.SetReviewMode(true, command.Preset); break;
+                                case "edit": transaction.SetReviewMode(false, command.Preset); break;
                                 case "confirm":
                                     var completion = backendFactory is null ? new CalibrationCompletionService(root) : null;
                                     var confirmed = transaction.Confirm(completion?.CaptureIntent(transaction.Session));
@@ -102,7 +105,11 @@ public static class GammaPreviewHost
                 new ProfileWorkerError(ex is ProfilePreviewException p ? p.Code : "calibration_failed", ex.Message), ProfilePreviewStore.Json));
             return 4;
         }
-        finally { gate?.Dispose(); }
+        finally
+        {
+            gate?.Dispose();
+            worker?.Dispose();
+        }
     }
 
     internal static void RequireNoInterruptedPreview(string root)

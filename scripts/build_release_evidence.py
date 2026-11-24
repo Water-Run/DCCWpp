@@ -1,9 +1,11 @@
 """Build development MSIX packages from the same sources placed in the archive."""
 import argparse
 import hashlib
+import io
 import json
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -12,8 +14,8 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ROOT_FILES = {".gitignore", "AGENTS.md", "Directory.Build.props", "DccwPlus.slnx", "global.json", "LICENSE", "README.md"}
-SOURCE_TREES = {"assets", "design", "docs", "examples", "schemas", "scripts", "src", "tests"}
+ROOT_FILES = {".gitattributes", ".gitignore", "AGENTS.md", "Directory.Build.props", "DccwPlus.slnx", "global.json", "LICENSE", "README.md"}
+SOURCE_TREES = {".github", "assets", "design", "docs", "examples", "schemas", "scripts", "src", "tests"}
 PRIVATE_EXTENSIONS = {".cer", ".crt", ".key", ".p12", ".pem", ".pfx"}
 PRIVATE_DIRECTORIES = {".git", ".vs", "apppackages", "artifacts", "bin", "obj", "secrets"}
 APPX = "{http://schemas.microsoft.com/appx/manifest/foundation/windows10}"
@@ -28,30 +30,46 @@ def git(*arguments):
     return subprocess.check_output(["git", "-C", str(ROOT), *arguments])
 
 
-def source_files():
+def source_path(name):
+    path = PurePosixPath(name)
+    if path.is_absolute() or ".." in path.parts or "\\" in name:
+        raise ValueError(f"Invalid source path {name}")
+    if name not in ROOT_FILES and path.parts[0] not in SOURCE_TREES:
+        return None
+    if (path.suffix.lower() in PRIVATE_EXTENSIONS or path.name.lower().startswith(".env")
+            or path.name.lower().endswith(".local.json") or path.name.lower() == "package.storeassociation.xml"
+            or any(part.lower() in PRIVATE_DIRECTORIES for part in path.parts)):
+        raise ValueError(f"Private or generated path in source inputs: {name}")
+    return path
+
+
+def working_tree_sources():
     names = git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
     for name in sorted(set(names.decode("utf-8").split("\0")) - {""}):
-        path = PurePosixPath(name)
-        if path.is_absolute() or ".." in path.parts or "\\" in name:
-            raise ValueError(f"Invalid source path {name}")
-        if name not in ROOT_FILES and path.parts[0] not in SOURCE_TREES:
+        path = source_path(name)
+        if path is None:
             continue
-        if (path.suffix.lower() in PRIVATE_EXTENSIONS or path.name.lower().startswith(".env")
-                or path.name.lower().endswith(".local.json") or path.name.lower() == "package.storeassociation.xml"
-                or any(part.lower() in PRIVATE_DIRECTORIES for part in path.parts)):
-            raise ValueError(f"Private or generated path in source inputs: {name}")
         actual = ROOT.joinpath(*path.parts)
         if actual.is_symlink() or not actual.resolve().is_relative_to(ROOT):
             raise ValueError(f"Linked source path: {name}")
         if actual.is_file():
-            yield name, actual
+            yield name, actual.read_bytes()
 
 
-def stage_sources(directory, source_archive):
+def committed_sources(commit):
+    with ZipFile(io.BytesIO(git("archive", "--format=zip", commit))) as archive:
+        for entry in sorted(archive.infolist(), key=lambda item: item.filename):
+            if entry.is_dir() or source_path(entry.filename) is None:
+                continue
+            if stat.S_ISLNK(entry.external_attr >> 16):
+                raise ValueError(f"Linked source path: {entry.filename}")
+            yield entry.filename, archive.read(entry)
+
+
+def stage_sources(directory, source_archive, sources):
     inputs = {}
     with ZipFile(source_archive, "x", compression=ZIP_DEFLATED, compresslevel=9) as archive:
-        for name, path in source_files():
-            data = path.read_bytes()
+        for name, data in sources:
             destination = directory / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(data)
@@ -75,6 +93,9 @@ def build_package(source, output, logs, architecture, run_tests):
     if run_tests:
         arguments.append("-Test")
     run_logged(arguments, source, logs / f"{architecture}.build.log")
+    if architecture == "x64":
+        run_logged([sys.executable, str(source / "scripts/smoke_cli.py"), str(source / "artifacts/cli/win-x64/dccwpp.exe")],
+                   source, logs / "x64.cli.log")
     pattern = f"*_{architecture.lower()}_Test/*.msix"
     packages = list((source / "artifacts/packages/evidence").glob(pattern))
     if len(packages) != 1:
@@ -102,10 +123,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", help="Unused label under artifacts/release-evidence")
     parser.add_argument("--architecture", nargs="+", choices=("x64", "ARM64"), default=("x64", "ARM64"))
+    parser.add_argument("--commit", help="Build from a Git commit instead of the working tree")
     args = parser.parse_args()
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", args.run):
         parser.error("Run label must contain only letters, digits, underscores or hyphens")
     architectures = tuple(dict.fromkeys(args.architecture))
+    commit = git("rev-parse", "--verify", "--end-of-options", f"{args.commit}^{{commit}}").decode().strip() if args.commit else None
+    git_head = git("rev-parse", "HEAD").decode().strip()
     directory = ROOT / "artifacts/release-evidence" / args.run
     directory.mkdir(parents=True, exist_ok=False)
     source = directory / "build-input"
@@ -114,21 +138,26 @@ def main():
     output.mkdir()
     logs.mkdir()
     snapshot = directory / "DCCWPlus-source.zip"
-    git_head = git("rev-parse", "HEAD").decode().strip()
-    inputs = stage_sources(source, snapshot)
+    sources = committed_sources(commit) if commit else working_tree_sources()
+    inputs = stage_sources(source, snapshot, sources)
     print(f"Archived {len(inputs)} source files. Build logs will be written to {logs}", flush=True)
     packages = []
     for index, architecture in enumerate(architectures):
         print(f"Building {architecture} from the archived sources.", flush=True)
         packages.append(build_package(source, output, logs, architecture, run_tests=index == 0))
+    if len(packages) > 1:
+        run_logged([sys.executable, str(source / "scripts/verify_package.py"),
+                    *(str(directory / package["file"]) for package in packages)], source, logs / "architectures.verify.log")
     if any(file_hash(source / name) != expected for name, expected in inputs.items()):
         raise ValueError("A build changed a captured source file")
     evidence = {
-        "schemaVersion": 1, "channel": "development", "builtFrom": "working-tree-snapshot",
+        "schemaVersion": 1, "channel": "development", "builtFrom": "git-commit" if commit else "working-tree-snapshot",
         "gitHeadAtCapture": git_head,
         "sourceArchive": {"file": snapshot.name, "sha256": file_hash(snapshot), "files": inputs},
         "packages": packages,
     }
+    if commit:
+        evidence["sourceCommit"] = commit
     (directory / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     print(f"Source and package evidence: {directory / 'evidence.json'}")
 

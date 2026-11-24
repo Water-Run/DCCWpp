@@ -82,6 +82,6 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
             return binding.ProfileName;
         }
 
-        public void RestoreProfile(GammaCalibrationSession session) { }
+        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected) => false;
     }
 }

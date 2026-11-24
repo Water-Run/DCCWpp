@@ -9,6 +9,7 @@ public sealed class CalibrationCompletionTests : IDisposable
 {
     private static readonly string ProfileHash = new('A', 64);
     private static readonly string Key = "path:" + new string('B', 64);
+    private const string DeviceKey = @"\Registry\Machine\System\Fixture";
     private readonly string _root = Path.Combine(Path.GetTempPath(), "dccwpp-completion-" + Guid.NewGuid().ToString("N"));
     private readonly FixtureDisplays _displays = new();
     private readonly GammaCalibrationStore _sessions;
@@ -16,7 +17,7 @@ public sealed class CalibrationCompletionTests : IDisposable
     private readonly CalibrationBindingStore _bindings;
     private readonly CalibrationCompletionService _service;
     private readonly GammaCalibrationSession _session;
-    private GammaDeviceState _current;
+    private Func<string, string> _readHash = _ => ProfileHash;
 
     public CalibrationCompletionTests()
     {
@@ -25,8 +26,10 @@ public sealed class CalibrationCompletionTests : IDisposable
         _presets = new(_root);
         _bindings = new(_root);
         _displays.Items = [new(displayId, "Display", "SDR", true, "sdr", TargetKey: target,
-            SourceId: 1, PersistenceKey: Key, PersistenceKind: "device-path")];
-        var original = new GammaDeviceState(displayId, "SDR", target, new string('C', 64), true, false, GammaRamp.Identity(),
+            SourceId: 1, ProfileDeviceKey: DeviceKey, PersistenceKey: Key, PersistenceKind: "device-path",
+            HdrActive: false, AdvancedColorActive: false, ProfileQueryStatus: "read")];
+        var original = new GammaDeviceState(displayId, "SDR", target, WindowsGammaCalibrationBackend.ReadTopologyFingerprint(_displays.Items),
+            true, false, GammaRamp.Identity(),
             "previous.icc", "system-wide", 1, Key, SelectedProfileScope: "system-wide");
         var preset = CalibrationPreset.Create("Completed calibration", new() { RedGain = .9 });
         Guid id = Guid.NewGuid();
@@ -38,9 +41,11 @@ public sealed class CalibrationCompletionTests : IDisposable
             ProfileCommitStarted = true, CurveReadbackVerified = true, InstalledProfile = $"DCCWPlus-{id:N}.icc",
             BindingStatus = "pending", BindingIntent = new(null)
         };
-        _current = original with { ProfileName = _session.InstalledProfile, ProfileScope = "current-user",
-            SelectedProfileScope = "current-user", Ramp = candidate };
-        _service = new(_root, _displays, _ => _current, _ => ProfileHash);
+        _displays.Items = [_displays.Items[0] with { ProfileName = _session.InstalledProfile, ProfileScope = "current-user",
+            SelectedProfileScope = "current-user" }];
+        _service = new(_root, _displays, saved => new(0, null, saved.Original.SourceId!.Value, saved.Original.TargetKey,
+            saved.InstalledProfile!, DeviceKey, saved.Original.ProfileName, ProfileHash, CandidateHash: ProfileHash),
+            name => _readHash(name), () => { });
     }
 
     [Fact]
@@ -100,9 +105,68 @@ public sealed class CalibrationCompletionTests : IDisposable
         Assert.Equal("display_disconnected", pending.BindingReasonCode);
         Assert.Empty(_bindings.List());
 
-        _displays.Items = connected;
-        _current = _current with { TopologyFingerprint = new string('D', 64) };
+        _displays.Items = [connected[0] with { PositionX = 300 }];
         Assert.Equal("saved", _service.CompleteLocked(_sessions.Load(_session.Id), replay: true).BindingStatus);
+    }
+
+    [Fact]
+    public void ReplayCanFinishAfterWindowsReassignsTheAdapterAndSource()
+    {
+        var oldPath = _displays.Items[0];
+        _displays.Items = [oldPath with { PersistenceKey = "path:" + new string('F', 64), ProfileName = "other.icc" }, Reconnected(oldPath)];
+        _sessions.Save(_session);
+
+        var recovered = _service.CompleteLocked(_sessions.Load(_session.Id), replay: true);
+
+        Assert.Equal("saved", recovered.BindingStatus);
+        Assert.Equal(Key, Assert.Single(_bindings.List()).PersistenceKey);
+        Assert.Equal(_session.Preset, _presets.Get(_session.Preset.Id));
+    }
+
+    [Fact]
+    public void InitialCompletionDefersIfTheDisplayChangesAfterConfirmation()
+    {
+        _displays.Items = [Reconnected(_displays.Items[0])];
+
+        var pending = _service.CompleteLocked(_session, replay: false);
+
+        Assert.Equal("pending", pending.BindingStatus);
+        Assert.Equal("display_state_changed", pending.BindingReasonCode);
+        Assert.Equal(_session.Preset, _presets.Get(_session.Preset.Id));
+        Assert.Empty(_bindings.List());
+        Assert.Equal("saved", _service.CompleteLocked(pending, replay: true).BindingStatus);
+    }
+
+    [Theory]
+    [InlineData("different-device", "pending", "profile_device_unavailable")]
+    [InlineData("duplicate-identity", "pending", "display_identity_ambiguous")]
+    [InlineData("wrong-scope", "failed", "profile_selection_changed")]
+    [InlineData("changed-file", "failed", "profile_file_changed")]
+    [InlineData("racing-selection", "pending", "display_state_changed")]
+    [InlineData("hdr", "pending", "sdr_path_blocked")]
+    public void ReconnectingDoesNotCompleteWithoutTheMatchingProfileAndDevice(string change, string status, string reason)
+    {
+        var active = Reconnected(_displays.Items[0]);
+        _displays.Items = change switch
+        {
+            "different-device" => [active with { ProfileDeviceKey = DeviceKey + "2" }],
+            "duplicate-identity" => [active, _displays.Items[0]],
+            "wrong-scope" => [active with { SelectedProfileScope = "system-wide" }],
+            "hdr" => [active with { HdrActive = true, ColorState = "hdr" }],
+            _ => [active]
+        };
+        _readHash = _ =>
+        {
+            if (change == "racing-selection") _displays.Items = [active with { ProfileName = "other.icc" }];
+            return change == "changed-file" ? new string('D', 64) : ProfileHash;
+        };
+
+        var result = _service.CompleteLocked(_session, replay: true);
+
+        Assert.Equal(status, result.BindingStatus);
+        Assert.Equal(reason, result.BindingReasonCode);
+        Assert.Empty(_bindings.List());
+        Assert.Empty(_presets.List().Presets);
     }
 
     [Fact]
@@ -115,21 +179,39 @@ public sealed class CalibrationCompletionTests : IDisposable
     }
 
     [Theory]
-    [InlineData(false, "removed")]
-    [InlineData(true, "unchanged")]
-    public void UndoOnlyRemovesTheOldBindingWhileTheRestoredProfileRemainsSelected(bool reselected, string expected)
+    [InlineData("restored", "removed", null)]
+    [InlineData("no-default", "removed", null)]
+    [InlineData("reselected", "unchanged", "profile_selection_changed")]
+    [InlineData("file-changed", "failed", "profile_file_changed")]
+    public void UndoReplayVerifiesTheOldProfileAfterWindowsReassignsThePath(string change, string expected, string? reason)
     {
-        _sessions.Save(_session with { BindingStatus = "saved" });
+        var source = change == "no-default" ? _session with
+        {
+            Original = _session.Original with { ProfileName = null, ProfileScope = null }
+        } : _session;
+        _sessions.Save(source with { BindingStatus = "saved" });
         _bindings.Save(Existing(_session.InstalledProfile!));
-        var undo = _session with { Id = Guid.NewGuid(), Original = _current, UndoOf = _session.Id,
-            Candidate = _session.Original.Ramp, InstalledProfile = _session.Original.ProfileName, BindingIntent = null };
-        if (!reselected) _current = _session.Original;
+        var beforeUndo = source.Original with { ProfileName = source.InstalledProfile, ProfileScope = "current-user", SelectedProfileScope = "current-user" };
+        var undo = _session with { Id = Guid.NewGuid(), Original = beforeUndo, UndoOf = _session.Id,
+            Candidate = source.Original.Ramp, InstalledProfile = source.Original.ProfileName, BindingIntent = null };
+        var active = Reconnected(_displays.Items[0]);
+        _displays.Items = [change == "reselected" ? active : active with { ProfileName = source.Original.ProfileName,
+            ProfileScope = source.Original.ProfileScope, SelectedProfileScope = "system-wide",
+            ProfileQueryStatus = change == "no-default" ? "not-found" : "read" }];
+        if (change == "file-changed") _readHash = _ => new string('F', 64);
+        if (change == "no-default") _readHash = _ => throw new InvalidOperationException("There is no ICC file to read.");
 
         var result = _service.CompleteLocked(undo, replay: true);
 
         Assert.Equal(expected, result.BindingStatus);
-        Assert.Equal(reselected, _bindings.List().Count > 0);
+        Assert.Equal(reason, result.BindingReasonCode);
+        Assert.Equal(expected != "removed", _bindings.List().Count > 0);
     }
+
+    private static DisplayInfo Reconnected(DisplayInfo display) => display with
+    {
+        Id = "abcdef0123456789", DeviceName = "SDR2", TargetKey = "00000000:00000002:4", SourceId = 9
+    };
 
     private CalibrationBinding Existing(string profile) => new()
     {

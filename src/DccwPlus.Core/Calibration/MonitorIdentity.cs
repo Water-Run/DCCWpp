@@ -13,6 +13,14 @@ public static class MonitorIdentity
         && (key.StartsWith("edid:", StringComparison.Ordinal) || key.StartsWith("path:", StringComparison.Ordinal))
         && ProfilePreviewPolicy.IsHash(key[5..]);
 
+    public static bool SamePersistentIdentity(string? saved, string? current) =>
+        IsPersistenceKey(saved) && string.Equals(saved, current, StringComparison.OrdinalIgnoreCase);
+
+    public static bool MatchesSavedDisplay(GammaDeviceState saved, DisplayInfo current) =>
+        saved.PersistenceKey is not null ? SamePersistentIdentity(saved.PersistenceKey, current.PersistenceKey)
+            : saved.DisplayId == current.Id && saved.TargetKey == current.TargetKey && saved.DeviceName == current.DeviceName
+              && (saved.SourceId is null || saved.SourceId == current.SourceId);
+
     public static MonitorPersistenceIdentity FromEdid(ReadOnlySpan<byte> edid, string devicePath)
     {
         if (edid.Length >= 128 && edid[..8].SequenceEqual(new byte[] { 0, 255, 255, 255, 255, 255, 255, 0 })

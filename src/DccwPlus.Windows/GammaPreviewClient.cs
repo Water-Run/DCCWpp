@@ -73,8 +73,18 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
 
     public GammaCalibrationSession Status(Guid id) => _store.Load(id);
 
+    public (GammaCalibrationSession Session, bool WorkerRunning) Observe(Guid id)
+    {
+        var session = _store.Load(id);
+        if (!session.NeedsRecovery || session.Status == "recovery-pending") return (session, false);
+        if (PreviewWorkerFiles.IsLocked(_store.DirectoryFor(id), "worker")) return (session, true);
+
+        // A worker may publish its final state immediately before releasing the lock.
+        return (_store.Load(id), false);
+    }
+
     public Task<GammaCalibrationSession> BeginUndoAsync(Guid calibrationId, int seconds = 30, bool windowOwned = false,
-        Guid? requestId = null)
+        Guid? requestId = null, string? expectedDisplayId = null)
     {
         if (seconds is < 10 or > 60) throw new ArgumentException("Undo preview timeout must be 10–60 seconds.");
         if (requestId == Guid.Empty || (requestId is not null && windowOwned))
@@ -86,7 +96,7 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
         using var owner = Process.GetCurrentProcess();
         var request = new GammaPreviewRequest(requestId ?? Guid.NewGuid(), saved.Original.DisplayId, null, seconds,
             windowOwned ? owner.Id : null, windowOwned ? owner.StartTime.ToUniversalTime().Ticks : null,
-            AllowRetries: requestId is not null, UndoOf: calibrationId);
+            AllowRetries: requestId is not null, UndoOf: calibrationId, ExpectedUndoDisplayId: windowOwned ? expectedDisplayId : null);
         return ReserveAndLaunch(request);
     }
 
@@ -117,7 +127,8 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
             var pending = ProfilePreviewStore.Read<GammaPreviewCommand>(commandPath);
             await WaitForCommandAsync(id, pending, reportError: false);
         }
-        var session = _store.Load(id);
+        var (session, workerRunning) = Observe(id);
+        if (!workerRunning && session.NeedsRecovery && session.Status != "recovery-pending") throw RecoveryRequired();
         if (session.Status != "previewing") return session;
         var command = new GammaPreviewCommand(Guid.NewGuid(), action, edit is null ? preset : edit(session.Preset), showOriginal);
         AtomicFile.Write(commandPath, JsonSerializer.SerializeToUtf8Bytes(command, ProfilePreviewStore.Json));
@@ -140,10 +151,15 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
                     return _store.Load(id);
                 }
             }
-            var session = _store.Load(id);
+            var (session, workerRunning) = Observe(id);
             if (session.Status == "recovery-pending") return session;
-            if (!session.NeedsRecovery && !(reportError && command.Action == "confirm" && session.Status == "confirmed"))
-                return session;
+            // A confirmed outcome can precede the acknowledgement and the local binding write.
+            if (!session.NeedsRecovery)
+            {
+                if (!reportError || command.Action != "confirm" || session.Status != "confirmed") return session;
+                if (!PreviewWorkerFiles.IsLocked(_store.DirectoryFor(id), "worker")) return _store.Load(id);
+            }
+            if (session.NeedsRecovery && !workerRunning) throw RecoveryRequired();
             await Task.Delay(75);
         } while (timer.Elapsed < WaitLimit);
         throw new ProfilePreviewException("worker_not_responding", "The calibration worker did not acknowledge the request. Check the session status before retrying.");
@@ -214,6 +230,9 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
 
     private static ProfilePreviewException RequestConflict() =>
         new("request_id_conflict", "This request ID belongs to a different calibration request.");
+
+    private static ProfilePreviewException RecoveryRequired() =>
+        new("recovery_required", new LocalizationService()["RecoveryMessage"]);
 }
 
 internal static class PreviewWorkerFiles
@@ -229,5 +248,18 @@ internal static class PreviewWorkerFiles
         Directory.CreateDirectory(directory);
         try { return new FileStream(Path.Combine(directory, $"{name}.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
         catch (IOException ex) when ((ex.HResult & 0xFFFF) is 32 or 33) { return null; }
+    }
+
+    public static bool IsLocked(string directory, string name)
+    {
+        try
+        {
+            using var probe = new FileStream(Path.Combine(directory, $"{name}.lock"), FileMode.Open,
+                FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return false;
+        }
+        catch (IOException ex) when ((ex.HResult & 0xFFFF) is 32 or 33) { return true; }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
     }
 }

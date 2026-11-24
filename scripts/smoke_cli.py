@@ -174,6 +174,8 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     pending = call("recovery", "status")["sessions"]
     assert len(pending) == 1 and pending[0]["sessionId"] == str(interrupted_id)
     assert pending[0]["kind"] == "calibration" and pending[0]["needsRecovery"] is True
+    assert call("calibration", "confirm", str(interrupted_id), expected=4)["code"] == "recovery_required"
+    assert not interrupted.with_name("command.json").exists()
     assert interrupted.read_bytes() == document
     # Simulate the journal from a prior request. Its preset is deleted and its display ID is only a fixture.
     calibration_state.update(status="reverted", reasonCode="preview_expired", preset=copy)
@@ -268,13 +270,17 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     undo_id, source_id = uuid4(), uuid4()
     undo_state = data / "calibration-sessions" / undo_id.hex / "state.json"
     undo_state.parent.mkdir()
-    undo_state.write_text(json.dumps(dict(calibration_state, id=str(undo_id), undoOf=str(source_id))), encoding="utf-8")
+    active_display_id = "fedcba9876543210"
+    undo_original = dict(calibration_state["original"], displayId=active_display_id)
+    undo_state.write_text(json.dumps(dict(calibration_state, id=str(undo_id), undoOf=str(source_id),
+                                          original=undo_original)), encoding="utf-8")
     undo_request = undo_state.with_name("request.json")
     undo_reservation = json.dumps(dict(id=str(undo_id), displayId="0123456789abcdef", seconds=30,
                                        allowRetries=True, undoOf=str(source_id))).encode()
     undo_request.write_bytes(undo_reservation)
     undo_args = ("calibration", "undo", str(source_id), "--request-id", str(undo_id))
-    assert call(*undo_args) == call("calibration", "status", str(undo_id))
+    replayed_undo = call(*undo_args)
+    assert replayed_undo == call("calibration", "status", str(undo_id)) and replayed_undo["displayId"] == active_display_id
     assert call(*undo_args, "--seconds", "20", expected=4)["code"] == "request_id_conflict"
     assert call(*replay_args[:-1], str(undo_id), expected=4)["code"] == "request_id_conflict"
     assert undo_request.read_bytes() == undo_reservation

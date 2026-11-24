@@ -57,11 +57,7 @@ public sealed class CalibrationVerification
         report = report with { CapturedAt = capture.Report.CapturedAt, IsRemoteSession = capture.Report.IsRemoteSession,
             WindowsCalibrationLoaderEnabled = _readLoader() };
 
-        var original = session.Original;
-        var matches = capture.Displays.Where(item => original.PersistenceKey is not null
-            ? string.Equals(item.Display.PersistenceKey, original.PersistenceKey, StringComparison.OrdinalIgnoreCase)
-            : item.Display.Id == original.DisplayId && item.Display.TargetKey == original.TargetKey
-              && item.Display.DeviceName == original.DeviceName && (original.SourceId is null || original.SourceId == item.Display.SourceId)).ToArray();
+        var matches = capture.Displays.Where(item => MonitorIdentity.MatchesSavedDisplay(session.Original, item.Display)).ToArray();
         if (matches.Length != 1)
             return report with { ReasonCode = matches.Length > 1 ? "display_identity_ambiguous"
                 : report.IsRemoteSession == true ? "remote_session_blocked" : "display_disconnected" };

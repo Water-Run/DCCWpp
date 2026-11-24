@@ -24,14 +24,17 @@ public sealed partial class CalibrationWorkspace : UserControl
     private CalibrationPreset _draft = CalibrationPreset.Create("Calibration");
     private DispatcherQueueTimer? _timer, _debounce;
     private bool _setting, _busy, _pushing, _dirty, _timerBusy;
-    private bool _reviewMode;
+    private bool _workerExited;
     private bool _calibrationPageVisible = true;
     private DateTimeOffset _lastHeartbeat;
-    private bool Active => _session?.Status == "previewing";
+    private bool Active => !_workerExited && _session?.Status == "previewing";
     private bool UndoActive => Active && _session?.UndoOf is not null;
+    private bool ReviewSelected => StepPicker.SelectedIndex == 5;
+    private bool IsReviewing => Active && _session?.IsReviewing == true;
+    private bool PreviewUpdatePending => Active && !UndoActive && (_dirty || ReviewSelected != IsReviewing);
     internal bool HasActivePreview => Active;
     internal bool CanCancelPreview => Active && !_busy;
-    internal bool HasPendingPreviewRecovery => _session?.Status == "recovery-pending";
+    internal bool HasPendingPreviewRecovery => _session?.NeedsRecovery == true && (_workerExited || _session.Status == "recovery-pending");
     internal event Action? PreviewUiUpdated;
 
     public CalibrationWorkspace() => InitializeComponent();
@@ -77,7 +80,7 @@ public sealed partial class CalibrationWorkspace : UserControl
             _debounce?.Stop();
             ClosePatternWindow();
         }
-        else if (_dirty && Active) _debounce?.Start();
+        else if (PreviewUpdatePending) _debounce?.Start();
     }
 
     internal Task CancelPreviewAsync() => CancelAsync();
@@ -116,7 +119,7 @@ public sealed partial class CalibrationWorkspace : UserControl
             { Show("DisplayUnavailable", InfoBarSeverity.Warning); return; }
             _draft = CurrentPreset() with { Id = Guid.NewGuid(), CreatedAt = DateTimeOffset.UtcNow };
             OriginalToggle.IsOn = false;
-            _reviewMode = false;
+            _dirty = false;
             _session = await _client.BeginAsync(display.Id, _draft, 60, windowOwned: true);
             if (Active) { _timer!.Start(); StepPicker.SelectedIndex = 1; Show("PreviewActive", InfoBarSeverity.Informational); }
             else ShowState();
@@ -127,18 +130,36 @@ public sealed partial class CalibrationWorkspace : UserControl
     private async Task<bool> PushAsync()
     {
         if (_model is null || _client is null || !Active || UndoActive || _busy || _pushing || !_calibrationPageVisible) return false;
+        _debounce?.Stop();
+        if (!PreviewUpdatePending) return true;
         _pushing = true; UpdateUi();
+        bool sendingEdits = false;
         try
         {
             do
             {
-                _dirty = false; _draft = CurrentPreset();
-                _session = await _client.CommandAsync(_session!.Id, "update", _draft, OriginalToggle.IsOn);
-            } while (_dirty && Active && !_busy && _calibrationPageVisible);
+                sendingEdits = _dirty;
+                _dirty = false;
+                var preset = sendingEdits ? CurrentPreset() : null;
+                bool reviewing = ReviewSelected;
+                if (reviewing != IsReviewing)
+                {
+                    _session = await _client.CommandAsync(_session!.Id, reviewing ? "review" : "edit", preset);
+                    if (Active && reviewing != IsReviewing)
+                    {
+                        _dirty |= sendingEdits;
+                        return false;
+                    }
+                }
+                else
+                    _session = await _client.CommandAsync(_session!.Id, "update", preset, OriginalToggle.IsOn);
+                sendingEdits = false;
+                SyncComparisonToggle();
+            } while (PreviewUpdatePending && !_busy && _calibrationPageVisible);
             if (!Active) ShowState();
-            return Active;
+            return Active && !PreviewUpdatePending;
         }
-        catch (Exception ex) { ReloadSession(); ShowError(ex); return false; }
+        catch (Exception ex) { _dirty |= sendingEdits; ReloadSession(); ShowError(ex); return false; }
         finally { _pushing = false; UpdateUi(); }
     }
     private async void TimerTick(DispatcherQueueTimer sender, object args)
@@ -153,10 +174,15 @@ public sealed partial class CalibrationWorkspace : UserControl
                 await CancelAsync(targetMoved: true);
                 return;
             }
-            if (Active && _calibrationPageVisible && StepPicker.SelectedIndex < 5
+            if (PreviewUpdatePending && _calibrationPageVisible) await PushAsync();
+            if (Active && !IsReviewing && !_busy && !_pushing && _calibrationPageVisible
                 && DateTimeOffset.UtcNow - _lastHeartbeat > TimeSpan.FromSeconds(3))
-            { _lastHeartbeat = DateTimeOffset.UtcNow; _session = await _client.CommandAsync(_session!.Id, "heartbeat"); }
-            if (!Active && (_session?.NeedsRecovery != true || _session.Status == "recovery-pending"))
+            {
+                _lastHeartbeat = DateTimeOffset.UtcNow;
+                await _client.CommandAsync(_session!.Id, "heartbeat");
+                if (!_pushing && !_busy) ReloadSession();
+            }
+            if (!Active && (_session?.NeedsRecovery != true || HasPendingPreviewRecovery))
             { _timer!.Stop(); ClosePatternWindow(); ShowState(); RefreshRecovery(); }
         }
         catch (Exception ex) { ShowError(ex); }
@@ -164,7 +190,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
     private async void FinishClicked(object sender, RoutedEventArgs e)
     {
-        if (!Active || _busy || _pushing || _client is null) return;
+        if (!IsReviewing || !ReviewSelected || _busy || _pushing || _client is null) return;
         bool undo = UndoActive;
         if (!undo && string.IsNullOrWhiteSpace(PresetName.Text)) { Show("PresetNameRequired", InfoBarSeverity.Warning); return; }
         if (!OnPreviewDisplay()) { await CancelAsync(targetMoved: true); return; }
@@ -206,14 +232,15 @@ public sealed partial class CalibrationWorkspace : UserControl
             var backend = new WindowsGammaCalibrationBackend(DataPaths.DefaultRoot);
             var current = backend.Read(selected.Id);
             var saved = new GammaCalibrationStore(DataPaths.DefaultRoot).Sessions().FirstOrDefault(s =>
-                s.Status == "confirmed" && !s.IsBindingRestore && s.UndoOf is null && s.Original.DisplayId == current.DisplayId
+                s.Status == "confirmed" && !s.IsBindingRestore && s.UndoOf is null && MonitorIdentity.MatchesSavedDisplay(s.Original, selected)
                 && s.InstalledProfile is not null && ProfilePreviewPolicy.EqualName(s.InstalledProfile, current.ProfileName));
             if (saved is null)
             {
                 Show("NoUndoCalibration", InfoBarSeverity.Informational);
                 return;
             }
-            if (!backend.PlanUndo(saved.Id).CanPreview)
+            var plan = backend.PlanUndo(saved.Id);
+            if (!plan.CanPreview || plan.DisplayId != selected.Id)
             {
                 Show("UndoUnavailable", InfoBarSeverity.Warning);
                 return;
@@ -224,10 +251,9 @@ public sealed partial class CalibrationWorkspace : UserControl
                 return;
             }
             OriginalToggle.IsOn = false;
-            _session = await _client.BeginUndoAsync(saved.Id, windowOwned: true);
+            _session = await _client.BeginUndoAsync(saved.Id, windowOwned: true, expectedDisplayId: selected.Id);
             if (Active)
             {
-                _reviewMode = true;
                 StepPicker.SelectedIndex = 5;
                 _timer!.Start();
                 Show("UndoPreview", InfoBarSeverity.Informational);
@@ -259,24 +285,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (_setting || _model is null) return;
         UpdateStep();
         StepScroll.ChangeView(null, 0, null, disableAnimation: true);
-        bool reviewing = StepPicker.SelectedIndex == 5;
-        if (Active && !_busy && _client is not null && reviewing != _reviewMode)
-        {
-            _busy = true; UpdateUi();
-            try
-            {
-                _session = await _client.CommandAsync(_session!.Id, reviewing ? "review" : "edit");
-                _reviewMode = reviewing;
-                if (Active && !reviewing && OriginalToggle.IsOn)
-                {
-                    OriginalToggle.IsOn = false;
-                    _session = await _client.CommandAsync(_session.Id, "update", CurrentPreset());
-                }
-                if (!Active) ShowState();
-            }
-            catch (Exception ex) { ShowError(ex); }
-            finally { _busy = false; }
-        }
+        if (PreviewUpdatePending) await PushAsync();
         UpdateUi();
     }
     private void UpdateStep()
@@ -316,13 +325,16 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (_model is null) return;
         bool hasDisplay = DisplayPicker.SelectedItem is DisplayInfo;
         bool undo = UndoActive;
+        bool updatingComparison = Active && ReviewSelected && !undo && (!IsReviewing || ((_dirty || _pushing)
+            && (_session!.Preset.Calibration != CurrentPreset().Calibration || OriginalToggle.IsOn != _session.ShowingOriginal)));
+        bool comparisonReady = IsReviewing && ReviewSelected && !_busy && !_pushing && !updatingComparison;
         bool remote = WindowsDisplaySession.IsRemote();
         DisplayPicker.IsEnabled = !Active && !_busy;
         MoveDisplayButton.IsEnabled = hasDisplay && !Active && !_busy;
         RefreshDisplaysButton.IsEnabled = !Active && !_busy;
         RecoveryButton.IsEnabled = !Active && !_busy;
         FullScreenButton.IsEnabled = hasDisplay && !_busy;
-        StartButton.IsEnabled = !Active && !_busy && !remote && DisplayPicker.SelectedItem is DisplayInfo display
+        StartButton.IsEnabled = !Active && !HasPendingPreviewRecovery && !_busy && !remote && DisplayPicker.SelectedItem is DisplayInfo display
             && CalibrationService.IsExplicitSdr(display) && display.Topology != "clone"
             && display.Profile?.Mhc2Present != true && display.ProfileQueryStatus != "unavailable";
         StartButton.Visibility = Active ? Visibility.Collapsed : Visibility.Visible;
@@ -330,25 +342,25 @@ public sealed partial class CalibrationWorkspace : UserControl
         UndoCalibrationButton.IsEnabled = StartButton.IsEnabled;
         CancelButton.IsEnabled = CanCancelPreview;
         CancelButton.Visibility = Active ? Visibility.Visible : Visibility.Collapsed;
-        FinishButton.Visibility = StepPicker.SelectedIndex == 5 ? Visibility.Visible : Visibility.Collapsed;
-        FinishButton.IsEnabled = Active && !_busy && !_pushing && _reviewMode;
+        FinishButton.Visibility = ReviewSelected ? Visibility.Visible : Visibility.Collapsed;
+        FinishButton.IsEnabled = comparisonReady;
         FinishButton.Content = _model.Text[undo ? "ConfirmUndo" : "FinishCalibration"];
         PreviousButton.IsEnabled = StepPicker.SelectedIndex > 0 && !_busy && !_pushing && !undo;
         NextButton.IsEnabled = StepPicker.SelectedIndex < 5 && !_busy && !_pushing && !undo;
         StepPicker.IsEnabled = !_busy && !_pushing && !undo;
         SkipHardwareButton.IsEnabled = !_busy && !_pushing;
-        OriginalToggle.IsEnabled = Active && !_busy && !_pushing && _reviewMode && !undo;
+        OriginalToggle.IsEnabled = comparisonReady && !undo;
         OriginalToggle.Visibility = undo ? Visibility.Collapsed : Visibility.Visible;
         PresetName.Visibility = undo ? Visibility.Collapsed : Visibility.Visible;
         ClearTypeOption.Visibility = undo ? Visibility.Collapsed : Visibility.Visible;
         SaveDraftButton.Visibility = Active ? Visibility.Collapsed : Visibility.Visible;
-        CountdownText.Visibility = Active && _reviewMode ? Visibility.Visible : Visibility.Collapsed;
+        CountdownText.Visibility = IsReviewing && ReviewSelected ? Visibility.Visible : Visibility.Collapsed;
         if (CountdownText.Visibility == Visibility.Visible)
             CountdownText.Text = string.Format(_model.Text[undo ? "UndoCountdown" : "PreviewCountdown"],
                 Math.Max(0, (int)Math.Ceiling((_session!.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds)));
         StepInstructions.Text = _model.Text[undo ? "UndoPreview" : "StepInstruction" + Math.Max(0, StepPicker.SelectedIndex)];
         ComparisonState.Text = _model.Text[undo ? "ShowingPreviousSavedCurve" : !Active ? "ComparisonRequiresPreview"
-            : _session!.ShowingOriginal ? "ShowingOriginal" : "ShowingAdjusted"];
+            : updatingComparison ? "UpdatingComparison" : _session!.ShowingOriginal ? "ShowingOriginal" : "ShowingAdjusted"];
         UpdateFullScreenControls();
         UpdateDisplaySummary(remote);
         ResetButton.Visibility = StepPicker.SelectedIndex is 1 or 4 ? Visibility.Visible : Visibility.Collapsed;
@@ -361,11 +373,23 @@ public sealed partial class CalibrationWorkspace : UserControl
         catch (Exception ex) { ShowError(ex); }
     }
     private void ValuesChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
-    { if (_setting || _model is null) return; _dirty = true; _debounce?.Stop(); _debounce?.Start(); }
+        => QueuePreviewUpdate();
     private void NameChanged(object sender, TextChangedEventArgs e)
-    { if (_setting || _model is null) return; _dirty = true; _debounce?.Stop(); _debounce?.Start(); }
+        => QueuePreviewUpdate();
     private void CompareChanged(object sender, RoutedEventArgs e)
-    { if (_setting || _model is null || !Active || _busy) return; _dirty = true; _debounce?.Stop(); _debounce?.Start(); }
+    {
+        if (_setting) return;
+        QueuePreviewUpdate();
+        if (Active && !_pushing) UpdateUi();
+    }
+    private void QueuePreviewUpdate()
+    {
+        if (_setting || _model is null || UndoActive) return;
+        _dirty = true;
+        if (!_calibrationPageVisible || !Active || _pushing) return;
+        _debounce?.Stop();
+        _debounce?.Start();
+    }
     private void PreviousClicked(object sender, RoutedEventArgs e) => StepPicker.SelectedIndex = Math.Max(0, StepPicker.SelectedIndex - 1);
     private void NextClicked(object sender, RoutedEventArgs e) => StepPicker.SelectedIndex = Math.Min(5, StepPicker.SelectedIndex + 1);
     private void SkipHardwareClicked(object sender, RoutedEventArgs e) => StepPicker.SelectedIndex = 4;
@@ -487,7 +511,6 @@ public sealed partial class CalibrationWorkspace : UserControl
             if (!OriginalToggle.IsEnabled) return;
             if (!OnPreviewDisplay()) { await CancelAsync(targetMoved: true); return; }
             OriginalToggle.IsOn = !_session!.ShowingOriginal;
-            _debounce?.Stop();
             await PushAsync();
         };
         cancel.Click += async (_, _) => await CancelAsync();
@@ -539,14 +562,32 @@ public sealed partial class CalibrationWorkspace : UserControl
         window?.Close();
     }
     private void ReloadSession()
-    { if (_session is not null && _client is not null) _session = _client.Status(_session.Id); }
+    {
+        if (_session is null || _client is null) return;
+        var (session, workerRunning) = _client.Observe(_session.Id);
+        _session = session;
+        _workerExited = session.NeedsRecovery && !workerRunning;
+        SyncComparisonToggle();
+    }
+    private void SyncComparisonToggle()
+    {
+        if (!Active || UndoActive || _dirty || OriginalToggle.IsOn == _session!.ShowingOriginal) return;
+        _setting = true;
+        try { OriginalToggle.IsOn = _session.ShowingOriginal; }
+        finally { _setting = false; }
+    }
     private void RefreshRecovery()
     {
         if (_model is null) return;
         try
         {
+            if (HasPendingPreviewRecovery)
+            {
+                ReloadSession();
+                UpdateUi();
+            }
             var pending = _recovery.List().Where(s => s.Kind != "calibration" || s.SessionId != _session?.Id
-                || s.Status == "recovery-pending").ToArray();
+                || HasPendingPreviewRecovery).ToArray();
             bool onlyBindings = pending.Length > 0 && pending.All(s => s.Kind == "binding");
             RecoveryNotice.Title = _model.Text[onlyBindings ? "BindingRecoveryTitle" : "RecoveryTitle"];
             RecoveryNotice.Message = _model.Text[onlyBindings ? "BindingRecoveryMessage" : "RecoveryMessage"];
@@ -581,13 +622,12 @@ public sealed partial class CalibrationWorkspace : UserControl
     private void ShowState()
     {
         if (_session is null) return;
-        string key = _session.Status switch
+        string key = HasPendingPreviewRecovery ? "RecoveryMessage" : _session.Status switch
         {
             "confirmed" => "CalibrationSaved",
             "reverted" when _session.ReasonCode == "preview_expired" => "PreviewExpiredRestored",
             "reverted" => "CalibrationReverted",
             "superseded" => "CalibrationSuperseded",
-            "recovery-pending" => "RecoveryMessage",
             _ => "PreviewActive"
         };
         Show(key, _session.NeedsRecovery && !Active ? InfoBarSeverity.Warning : InfoBarSeverity.Informational);

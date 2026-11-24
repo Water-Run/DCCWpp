@@ -14,11 +14,13 @@ public static class CalibrationUndoPolicy
     public static void VerifyCurrent(GammaCalibrationSession saved, GammaDeviceState now, GammaRamp expectedRamp)
     {
         VerifySource(saved);
-        if (!now.ExplicitSdr || now.SharedSource || !GammaCalibrationTransaction.SameRecoveryTarget(saved.Original, now))
+        bool sameDisplay = saved.Original.PersistenceKey is null ? GammaCalibrationTransaction.SameRecoveryTarget(saved.Original, now)
+            : MonitorIdentity.SamePersistentIdentity(saved.Original.PersistenceKey, now.PersistenceKey);
+        if (!now.ExplicitSdr || now.SharedSource || !sameDisplay)
             throw new ProfilePreviewException("undo_target_changed", "The original independent SDR display is unavailable.");
         if (now.ProfileScope != "current-user" || !ProfilePreviewPolicy.EqualName(now.ProfileName, saved.InstalledProfile))
             throw new ProfilePreviewException("undo_profile_changed", "That calibration is no longer selected for this display.");
-        if (!now.Ramp.Matches(expectedRamp, 257))
+        if (!now.Ramp.Matches(expectedRamp, GammaCalibrationTransaction.ReadbackTolerance))
             throw new ProfilePreviewException("undo_curve_changed", "The display curve changed since this calibration was confirmed.");
     }
 }

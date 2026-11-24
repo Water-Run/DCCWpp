@@ -58,6 +58,79 @@ public sealed class GammaCalibrationTests
         Assert.True(fixture.Backend.State.Ramp.Matches(interrupted.Original.Ramp));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void IccRollbackCanRestoreANonlinearOriginalAfterALinearReset(bool failFirstWrite)
+    {
+        var fixture = new Fixture();
+        var interrupted = BeginInterruptedCommit(fixture);
+        fixture.Backend.RestoredProfileRamp = GammaRamp.Identity();
+        fixture.Backend.FailNextWrite = failFirstWrite;
+
+        var recovered = new GammaCalibrationTransaction(fixture.Backend, fixture.Journal).Recover(interrupted);
+        if (failFirstWrite)
+        {
+            Assert.Equal("recovery-pending", recovered.Status);
+            Assert.True(recovered.BeforeWrite?.Matches(GammaRamp.Identity()));
+            recovered = new GammaCalibrationTransaction(fixture.Backend, fixture.Journal).Recover(recovered);
+        }
+
+        Assert.Equal("reverted", recovered.Status);
+        Assert.True(recovered.CurveReadbackVerified);
+        Assert.True(fixture.Backend.State.Ramp.Matches(interrupted.Original.Ramp));
+        Assert.True(GammaCalibrationTransaction.SameProfile(interrupted.Original, fixture.Backend.State));
+    }
+
+    [Theory]
+    [InlineData("external-before")]
+    [InlineData("external-during")]
+    [InlineData("unknown-reload")]
+    [InlineData("no-profile-switch")]
+    [InlineData("topology-changed")]
+    public void IccRollbackPreservesCurvesWhenTheTransitionIsUnverified(string condition)
+    {
+        var fixture = new Fixture();
+        var interrupted = BeginInterruptedCommit(fixture);
+        var external = GammaRampMath.Compose(GammaRamp.Identity(), new() { GreenGain = .65 });
+        fixture.Backend.RestoredProfileRamp = condition == "unknown-reload" ? external : GammaRamp.Identity();
+        switch (condition)
+        {
+            case "external-before":
+                fixture.Backend.State = fixture.Backend.State with { Ramp = external };
+                break;
+            case "external-during":
+                fixture.Backend.BeforeRestoreProfile = () => fixture.Backend.State = fixture.Backend.State with { Ramp = external };
+                break;
+            case "no-profile-switch":
+                fixture.Backend.State = interrupted.Original with { Ramp = interrupted.Candidate };
+                fixture.Backend.AfterRestoreProfile = () => fixture.Backend.State = fixture.Backend.State with { Ramp = GammaRamp.Identity() };
+                break;
+            case "topology-changed":
+                fixture.Backend.AfterRestoreProfile = () => fixture.Backend.State = fixture.Backend.State with { TopologyFingerprint = new string('B', 64) };
+                break;
+        }
+
+        var recovered = new GammaCalibrationTransaction(fixture.Backend, fixture.Journal).Recover(interrupted);
+
+        Assert.Equal("superseded", recovered.Status);
+        Assert.Equal("external_curve_change", recovered.ReasonCode);
+        Assert.False(recovered.CurveReadbackVerified);
+        Assert.True(fixture.Backend.State.Ramp.Matches(condition == "unknown-reload" ? external : GammaRamp.Identity()));
+    }
+
+    private static GammaCalibrationSession BeginInterruptedCommit(Fixture fixture)
+    {
+        fixture.Backend.State = fixture.Backend.State with
+        {
+            ProfileName = "previous.icc", ProfileScope = "system-wide", SelectedProfileScope = "system-wide",
+            Ramp = GammaRampMath.Compose(GammaRamp.Identity(), new() { Gamma = 1.8 })
+        };
+        var interrupted = fixture.Begin() with { Status = "committing", ProfileCommitStarted = true };
+        fixture.Backend.Commit(interrupted);
+        return interrupted;
+    }
+
     [Fact] public void Mhc2BaseStopsPreviewBeforeTheFirstWrite()
     {
         var fixture = new Fixture();
@@ -135,6 +208,63 @@ public sealed class GammaCalibrationTests
         Assert.True(fixture.Backend.State.Ramp.Matches(GammaRamp.Identity()));
     }
 
+    [Fact] public void EnteringReviewAppliesPendingEditsBeforeStartingTheReviewDeadline()
+    {
+        var fixture = new Fixture();
+        var preview = fixture.Begin(windowOwned: true, seconds: 60);
+        var edited = fixture.Preset with { Calibration = new() { Gamma = 2.4, RedGain = .92 } };
+        fixture.Clock.Advance(10);
+        fixture.Backend.BeforeWrite = () =>
+        {
+            Assert.False(fixture.Engine.Session!.IsReviewing);
+            Assert.Equal(preview.ExpiresAt, fixture.Engine.Session.ExpiresAt);
+            fixture.Clock.Advance(1);
+        };
+
+        fixture.Engine.SetReviewMode(true, edited);
+
+        var reviewing = fixture.Engine.Session!;
+        Assert.True(reviewing.IsReviewing);
+        Assert.False(reviewing.ShowingOriginal);
+        Assert.Equal(edited, reviewing.Preset);
+        Assert.True(fixture.Backend.State.Ramp.Matches(reviewing.Candidate));
+        Assert.Equal(preview.StartedAt.AddSeconds(41), reviewing.ExpiresAt);
+    }
+
+    [Fact] public void ReviewDoesNotStartWhenPendingEditsCrossTheExistingDeadline()
+    {
+        var fixture = new Fixture();
+        fixture.Begin(windowOwned: true);
+        fixture.Clock.Advance(29);
+        fixture.Backend.BeforeWrite = () => fixture.Clock.Advance(2);
+
+        fixture.Engine.SetReviewMode(true, fixture.Preset with { Calibration = new() { Gamma = 2.4 } });
+
+        Assert.Equal("reverted", fixture.Engine.Session!.Status);
+        Assert.Equal("preview_expired", fixture.Engine.Session.ReasonCode);
+        Assert.False(fixture.Engine.Session.IsReviewing);
+        Assert.True(fixture.Backend.State.Ramp.Matches(GammaRamp.Identity()));
+    }
+
+    [Fact] public void LeavingOriginalComparisonResumesEditingWithTheLatestAdjustedCurve()
+    {
+        var fixture = new Fixture();
+        var preview = fixture.Begin(windowOwned: true, seconds: 60);
+        fixture.Engine.SetReviewMode(true);
+        fixture.Engine.Update(fixture.Preset, showOriginal: true);
+        var edited = fixture.Preset with { Calibration = new() { GreenGain = .91 } };
+        fixture.Clock.Advance(5);
+
+        fixture.Engine.SetReviewMode(false, edited);
+
+        var editing = fixture.Engine.Session!;
+        Assert.False(editing.IsReviewing);
+        Assert.False(editing.ShowingOriginal);
+        Assert.Equal(edited, editing.Preset);
+        Assert.True(fixture.Backend.State.Ramp.Matches(editing.Candidate));
+        Assert.Equal(preview.StartedAt.AddSeconds(65), editing.ExpiresAt);
+    }
+
     [Fact] public void CliPreviewRetainsDeadlineAfterEditsAndWindowCommands()
     {
         var fixture = new Fixture();
@@ -142,8 +272,10 @@ public sealed class GammaCalibrationTests
         fixture.Clock.Advance(25);
         fixture.Engine.Update(fixture.Preset with { Calibration = new() { BlueGain = .8 } }, renew: true);
         fixture.Engine.Renew();
-        fixture.Engine.SetReviewMode(true);
+        fixture.Engine.SetReviewMode(true, fixture.Preset);
         Assert.Equal(preview.ExpiresAt, fixture.Engine.Session!.ExpiresAt);
+        Assert.False(fixture.Engine.Session.IsReviewing);
+        Assert.Equal(.8, fixture.Engine.Session.Preset.Calibration.BlueGain);
         fixture.Clock.Advance(5);
         Assert.Equal("preview_expired", fixture.Engine.Confirm().ReasonCode);
         Assert.True(fixture.Backend.State.Ramp.Matches(GammaRamp.Identity()));
@@ -434,7 +566,8 @@ public sealed class GammaCalibrationTests
         public GammaDeviceState State { get; set; } = new("0123456789abcdef", @"\\.\DISPLAY1", "00000000:00000001:1",
             new string('A', 64), true, false, GammaRamp.Identity(), SourceId: 1, PersistenceKey: "path:" + new string('D', 64));
         public bool Committed, FailCommit, FailNextWrite, ProfileRestoreCalled, Disconnected, MisreportCommit;
-        public Action? BeforeRead, BeforeWrite, BeforeRestoreProfile, BeforeCommit;
+        public Action? BeforeRead, BeforeWrite, BeforeRestoreProfile, AfterRestoreProfile, BeforeCommit;
+        public GammaRamp? RestoredProfileRamp;
         public GammaDeviceState Read(string displayId)
         {
             BeforeRead?.Invoke();
@@ -456,11 +589,21 @@ public sealed class GammaCalibrationTests
             State = State with { ProfileName = MisreportCommit ? null : installed, ProfileScope = "current-user" };
             return installed;
         }
-        public void RestoreProfile(GammaCalibrationSession session)
+        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected)
         {
             BeforeRestoreProfile?.Invoke();
             ProfileRestoreCalled = true;
-            State = State with { ProfileName = session.Original.ProfileName, ProfileScope = session.Original.ProfileScope };
+            bool changed = !GammaCalibrationTransaction.SameProfile(session.Original, State);
+            bool matches = GammaCalibrationTransaction.SameTarget(expected, State) && GammaCalibrationTransaction.SameProfile(expected, State)
+                && State.Ramp.Matches(expected.Ramp, GammaCalibrationTransaction.ReadbackTolerance);
+            State = State with
+            {
+                ProfileName = session.Original.ProfileName, ProfileScope = session.Original.ProfileScope,
+                SelectedProfileScope = session.Original.SelectedProfileScope,
+                Ramp = changed && RestoredProfileRamp is not null ? RestoredProfileRamp.Copy() : State.Ramp
+            };
+            AfterRestoreProfile?.Invoke();
+            return changed && matches;
         }
     }
 }

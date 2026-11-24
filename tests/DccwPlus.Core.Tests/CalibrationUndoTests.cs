@@ -79,6 +79,24 @@ public sealed class CalibrationUndoTests
     }
 
     [Fact]
+    public void UndoStartsOnTheCurrentPathOfTheSavedDisplay()
+    {
+        string identity = "edid:" + new string('B', 64);
+        var fixture = new Fixture(identity: identity);
+        fixture.Backend.Current = fixture.Backend.Current with
+        {
+            DisplayId = "fedcba9876543210", DeviceName = "display2", TargetKey = "new-target", SourceId = 4
+        };
+
+        var preview = fixture.Begin();
+        Assert.Equal(fixture.Backend.Current.DisplayId, preview.Original.DisplayId);
+        Assert.Equal(fixture.Saved.Id, preview.UndoOf);
+        Assert.Equal("confirmed", fixture.Engine.Confirm().Status);
+        Assert.Equal(fixture.Saved.Original.ProfileName, fixture.Backend.Current.ProfileName);
+        Assert.True(fixture.Backend.Current.Ramp.Matches(fixture.Saved.Original.Ramp));
+    }
+
+    [Fact]
     public void PersistedUndoRecoveryRestoresFromACommitInterruptedAfterTheProfileSwitch()
     {
         var fixture = new Fixture();
@@ -104,10 +122,10 @@ public sealed class CalibrationUndoTests
         public GammaCalibrationSession Saved { get; }
         public Backend Backend { get; }
         public GammaCalibrationTransaction Engine { get; }
-        public Fixture(string? previous = "factory.icc")
+        public Fixture(string? previous = "factory.icc", string? identity = null)
         {
             var state = new GammaDeviceState("0123456789abcdef", "display", "target", new string('A', 64), true, false,
-                GammaRampMath.Compose(GammaRamp.Identity(), new() { Gamma = 2.1 }), previous, previous is null ? null : "system-wide", 1);
+                GammaRampMath.Compose(GammaRamp.Identity(), new() { Gamma = 2.1 }), previous, previous is null ? null : "system-wide", 1, identity);
             var preset = CalibrationPreset.Create("Saved", new() { RedGain = .8 });
             var adjusted = GammaRampMath.Compose(state.Ramp, preset.Calibration);
             Saved = new()
@@ -122,7 +140,7 @@ public sealed class CalibrationUndoTests
         public GammaCalibrationSession Begin()
         {
             CalibrationUndoPolicy.VerifyCurrent(Saved, Backend.Current, Saved.Candidate);
-            return Engine.Begin(Guid.NewGuid(), Saved.Preset, Saved.Original.DisplayId, 30,
+            return Engine.Begin(Guid.NewGuid(), Saved.Preset, Backend.Current.DisplayId, 30,
                 Saved.Original.Ramp, Backend.Current, Saved.Id);
         }
         public void To(TimeSpan elapsed) => _clock.Elapsed = elapsed;
@@ -155,10 +173,12 @@ public sealed class CalibrationUndoTests
             if (FailAfterChangingProfile) throw new IOException("Simulated fault after the ICC switch.");
             return Current.ProfileName;
         }
-        public void RestoreProfile(GammaCalibrationSession session)
+        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected)
         {
+            bool changed = !GammaCalibrationTransaction.SameProfile(session.Original, Current);
             Current = Current with { ProfileName = session.Original.ProfileName, ProfileScope = session.Original.ProfileScope };
             ProfileWrites++;
+            return changed;
         }
     }
 }

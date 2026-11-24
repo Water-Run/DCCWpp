@@ -6,8 +6,8 @@ using DccwPlus.Core.Storage;
 
 namespace DccwPlus.Windows;
 
-internal sealed class CalibrationCompletionService(string root, IDisplayService displays, Func<string, GammaDeviceState> readDisplay,
-    Func<GammaCalibrationSession, string> readConfirmedHash)
+internal sealed class CalibrationCompletionService(string root, IDisplayService displays,
+    Func<GammaCalibrationSession, IccAssociationBackup> readAssociation, Func<string, string> readInstalledHash, Action requireLocal)
 {
     private readonly GammaCalibrationStore _sessions = new(root);
     private readonly CalibrationBindingStore _bindings = new(root);
@@ -16,7 +16,7 @@ internal sealed class CalibrationCompletionService(string root, IDisplayService 
     public CalibrationCompletionService(string root) : this(root, new WindowsGammaCalibrationBackend(root)) { }
 
     private CalibrationCompletionService(string root, WindowsGammaCalibrationBackend backend)
-        : this(root, new WindowsDisplayService(), backend.Read, backend.ReadConfirmedProfileHash) { }
+        : this(root, new WindowsDisplayService(), backend.ReadAssociationBackup, InstalledProfileReader.ReadSha256, WindowsDisplaySession.RequireLocal) { }
 
     // Called by the worker while it holds the display mutation lock, before committing the ICC.
     public BindingSaveIntent? CaptureIntent(GammaCalibrationSession session)
@@ -50,8 +50,9 @@ internal sealed class CalibrationCompletionService(string root, IDisplayService 
         }
         catch (ProfilePreviewException ex)
         {
-            result = (ex.Code is "display_disconnected" or "profile_state_unavailable" or "profile_file_unavailable"
-                or "remote_session_blocked" ? "pending" : "failed", ex.Code);
+            result = (ex.Code is "display_disconnected" or "display_state_changed" or "display_identity_ambiguous"
+                or "profile_device_unavailable" or "profile_state_unavailable" or "profile_file_unavailable"
+                or "sdr_path_blocked" or "shared_source_blocked" or "remote_session_blocked" ? "pending" : "failed", ex.Code);
         }
         catch (PresetOperationException ex)
         {
@@ -77,9 +78,10 @@ internal sealed class CalibrationCompletionService(string root, IDisplayService 
     {
         if (!replay) EnsurePreset(session.Preset);
         string profile = session.InstalledProfile ?? throw new InvalidDataException("A confirmed calibration profile is required.");
-        var (display, current) = ReadTarget(session, replay);
-        if (current.ProfileScope != "current-user" || !ProfilePreviewPolicy.EqualName(current.ProfileName, profile))
-            throw new ProfilePreviewException("profile_selection_changed", "The confirmed profile is no longer selected.");
+        var display = ReadTarget(session, replay);
+        if (display.ProfileScope != "current-user" || display.SelectedProfileScope != "current-user"
+            || !ProfilePreviewPolicy.EqualName(display.ProfileName, profile))
+            throw new ProfilePreviewException("profile_selection_changed", new LocalizationService()["ProfileChangedBeforeSave"]);
 
         var previous = FindBinding(display.PersistenceKey!);
         bool alreadySaved = ProfilePreviewPolicy.EqualName(previous?.ProfileName, profile);
@@ -90,7 +92,10 @@ internal sealed class CalibrationCompletionService(string root, IDisplayService 
                 return ("unchanged", "binding_changed");
         }
 
-        string hash = readConfirmedHash(session);
+        var backup = readAssociation(session);
+        VerifyProfileDevice(display, backup);
+        string hash = WindowsGammaCalibrationBackend.VerifyProfileFingerprint(profile, backup.CandidateHash, readInstalledHash);
+        RequireStableTarget(session, replay, display);
         if (alreadySaved && (previous!.PresetId != session.Preset.Id || !previous.Ramp.Matches(session.Candidate)
             || !string.Equals(previous.ProfileSha256, hash, StringComparison.OrdinalIgnoreCase)))
             return ("unchanged", "binding_changed");
@@ -113,30 +118,71 @@ internal sealed class CalibrationCompletionService(string root, IDisplayService 
         var binding = FindBinding(source.Original.PersistenceKey);
         if (binding is null || !ProfilePreviewPolicy.EqualName(binding.ProfileName, source.InstalledProfile))
             return ("unchanged", null);
+        if (!MonitorIdentity.SamePersistentIdentity(source.Original.PersistenceKey, undo.Original.PersistenceKey)
+            || !ProfilePreviewPolicy.EqualName(undo.Original.ProfileName, source.InstalledProfile))
+            throw new InvalidDataException("The undo record does not match the saved calibration.");
         if (replay)
         {
-            var (_, current) = ReadTarget(undo, replay: true);
-            if (!GammaCalibrationTransaction.SameProfile(source.Original, current)
-                || !ProfilePreviewPolicy.EqualName(current.ProfileName, undo.InstalledProfile))
+            var display = ReadTarget(undo, replay: true);
+            var previous = source.Original;
+            if (!ProfilePreviewPolicy.EqualName(display.ProfileName, previous.ProfileName) || display.ProfileScope != previous.ProfileScope
+                || (previous.SelectedProfileScope is not null && display.SelectedProfileScope != previous.SelectedProfileScope)
+                || !ProfilePreviewPolicy.EqualName(display.ProfileName, undo.InstalledProfile))
                 return ("unchanged", "profile_selection_changed");
+            var backup = readAssociation(source);
+            VerifyProfileDevice(display, backup);
+            if (!ProfilePreviewPolicy.EqualName(backup.EffectiveDefault, previous.ProfileName))
+                throw new InvalidDataException("The restored profile does not match the saved association.");
+            if (previous.ProfileName is { } profile)
+                WindowsGammaCalibrationBackend.VerifyProfileFingerprint(profile, backup.EffectiveDefaultHash, readInstalledHash);
+            RequireStableTarget(undo, replay: true, display);
         }
         _bindings.Remove(binding.PersistenceKey);
         return ("removed", null);
     }
 
-    private (DisplayInfo Display, GammaDeviceState Current) ReadTarget(GammaCalibrationSession session, bool replay)
+    private DisplayInfo ReadTarget(GammaCalibrationSession session, bool replay)
     {
+        var text = new LocalizationService();
+        var original = session.Original;
+        if (!MonitorIdentity.IsPersistenceKey(original.PersistenceKey))
+            throw new ProfilePreviewException("display_identity_unavailable", text["DisplayUnavailable"]);
         var connected = displays.Enumerate();
-        var display = connected.SingleOrDefault(display => display.Id == session.Original.DisplayId)
-            ?? throw new ProfilePreviewException("display_disconnected", "The display is not connected.");
-        if (display.PersistenceKey is null || display.PersistenceKind is null || display.PersistenceKey != session.Original.PersistenceKey
-            || connected.Count(other => other.PersistenceKey == display.PersistenceKey) != 1)
-            throw new ProfilePreviewException("display_identity_unavailable", "A unique persistent display identity is required.");
-        var current = readDisplay(display.Id);
-        bool same = replay ? GammaCalibrationTransaction.SameRecoveryTarget(session.Original, current)
-            : GammaCalibrationTransaction.SameTarget(session.Original, current);
-        if (!same) throw new ProfilePreviewException("display_state_changed", "The display changed before the binding could be saved.");
-        return (display, current);
+        var matches = connected.Where(display => MonitorIdentity.MatchesSavedDisplay(original, display)).ToArray();
+        if (matches.Length == 0) throw new ProfilePreviewException("display_disconnected", text["DisplayUnavailable"]);
+        if (matches.Length != 1) throw new ProfilePreviewException("display_identity_ambiguous", text["DisplayUnavailable"]);
+        requireLocal();
+        var display = matches[0];
+        if (display.PersistenceKind is null)
+            throw new ProfilePreviewException("display_identity_unavailable", text["DisplayUnavailable"]);
+        if (WindowsGammaCalibrationBackend.SdrBlockReason(display, connected) is { } blocked)
+            throw new ProfilePreviewException(blocked, text[blocked switch
+            {
+                "sdr_path_blocked" => "SdrRequired",
+                "mhc2_profile_blocked" => "Mhc2ProfileBlocked",
+                "shared_source_blocked" => "MirroredDisplay",
+                "display_identity_unavailable" => "DisplayUnavailable",
+                _ => "ProfileStateUnavailable"
+            }]);
+        if (display.ProfileQueryStatus is not ("read" or "not-found") || display.SelectedProfileScope is not ("current-user" or "system-wide"))
+            throw new ProfilePreviewException("profile_state_unavailable", text["ProfileStateUnavailable"]);
+        if (!replay && (display.Id != original.DisplayId || display.DeviceName != original.DeviceName || display.TargetKey != original.TargetKey
+            || (original.SourceId is not null && display.SourceId != original.SourceId)
+            || WindowsGammaCalibrationBackend.ReadTopologyFingerprint(connected) != original.TopologyFingerprint))
+            throw new ProfilePreviewException("display_state_changed", text["DisplayUnavailable"]);
+        return display;
+    }
+
+    private void RequireStableTarget(GammaCalibrationSession session, bool replay, DisplayInfo display)
+    {
+        if (display != ReadTarget(session, replay))
+            throw new ProfilePreviewException("display_state_changed", new LocalizationService()["DisplayUnavailable"]);
+    }
+
+    private static void VerifyProfileDevice(DisplayInfo display, IccAssociationBackup backup)
+    {
+        if (!string.Equals(display.ProfileDeviceKey, backup.DeviceKey, StringComparison.OrdinalIgnoreCase))
+            throw new ProfilePreviewException("profile_device_unavailable", new LocalizationService()["ProfileDeviceUnavailable"]);
     }
 
     private CalibrationBinding? FindBinding(string? key) => key is null ? null : _bindings.List().SingleOrDefault(binding => binding.PersistenceKey == key);

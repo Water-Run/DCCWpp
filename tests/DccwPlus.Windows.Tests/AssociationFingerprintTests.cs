@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using DccwPlus.Core.Calibration;
+using DccwPlus.Core.Presets;
 using Xunit;
 using static DccwPlus.Windows.WindowsGammaCalibrationBackend;
 
@@ -15,6 +16,72 @@ public sealed class AssociationFingerprintTests
     private static readonly GammaDeviceState State = new(Display.Id, Display.DeviceName, Display.TargetKey!,
         ProfileHash, true, false, GammaRamp.Identity(), "system.icc", "system-wide", Display.SourceId,
         SelectedProfileScope: "system-wide");
+
+    [Theory]
+    [InlineData("external_curve_change")]
+    [InlineData("undo_curve_changed")]
+    public void AProfileSwitchCanRewriteOnlyTheKnownOriginalOrLinearCurve(string conflict)
+    {
+        var original = State with { Ramp = GammaRampMath.Compose(State.Ramp, new() { Gamma = 1.8 }) };
+        var preset = CalibrationPreset.Create("Test", new() { RedGain = .85 });
+        var candidate = GammaRampMath.Compose(original.Ramp, preset.Calibration);
+        var session = new GammaCalibrationSession
+        {
+            Id = Guid.NewGuid(), Original = original, Candidate = candidate, LastWritten = candidate, Preset = preset,
+            StartedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(30)
+        };
+        var external = GammaRampMath.Compose(State.Ramp, new() { BlueGain = .6 });
+
+        Assert.False(NeedsCurveWriteAfterAssociation(session, candidate, conflict));
+        Assert.True(NeedsCurveWriteAfterAssociation(session, original.Ramp, conflict));
+        Assert.True(NeedsCurveWriteAfterAssociation(session, GammaRamp.Identity(), conflict));
+        Assert.Equal(conflict, Assert.Throws<ProfilePreviewException>(() => NeedsCurveWriteAfterAssociation(session, external, conflict)).Code);
+    }
+
+    [Fact]
+    public void UndoUsesTheNewAdapterAndSourceOnlyForTheSameProfileDevice()
+    {
+        string identity = "edid:" + ProfileHash;
+        var saved = State with { PersistenceKey = identity };
+        var backup = new IccAssociationBackup(0, null, 1, Display.TargetKey!, "candidate.icc", Display.ProfileDeviceKey!,
+            "system.icc", ProfileHash, CandidateHash: OtherHash);
+        var active = Display with { Id = "fedcba9876543210", DeviceName = @"\\.\DISPLAY2", TargetKey = "00000000:00000002:257",
+            SourceId = 4, PersistenceKey = identity, HdrActive = false, AdvancedColorActive = false };
+
+        var (target, association) = ResolveUndoAssociation(saved, backup, [active]);
+
+        Assert.Equal(active, target);
+        Assert.Equal(backup with { TargetKey = active.TargetKey!, SourceId = 4 }, association);
+        Assert.Equal("display_disconnected", Assert.Throws<ProfilePreviewException>(
+            () => ResolveUndoAssociation(State, backup, [active])).Code);
+    }
+
+    [Theory]
+    [InlineData("different-monitor", "display_disconnected")]
+    [InlineData("ambiguous", "undo_target_changed")]
+    [InlineData("device-key", "undo_target_changed")]
+    [InlineData("shared-device-key", "undo_target_changed")]
+    [InlineData("clone", "undo_target_changed")]
+    [InlineData("hdr", "undo_target_changed")]
+    public void UndoRejectsAnUnsafeReboundPath(string changed, string reason)
+    {
+        string identity = "path:" + ProfileHash;
+        var saved = State with { PersistenceKey = identity };
+        var backup = new IccAssociationBackup(0, null, 1, Display.TargetKey!, "candidate.icc", Display.ProfileDeviceKey!);
+        var active = Display with { PersistenceKey = identity, HdrActive = false, AdvancedColorActive = false };
+        var other = active with { Id = "fedcba9876543210", DeviceName = @"\\.\DISPLAY2", SourceId = 4 };
+        DisplayInfo[] connected = changed switch
+        {
+            "different-monitor" => [active with { PersistenceKey = "path:" + OtherHash }],
+            "ambiguous" => [active, other],
+            "device-key" => [active with { ProfileDeviceKey = null }],
+            "shared-device-key" => [active, other with { PersistenceKey = "path:" + OtherHash }],
+            "clone" => [active with { Topology = "clone" }],
+            _ => [active with { ColorState = "hdr", HdrActive = true }]
+        };
+
+        Assert.Equal(reason, Assert.Throws<ProfilePreviewException>(() => ResolveUndoAssociation(saved, backup, connected)).Code);
+    }
 
     [Fact]
     public void InstalledFileMustMatchTheJournalEvenWhenTheNameMatches()

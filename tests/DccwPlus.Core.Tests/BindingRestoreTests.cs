@@ -143,7 +143,8 @@ public sealed class BindingRestoreTests
             State = State with { Ramp = ramp.Copy() };
         }
         public string Commit(GammaCalibrationSession session) => throw new InvalidOperationException("The restore must reuse the selected profile.");
-        public void RestoreProfile(GammaCalibrationSession session) => throw new InvalidOperationException("The restore must not change the profile.");
+        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected) =>
+            throw new InvalidOperationException("The restore must not change the profile.");
     }
 
     private sealed class Journal : IGammaCalibrationJournal

@@ -79,7 +79,9 @@ public sealed class StartupRestoreCoordinator
         }
 
         bool settling = report.Reason == "recovery_required"
-            || report.Bindings.Any(binding => binding.ReasonCode is "display_disconnected" or "display_state_changed");
+            || report.Bindings.Any(binding => binding.ReasonCode is "display_disconnected" or "display_state_changed")
+            || report.Recoveries.Any(item => item is { Kind: "binding", NeedsRecovery: true, ReasonCode: "display_disconnected"
+                or "display_state_changed" or "profile_device_unavailable" or "profile_state_unavailable" or "profile_file_unavailable" });
         return settling && pending.SettlingRetries < 2
             ? pending with { ScheduledAt = now, Delay = SettleInterval, SettlingRetries = pending.SettlingRetries + 1 }
             : null;

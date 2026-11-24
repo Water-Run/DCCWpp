@@ -40,18 +40,22 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 - 核对系统是否加载 `vcgt`、何时会重载，以及设备上校准加载器的状态。记录彩色管理应用与普通 SDR 应用的差异，验证标准用户可用的 API 及安装路径。发现标准用户权限阻断时，先解决发布后端路径，再启用对应的保存入口。
 - 用同一条只读检查评估向导和 CLI 的新预览。验证无法解析的基准 ICC、缺失的设备标识及未恢复的事务能在写入曲线前报出原因。预演通过后仍需单独验收实际曲线写入和关联。
 - 审查安装、关联、提交记录、预设及绑定持久化之间的失败窗口。验证进程在每一步中断后的恢复，以及用户或其他程序在预览时切换 profile 或作用域的处理。记录系统选用的作用域、实际 ICC 关联来源和查询状态。读取过期日志时以原物理目标、当前模式和状态所有权重新校验。
+- 使用非线性的起始曲线核对 ICC 切换及回退。记录同一显示路径上的切换前后曲线，分别覆盖线性重置、外部曲线写入和回滚写入中断。核对重试后原 ICC、作用域和逻辑曲线的读回结果。[Windows Gamma Ramp 限制](https://learn.microsoft.com/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp)
 - 对已确认但本地记录仍待保存的事务，检查持久意图和当前 ICC，尝试补齐预设与绑定。验收应覆盖写入绑定后进程退出、用户随后删除记录、断开重连、较新的绑定以及撤回后的旧绑定清理。
+- 确认保存或撤回后中断本地写入，重启或等 Windows 重新分配显示路径，再运行登录恢复或 `calibration recover`。核对匹配设备且 ICC 摘要一致时补齐记录，配置状态暂不可用时保留待处理状态，文件变化时保留用户当前设置。
 - 拔出显示器时记录待恢复状态，目标重新出现且身份匹配后再恢复。克隆、远程会话、HDR/Advanced Color、目标不明确或驱动拒绝时，返回可操作的提示和稳定原因码。
 - 对独立的 ICC 关联预览，验证布局改变后可在同一源与目标路径恢复。覆盖同名 ICC 文件替换、不同屏或作用域、克隆和 HDR。没有持久身份的旧会话沿用原拓扑校验。
 - 确认 `SetDeviceGammaRamp` 仅在受控 SDR 兼容路径使用。确定回读容差、驱动拒写后的处理，以及休眠、分辨率变化和外部工具覆盖后的预期行为。使用 ICC 和 Windows 关联作为持久化路线。微软记录了 Gamma Ramp 静默拒写、系统覆盖和 HDR 行为未定义等限制。[Gamma Ramp 文档](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp) · [默认 ICC 关联](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-colorprofilesetdisplaydefaultassociation)
 
-验收以独立的 SDR 显示器完成整轮校准、退出后恢复、确认后重新加载和恢复原关联为准。额外验证撤回已确认校准时，取消和超时可回到撤回前状态，确认可还原前一个 ICC、作用域和曲线。扩展桌面至少验证两台屏幕，确认另一屏的 ICC 和曲线保持原状。模拟测试覆盖失败分支，真实写入仅在人工实机验收中进行。
+验收以独立的 SDR 显示器完成整轮校准、退出后恢复、确认后重新加载和恢复原关联为准。单独中断预览工作进程，确认向导保留恢复入口，CLI 返回 `recovery_required`，恢复后核对原曲线和 ICC。验证撤回已确认校准时，取消和超时可回到撤回前状态，确认可还原前一个 ICC、作用域和曲线。扩展桌面至少验证两台屏幕，确认另一屏的 ICC 和曲线保持原状。模拟测试覆盖失败分支，真实写入仅在人工实机验收中进行。
 
 每个步骤前后都可用 `dccwpp calibration capture --json` 保存全屏幕的只读报告。用 `dccwpp calibration compare <before.json> <after.json> --json` 核对拓扑、ICC 摘要、作用域及逻辑曲线，同时检查未选屏。记录不可读或不支持的目标、会话原因码、Windows 设置所示配置及视觉观察。[采样与比对命令](CLI.md)
 
 开始实机验收前核对 `isRemoteSession: false`。远程采样可核对 Windows 读回的 ICC 关联和文件摘要。物理屏幕的曲线读回、显示效果和重新登录后加载使用本地交互会话验收。[Windows Gamma Ramp 读取条件](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getdevicegammaramp)
 
 确认后及重新登录后可对同一会话运行 `dccwpp calibration verify <calibration-id> --json`。分别检查当前 ICC 选择、文件摘要和逻辑曲线，并记录 Windows 加载器设置。多屏验收继续用全桌面采样核对其他目标。[实时核对命令](CLI.md)
+
+重启后先核对当前默认 ICC 和曲线，再对重启前的校准运行 `calibration undo <calibration-id> --dry-run --json`。Windows 可为同一适配器分配新的 LUID。核对撤回计划采用当前路径，且只有匹配原显示器与配置设备时才允许预览。然后分别核对取消、确认恢复和其他屏幕的状态。[Windows 显示适配器 ID](https://learn.microsoft.com/en-us/uwp/api/windows.devices.display.core.displayadapter.id)
 
 ## M2 · 0.4 · DCCW 行为对齐与 WinUI 体验
 
@@ -71,6 +75,8 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 依照 WinUI Gallery 的控件和交互习惯完善布局。实测浅色、深色、高对比度、窄窗口、键盘导航、Narrator、焦点和三种语言。新文案同步维护三个 catalog，CLI 的字段和原因码保持语言无关。[WinUI Gallery](https://github.com/microsoft/WinUI-Gallery)
 
 验证滚动参考内容时，步骤选择、全屏和底部操作始终可用。实际预览时另行确认窄窗口中的取消、确认和倒计时可见。通过上一步返回时应保留草稿值，切换页面后应回到原来的校准步骤。[Windows 响应式布局](https://learn.microsoft.com/en-us/windows/apps/develop/ui/layouts-with-xaml)
+
+调整 RGB 后立即进入比较，核对首次显示的候选曲线含最后一次输入。分别在进入比较前让原预览到期、在比较中反复切换视图，并从原始视图返回编辑。记录比较按钮启用时的读回和截止时间。
 
 数学图案优先用于校准。用户提供的照片作为视觉复核的补充，首批覆盖中性灰、肤色、暗部、高光、饱和色与渐变。每张图片记录色彩配置、作者、许可及署名。自带照片功能可独立验收。[选片要求](PHOTOGRAPHY.md)
 

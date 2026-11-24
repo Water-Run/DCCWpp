@@ -19,6 +19,8 @@ public sealed record GammaCalibrationSession
     public required GammaRamp LastWritten { get; init; }
     public GammaRamp? BeforeWrite { get; init; }
     public bool ShowingOriginal { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IsReviewing { get; init; }
     public required DateTimeOffset ExpiresAt { get; init; }
     public required DateTimeOffset StartedAt { get; init; }
     public string Status { get; init; } = "prepared";
@@ -42,7 +44,8 @@ public interface IGammaCalibrationBackend
     GammaDeviceState Read(string displayId);
     void Write(GammaDeviceState expected, GammaRamp ramp);
     string? Commit(GammaCalibrationSession session);
-    void RestoreProfile(GammaCalibrationSession session);
+    // Returns true when the effective selection needed restoring and the pre-restore state still matched expected.
+    bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected);
 }
 public interface IGammaCalibrationJournal { void Save(GammaCalibrationSession session); }
 
@@ -56,7 +59,6 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
     private TimeSpan _deadlineDuration;
     private long _sessionStart;
     private bool _allowsWindowEdits;
-    private bool _reviewing;
     public GammaCalibrationSession? Session { get; private set; }
     public GammaCalibrationSession Begin(Guid id, CalibrationPreset preset, string displayId, int seconds,
         GammaRamp? savedCurve = null, GammaDeviceState? expected = null, Guid? undoOf = null, bool windowOwned = false)
@@ -72,13 +74,12 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         _sessionStart = _deadlineStart = _time.GetTimestamp();
         _deadlineDuration = TimeSpan.FromSeconds(seconds);
         _allowsWindowEdits = windowOwned && savedCurve is null;
-        _reviewing = undoOf.HasValue;
         var candidate = savedCurve?.Copy() ?? GammaRampMath.Compose(original.Ramp, preset.Calibration);
         candidate.Validate();
         DateTimeOffset startedAt = _time.GetUtcNow();
         Session = new() { Id = id, Original = original, Preset = preset, Candidate = candidate,
             LastWritten = original.Ramp.Copy(), IsBindingRestore = savedCurve is not null && !undoOf.HasValue, UndoOf = undoOf,
-            StartedAt = startedAt, ExpiresAt = startedAt + _deadlineDuration };
+            IsReviewing = undoOf.HasValue, StartedAt = startedAt, ExpiresAt = startedAt + _deadlineDuration };
         journal.Save(Session);
         try { Apply(candidate); return Tick(); }
         catch { Revert("preview_failed"); throw; }
@@ -115,29 +116,35 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
     }
     public void Renew()
     {
-        if (!_allowsWindowEdits || Session?.Status != "previewing" || _reviewing) return;
+        if (!_allowsWindowEdits || Session is not { Status: "previewing", IsReviewing: false }) return;
         RestartDeadline(TimeSpan.FromSeconds(60));
     }
-    private bool RestartDeadline(TimeSpan duration)
+    private void RestartDeadline(TimeSpan duration, bool? reviewing = null)
     {
         long now = _time.GetTimestamp();
         DateTimeOffset utcNow = _time.GetUtcNow();
-        if (RevertIfExpired(now, utcNow)) return false;
+        if (RevertIfExpired(now, utcNow)) return;
         TimeSpan remaining = WindowPreviewLimit - _time.GetElapsedTime(_sessionStart, now);
         TimeSpan effectiveDuration = duration < remaining ? duration : remaining;
         DateTimeOffset expiresAt = utcNow + effectiveDuration;
         DateTimeOffset latest = Session!.StartedAt + WindowPreviewLimit;
-        var next = Session with { ExpiresAt = expiresAt < latest ? expiresAt : latest };
+        var next = Session with { ExpiresAt = expiresAt < latest ? expiresAt : latest, IsReviewing = reviewing ?? Session.IsReviewing };
         journal.Save(next);
         _deadlineStart = now;
         _deadlineDuration = effectiveDuration;
         Session = next;
-        return true;
     }
-    public void SetReviewMode(bool reviewing)
+    public void SetReviewMode(bool reviewing, CalibrationPreset? edits = null)
     {
-        if (!_allowsWindowEdits || _reviewing == reviewing || Tick().Status != "previewing") return;
-        if (RestartDeadline(TimeSpan.FromSeconds(reviewing ? 30 : 60))) _reviewing = reviewing;
+        if (!_allowsWindowEdits || Tick() is not { Status: "previewing" } current) return;
+        bool changingMode = current.IsReviewing != reviewing;
+        if ((edits is not null && edits != current.Preset) || (changingMode && current.ShowingOriginal))
+        {
+            // Apply queued edits under the current deadline before opening the next phase.
+            bool keepOriginal = !changingMode && current.ShowingOriginal;
+            if (Update(edits ?? current.Preset, showOriginal: keepOriginal).Status != "previewing") return;
+        }
+        if (changingMode) RestartDeadline(TimeSpan.FromSeconds(reviewing ? 30 : 60), reviewing);
     }
     public GammaCalibrationSession Confirm(BindingSaveIntent? bindingIntent = null)
     {
@@ -173,18 +180,31 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
             bool profileCommit = Session.ProfileCommitStarted && !Session.IsBindingRestore;
             if (!profileCommit && !SameProfile(Session.Original, current)) return Superseded("external_profile_change");
 
+            var beforeProfileRestore = current;
             bool ownsCurve = IsKnownCurve(Session, current.Ramp);
+            bool selectionRestored = false;
             if (profileCommit)
             {
                 // Even if the curve has changed, remove an association created by an interrupted commit.
-                backend.RestoreProfile(Session);
+                selectionRestored = backend.RestoreProfile(Session, current);
                 current = backend.Read(Session.Original.DisplayId);
             }
             if (!SameRecoveryTarget(Session.Original, current)) return Pending("recovery_target_changed");
             if (!SameProfile(Session.Original, current)) return Pending("profile_restore_not_verified");
             if (!current.Ramp.Matches(Session.Original.Ramp, ReadbackTolerance))
             {
-                if (!ownsCurve || !IsKnownCurve(Session, current.Ramp)) return Superseded("external_curve_change");
+                if (!ownsCurve) return Superseded("external_curve_change");
+                if (!IsKnownCurve(Session, current.Ramp))
+                {
+                    if (!selectionRestored || !SameTarget(beforeProfileRestore, current)
+                        || !current.Ramp.Matches(GammaRamp.Identity(), ReadbackTolerance))
+                        return Superseded("external_curve_change");
+
+                    // Keep the observed reset as a known starting point if the rollback write is interrupted.
+                    var intent = Session with { BeforeWrite = current.Ramp.Copy() };
+                    journal.Save(intent);
+                    Session = intent;
+                }
                 backend.Write(current, Session.Original.Ramp);
             }
             var restored = backend.Read(Session.Original.DisplayId);

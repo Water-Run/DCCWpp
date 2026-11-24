@@ -93,6 +93,25 @@ public sealed class StartupRestoreCoordinatorTests
         Assert.Equal(Enumerable.Range(0, expectedAttempts).Select(attempt => TimeSpan.FromSeconds(attempt * 3)), attempts);
     }
 
+    [Fact]
+    public async Task PendingBindingCompletionRetriesWhenTheProfilesAreStillLoadingAtSignIn()
+    {
+        var clock = new FakeTime();
+        var session = Guid.NewGuid();
+        List<TimeSpan> attempts = [];
+        await RunAsync(clock, TimeSpan.FromSeconds(30), (enabled, trigger) =>
+        {
+            Assert.True(enabled);
+            Assert.Equal("sign_in", trigger);
+            attempts.Add(clock.Now);
+            var recovery = clock.Now == TimeSpan.Zero ? new InterruptedPreviewResult(session, "binding", "pending", "profile_state_unavailable", true)
+                : new InterruptedPreviewResult(session, "binding", "saved", "binding_saved", false);
+            return Report("no_bindings_enabled") with { Recoveries = [recovery] };
+        });
+
+        Assert.Equal(new[] { TimeSpan.Zero, TimeSpan.FromSeconds(3) }, attempts);
+    }
+
     private static Task RunAsync(FakeTime clock, TimeSpan stopAt, Func<bool, string, CalibrationRestoreReport> restore,
         Func<TimeSpan, Task<string?>>? wait = null)
     {
