@@ -27,42 +27,23 @@ internal static class Cli
         {
             var remaining = args.ToList();
             remaining.RemoveAll(a => a == "--json");
-            string root = TakeOption(remaining, "--data-dir") ?? DataPaths.DefaultRoot;
+            string? dataDirectory = TakeOption(remaining, "--data-dir");
+            if (remaining is [] or ["--help"] or ["help"])
+                return Success(CliDiscovery.Help(), json);
+            if (remaining is ["capabilities"])
+                return Success(CliDiscovery.Capabilities(), json);
+
+            string root = dataDirectory ?? DataPaths.DefaultRoot;
             var store = new PresetStore(root);
             var displays = new WindowsDisplayService();
-            if (remaining.Count == 0 || remaining.SequenceEqual(new[] { "--help" }) || remaining.SequenceEqual(new[] { "help" }))
-                return Success(new
-                {
-                    name = "DCCW++",
-                    version = "0.2.0",
-                    commands = new[]
-                {
-                    "status", "displays list", "displays snapshot", "displays snapshot show",
-                    "displays restore-plan --display <id>",
-                    "presets list", "presets show <id>",
-                    "presets create <name> [--gamma <value>] [--red-gain <value>] [--green-gain <value>] [--blue-gain <value>] [--author <text>] [--description <text>]",
-                    "presets import <path> [--copy]", "presets rename <id> <name>", "presets delete <id>", "presets bindings <id>",
-                    "presets export <id> <path>", "presets validate <path>",
-                    "apply <id> --display <id> [--seconds 30] [--request-id <uuid>] [--dry-run]", "startup status", "startup last-restore",
-                    "bindings list", "bindings enable <persistence-key>", "bindings disable <persistence-key>",
-                    "bindings remove <persistence-key>", "bindings restore [--dry-run]"
-                    , "profiles list --display <id>", "profiles preview <profile-name> --display <id> [--seconds 30] [--dry-run]",
-                    "profiles status <session-id>", "profiles confirm <session-id>", "profiles revert <session-id>", "profiles recover <session-id>"
-                    , "calibration diagnose --display <id>", "calibration sessions", "calibration status <session-id>", "calibration confirm <session-id>",
-                    "calibration revert <session-id>", "calibration recover <session-id>",
-                    "calibration undo <calibration-id> [--seconds 30] [--dry-run]",
-                    "calibration update <session-id> --preset <preset-id> [--original]"
-                },
-                    globalOptions = new[] { "--json", "--data-dir <directory>" }
-                }, json);
 
             switch (remaining.ToArray())
             {
                 case ["status"]:
                     return Success(new
                     {
-                        name = "DCCW++",
-                        version = "0.2.0",
+                        name = CliDiscovery.ProductName,
+                        version = CliDiscovery.Version,
                         stage = "sdr-calibration",
                         calibrationAvailable = true,
                         packaged = StartupService.HasPackageIdentity(),
@@ -97,6 +78,10 @@ internal static class Cli
                 case ["startup", "status"]: return Success(await new StartupService().GetAsync(), json);
                 case ["startup", "last-restore"]:
                     return Success(new { report = new CalibrationBindingService(root).LastStartupReport() }, json);
+                case ["recovery", "status"]:
+                    return Success(new { sessions = new PreviewRecoveryService(root).List() }, json);
+                case ["recovery", "run"]:
+                    return Success(new PreviewRecoveryService(root).Recover(), json);
                 case ["bindings", "list"]:
                     return Success(new CalibrationBindingService(root).List().Select(BindingSummary).ToArray(), json);
                 case ["bindings", "enable" or "disable", var key]:
@@ -216,7 +201,11 @@ internal static class Cli
                 var plan = new CalibrationService(displays).Plan(preset, display);
                 if (plan.ReasonCode == "sdr_path_blocked")
                     return dryRun ? Success(plan, json) : Failure(plan.ReasonCode, "This calibration requires an explicit SDR display.", 4, json);
+                if (plan.ReasonCode == "mhc2_profile_blocked")
+                    return dryRun ? Success(plan, json) : Failure(plan.ReasonCode, "The selected color profile contains MHC2 hardware calibration.", 4, json);
                 var snapshot = new WindowsGammaCalibrationBackend(root).Read(display);
+                if (snapshot.ProfileMhc2Present == true)
+                    return Failure("mhc2_profile_blocked", "The selected color profile contains MHC2 hardware calibration.", 4, json);
                 if (snapshot.SharedSource) return Failure("shared_source_blocked", "Mirrored displays cannot be calibrated independently.", 4, json);
                 _ = GammaRampMath.Compose(snapshot.Ramp, preset.Calibration);
                 if (dryRun) return Success(new { presetId = preset.Id, displayId = display, backend = "sdr-gamma-icc",

@@ -4,4 +4,5 @@
     <SupportedOSPlatformVersion>10.0.22000.0</SupportedOSPlatformVersion>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="..\DccwPlus.Core\DccwPlus.Core.csproj" /></ItemGroup>
+  <ItemGroup><InternalsVisibleTo Include="DccwPlus.Windows.Tests" /></ItemGroup>
 </Project>

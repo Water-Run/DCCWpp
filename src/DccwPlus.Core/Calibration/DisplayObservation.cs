@@ -99,6 +99,10 @@ public static class DisplayObservationCodec
         Range(display.CloneGroup, 0, 65534, "cloneGroup");
         if (display.ProfileScope is not null && display.ProfileScope is not ("current-user" or "system-wide"))
             throw new InvalidDataException("Unsupported color profile scope.");
+        if (display.SelectedProfileScope is not (null or "current-user" or "system-wide"))
+            throw new InvalidDataException("Unsupported selected color profile scope.");
+        if (display.ProfileQueryStatus is not (null or "read" or "not-found" or "unavailable"))
+            throw new InvalidDataException("Unsupported color profile query status.");
         if (display.ProfileName is not null) IccProfileInspector.ValidateFileName(display.ProfileName);
         if (display.ProfileDeviceKey is { } key && (key.Length > 1024 || key.Any(char.IsControl)
             || !key.StartsWith(@"\Registry\Machine\System\", StringComparison.OrdinalIgnoreCase)))

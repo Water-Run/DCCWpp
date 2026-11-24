@@ -11,6 +11,8 @@ internal static class DisplayConfigurationQuery
     private const uint ActiveVirtualFlags = 0x00000002 | 0x00000010;
     private const uint DatabaseCurrent = 0x00000004;
     private const int ErrorInsufficientBuffer = 122;
+    private const int DefaultDisplayProfile = 4; // CPST_NONE selects the standard display profile.
+    private const int ExtendedDisplayProfile = 8; // CPST_EXTENDED_DISPLAY_COLOR_MODE
 
     public static string? ReadActivePathStamp()
     {
@@ -69,7 +71,9 @@ internal static class DisplayConfigurationQuery
             y = modes[modeIndex].PositionY;
         }
         var color = ReadColor(path.TargetAdapterLow, path.TargetAdapterHigh, path.TargetId);
-        var profile = ReadProfile(path.TargetAdapterLow, path.TargetAdapterHigh, path.SourceId);
+        var profile = color.ProfileSubtype is int subtype
+            ? WindowsColorProfileQuery.TryReadEffective(new() { Low = path.TargetAdapterLow, High = path.TargetAdapterHigh }, path.SourceId, subtype)
+            : default;
         int cloneGroup = unchecked((int)(path.SourceModeInfo & 0xFFFF));
         string? friendly = string.Equals(target.FriendlyName, "Display", StringComparison.OrdinalIgnoreCase) ? null : target.FriendlyName;
         string name = new string(FirstText(friendly, monitorName, target.FriendlyName, gdiName, "Display").Where(c => !char.IsControl(c)).ToArray()).Trim();
@@ -78,14 +82,15 @@ internal static class DisplayConfigurationQuery
         bool primary = names.Values.Any(device => device.Primary) ? gdi.Primary : x == 0 && y == 0;
         int? reportedWidth = width is > 0 and <= 16384 ? width : null;
         int? reportedHeight = height is > 0 and <= 16384 ? height : null;
-        string? profileName = SafeProfile(profile.Name);
+        string? profileName = profile.Name;
         var persistence = WindowsMonitorIdentity.Read(target.MonitorPath);
         return new(id, name, string.IsNullOrWhiteSpace(gdiName) ? "DISPLAY" : gdiName, primary, color.State, "topology-query", topology, targetKey,
             OutputName(path.OutputTechnology), reportedWidth, reportedHeight, x, y,
             Millihertz(path.RefreshNumerator, path.RefreshDenominator), cloneGroup == 0xFFFF ? null : cloneGroup,
             profileName, profileName is null ? null : profile.Scope, color.HdrActive, color.AdvancedColorActive,
             InstalledProfileReader.Read(profileName), path.SourceId,
-            MatchMonitorKey(target.MonitorPath, gdi.Monitors ?? []), persistence?.Key, persistence?.Kind);
+            MatchMonitorKey(target.MonitorPath, gdi.Monitors ?? []), persistence?.Key, persistence?.Kind,
+            profile.SelectedScope, profile.Status);
     }
 
     private static string ReadTopology()
@@ -114,38 +119,20 @@ internal static class DisplayConfigurationQuery
     {
         var detailed = new AdvancedColor2 { Header = Header(15, Marshal.SizeOf<AdvancedColor2>(), low, high, targetId) };
         if (DisplayConfigGetDeviceInfo(ref detailed) == 0)
-        {
-            bool supported = Bit(detailed.Value, 0), active = Bit(detailed.Value, 1);
-            string state = detailed.ActiveColorMode switch { 0 => "sdr", 1 => "wcg", 2 => "hdr", _ => active ? "advanced-color" : "unknown" };
-            return new(state, detailed.ActiveColorMode == 2 ? true : false, active ? true : supported ? false : null);
-        }
+            return DescribeColor(detailed.ActiveColorMode, advancedColorActive: Bit(detailed.Value, 1));
         var basic = new AdvancedColor { Header = Header(9, Marshal.SizeOf<AdvancedColor>(), low, high, targetId) };
         if (DisplayConfigGetDeviceInfo(ref basic) != 0) return new("unknown", null, null);
         bool enabled = Bit(basic.Value, 1);
         return new(enabled ? "advanced-color" : "sdr", enabled ? null : false, enabled ? true : false);
     }
 
-    private static ProfileProbe ReadProfile(uint low, int high, uint sourceId)
+    internal static ColorProbe DescribeColor(uint mode, bool advancedColorActive) => mode switch
     {
-        var adapter = new Luid { LowPart = low, HighPart = high };
-        if (ColorProfileGetDisplayUserScope(adapter, sourceId, out int scope) < 0 || scope is not (0 or 1))
-            return new(null, null);
-        string? name = ProfileName(adapter, sourceId, scope);
-        if (name is null && scope != 0) name = ProfileName(adapter, sourceId, scope = 0);
-        return new(name, name is null ? null : scope == 0 ? "system-wide" : "current-user");
-    }
-
-    private static string? ProfileName(Luid adapter, uint sourceId, int scope)
-    {
-        IntPtr pointer = IntPtr.Zero;
-        try
-        {
-            if (ColorProfileGetDisplayDefault(scope, adapter, sourceId, 0, 4, out pointer) < 0 || pointer == IntPtr.Zero) return null;
-            string? value = Clean(Marshal.PtrToStringUni(pointer));
-            return string.IsNullOrWhiteSpace(value) ? null : value;
-        }
-        finally { if (pointer != IntPtr.Zero) LocalFree(pointer); }
-    }
+        0 when !advancedColorActive => new("sdr", false, false),
+        1 => new("wcg", false, true),
+        2 => new("hdr", true, true),
+        _ => advancedColorActive ? new("advanced-color", null, true) : new("unknown", null, null)
+    };
 
     private static Dictionary<string, GdiDevice> ReadGdiDevices()
     {
@@ -195,13 +182,6 @@ internal static class DisplayConfigurationQuery
         ? null
         : (int)Math.Clamp(numerator * 1000L / denominator, 1, 1_000_000);
 
-    private static string? SafeProfile(string? name)
-    {
-        name = Path.GetFileName(Clean(name));
-        if (string.IsNullOrWhiteSpace(name) || name.Length > 255 || name is "." or ".." || name.Any(char.IsControl)) return null;
-        return name.IndexOfAny(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) >= 0 ? null : name;
-    }
-
     private static string OutputName(int value) => value switch
     {
         -1 => "other",
@@ -238,14 +218,10 @@ internal static class DisplayConfigurationQuery
     [DllImport("user32.dll")] private static extern int DisplayConfigGetDeviceInfo(ref NativeTarget request);
     [DllImport("user32.dll")] private static extern int DisplayConfigGetDeviceInfo(ref AdvancedColor request);
     [DllImport("user32.dll")] private static extern int DisplayConfigGetDeviceInfo(ref AdvancedColor2 request);
-    [DllImport("mscms.dll")] private static extern int ColorProfileGetDisplayUserScope(Luid adapter, uint sourceId, out int scope);
-    [DllImport("mscms.dll", CharSet = CharSet.Unicode)] private static extern int ColorProfileGetDisplayDefault(int scope, Luid adapter, uint sourceId, int profileType, int profileSubtype, out IntPtr profileName);
-    [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr handle);
     [DllImport("user32.dll", EntryPoint = "EnumDisplayDevicesW", CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumDisplayDevices(string? device, uint index, ref Device display, uint flags);
 
-    [StructLayout(LayoutKind.Sequential)] private struct Luid { public uint LowPart; public int HighPart; }
     [StructLayout(LayoutKind.Sequential)] private struct DeviceInfo { public int Type; public uint Size; public uint AdapterLow; public int AdapterHigh; public uint Id; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] private struct SourceName
     {
@@ -298,8 +274,15 @@ internal static class DisplayConfigurationQuery
     private readonly record struct GdiMonitor(string DeviceId, string Name, string DeviceKey);
     private readonly record struct GdiDevice(bool Primary, IReadOnlyList<GdiMonitor> Monitors);
     private readonly record struct TargetDetails(string? FriendlyName, string? MonitorPath);
-    private readonly record struct ColorProbe(string State, bool? HdrActive, bool? AdvancedColorActive);
-    private readonly record struct ProfileProbe(string? Name, string? Scope);
+    internal readonly record struct ColorProbe(string State, bool? HdrActive, bool? AdvancedColorActive)
+    {
+        public int? ProfileSubtype => State switch
+        {
+            "sdr" or "wcg" => DefaultDisplayProfile,
+            "hdr" => ExtendedDisplayProfile,
+            _ => null
+        };
+    }
 }
 
 public sealed record DisplayProbe(string Topology, IReadOnlyList<DisplayInfo> Displays);

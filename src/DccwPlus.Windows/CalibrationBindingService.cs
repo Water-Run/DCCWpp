@@ -6,7 +6,6 @@ using DccwPlus.Core.Storage;
 
 namespace DccwPlus.Windows;
 
-public sealed record InterruptedPreviewResult(Guid SessionId, string Kind, string Status, string ReasonCode, bool NeedsRecovery);
 public sealed record CalibrationRestoreReport(int SchemaVersion, bool Applied, string Reason, DateTimeOffset Time,
     IReadOnlyList<BindingRestoreResult> Bindings, IReadOnlyList<InterruptedPreviewResult> Recoveries, string? Trigger = null);
 
@@ -90,26 +89,13 @@ public sealed class CalibrationBindingService(string root)
         using var gate = DisplayMutationLock.TryAcquire();
         if (gate is null) return Report("preview_busy");
 
-        var gammaStore = new GammaCalibrationStore(root);
-        var profileStore = new ProfilePreviewStore(root);
-        var gamma = gammaStore.Sessions().Where(s => s.NeedsRecovery).ToArray();
-        var profiles = profileStore.Incomplete();
-        if (dryRun && (gamma.Length > 0 || profiles.Count > 0)) return Report("recovery_required");
-
-        var backend = new WindowsGammaCalibrationBackend(root);
-        List<InterruptedPreviewResult> recoveries = [];
-        foreach (var interrupted in gamma)
-        {
-            var result = new GammaCalibrationTransaction(backend, gammaStore).Recover(interrupted);
-            recoveries.Add(new(result.Id, "calibration", result.Status, result.ReasonCode, result.NeedsRecovery));
-        }
-        foreach (var interrupted in profiles)
-        {
-            var result = new ProfilePreviewTransaction(new WindowsProfileAssociationBackend(), profileStore).Recover(interrupted);
-            recoveries.Add(new(result.Id, "profile", result.Status, result.ReasonCode, result.NeedsRecovery));
-        }
+        var recovery = new PreviewRecoveryService(root);
+        if (dryRun && recovery.List().Count > 0) return Report("recovery_required");
+        var recoveries = dryRun ? [] : recovery.RecoverLocked().Sessions;
         if (recoveries.Any(r => r.NeedsRecovery)) return Report("recovery_required", recoveries: recoveries);
 
+        var gammaStore = new GammaCalibrationStore(root);
+        var backend = new WindowsGammaCalibrationBackend(root);
         var bindings = _store.List().Where(b => b.RestoreEnabled).ToArray();
         if (bindings.Length == 0) return Report("no_bindings_enabled", recoveries: recoveries);
         var restorer = new CalibrationBindingRestorer(new WindowsDisplayService(), backend, gammaStore, HashInstalledProfile, new PresetStore(root).Get);

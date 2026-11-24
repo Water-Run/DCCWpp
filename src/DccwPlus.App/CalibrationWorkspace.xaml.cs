@@ -16,6 +16,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private Window? _window;
     private Window? _patternWindow;
     private GammaPreviewClient? _client;
+    private readonly PreviewRecoveryService _recovery = new(DataPaths.DefaultRoot);
     private GammaCalibrationSession? _session;
     private CalibrationPreset _draft = CalibrationPreset.Create("Calibration");
     private DispatcherQueueTimer? _timer, _debounce;
@@ -43,6 +44,10 @@ public sealed partial class CalibrationWorkspace : UserControl
         KeyDown += async (_, e) =>
         { if (e.Key == global::Windows.System.VirtualKey.Escape && Active) { e.Handled = true; await CancelAsync(); } };
         window.Closed += (_, _) => ClosePatternWindow();
+        window.Activated += (_, e) =>
+        {
+            if (!_busy && e.WindowActivationState != WindowActivationState.Deactivated) RefreshRecovery();
+        };
         _setting = false; UpdateStep(); UpdateUi(); RefreshRecovery();
     }
     public void LoadPreset(CalibrationPreset preset)
@@ -74,6 +79,8 @@ public sealed partial class CalibrationWorkspace : UserControl
             if (!CalibrationService.IsExplicitSdr(display)) { Show("SdrRequired", InfoBarSeverity.Warning); return; }
             if (display.Topology == "clone" || connected.Count(d => d.DeviceName == display.DeviceName) > 1)
             { Show("MirroredDisplay", InfoBarSeverity.Warning); return; }
+            if (display.Profile?.Mhc2Present == true) { Show("Mhc2ProfileBlocked", InfoBarSeverity.Warning); return; }
+            if (display.ProfileQueryStatus == "unavailable") { Show("ProfileStateUnavailable", InfoBarSeverity.Warning); return; }
             if (!DisplayWindowPlacement.MoveToDisplay(_window!, display.DeviceName))
             { Show("DisplayUnavailable", InfoBarSeverity.Warning); return; }
             _draft = CurrentPreset() with { Id = Guid.NewGuid(), CreatedAt = DateTimeOffset.UtcNow };
@@ -258,9 +265,11 @@ public sealed partial class CalibrationWorkspace : UserControl
         DisplayPicker.IsEnabled = !Active && !_busy;
         MoveDisplayButton.IsEnabled = hasDisplay && !Active && !_busy;
         RefreshDisplaysButton.IsEnabled = !Active && !_busy;
+        RecoveryButton.IsEnabled = !Active && !_busy;
         FullScreenButton.IsEnabled = hasDisplay && !_busy;
         StartButton.IsEnabled = !Active && !_busy && DisplayPicker.SelectedItem is DisplayInfo display
-            && CalibrationService.IsExplicitSdr(display) && display.Topology != "clone";
+            && CalibrationService.IsExplicitSdr(display) && display.Topology != "clone"
+            && display.Profile?.Mhc2Present != true && display.ProfileQueryStatus != "unavailable";
         StartButton.Visibility = Active ? Visibility.Collapsed : Visibility.Visible;
         UndoCalibrationButton.Visibility = Active ? Visibility.Collapsed : Visibility.Visible;
         UndoCalibrationButton.IsEnabled = StartButton.IsEnabled;
@@ -311,6 +320,8 @@ public sealed partial class CalibrationWorkspace : UserControl
         {
             DisplaySummary.Text = text["SelectDisplay"];
             DisplaySettingsLink.Visibility = Visibility.Collapsed;
+            HdrCalibrationLink.Visibility = Visibility.Collapsed;
+            DisplayGuidance.Visibility = Visibility.Collapsed;
             return;
         }
         string mode = display.ColorState switch
@@ -326,7 +337,19 @@ public sealed partial class CalibrationWorkspace : UserControl
             details += " · " + string.Format(text["DisplayDesktopPosition"], x, y);
         if (display.Topology == "clone") details += " · " + text["MirroredDisplay"];
         DisplaySummary.Text = details;
-        DisplaySettingsLink.Visibility = mode != "DisplayModeSdr" || display.Topology == "clone" ? Visibility.Visible : Visibility.Collapsed;
+        string? guidance = mode switch
+        {
+            "DisplayModeHdr" => "HdrCalibrationGuidance",
+            "DisplayModeAdvanced" => "AdvancedColorGuidance",
+            _ when display.Profile?.Mhc2Present == true => "Mhc2ProfileBlocked",
+            _ when display.ProfileQueryStatus == "unavailable" => "ProfileStateUnavailable",
+            _ => null
+        };
+        DisplayGuidance.Text = guidance is null ? "" : text[guidance];
+        DisplayGuidance.Visibility = guidance is not null ? Visibility.Visible : Visibility.Collapsed;
+        DisplaySettingsLink.Visibility = mode != "DisplayModeSdr" || display.Topology == "clone" || guidance is not null
+            ? Visibility.Visible : Visibility.Collapsed;
+        HdrCalibrationLink.Visibility = mode == "DisplayModeHdr" ? Visibility.Visible : Visibility.Collapsed;
     }
     private void MoveDisplayClicked(object sender, RoutedEventArgs e)
     {
@@ -343,6 +366,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         string? selected = (DisplayPicker.SelectedItem as DisplayInfo)?.Id;
         try { _model.Refresh(); DisplayPicker.SelectedItem = _model.Displays.FirstOrDefault(d => d.Id == selected) ?? _model.Displays.FirstOrDefault(); }
         catch (Exception ex) { ShowError(ex); }
+        RefreshRecovery();
     }
     private void FullScreenClicked(object sender, RoutedEventArgs e)
     {
@@ -401,18 +425,24 @@ public sealed partial class CalibrationWorkspace : UserControl
     { if (_session is not null && _client is not null) _session = _client.Status(_session.Id); }
     private void RefreshRecovery()
     {
-        try { RecoveryNotice.IsOpen = new GammaCalibrationStore(DataPaths.DefaultRoot).Sessions().Any(s => s.NeedsRecovery && s.Id != _session?.Id) || _session?.Status == "recovery-pending"; }
+        try
+        {
+            RecoveryNotice.IsOpen = _recovery.List().Any(s => s.Kind != "calibration" || s.SessionId != _session?.Id
+                || s.Status == "recovery-pending");
+        }
         catch (Exception ex) { ShowError(ex); RecoveryNotice.IsOpen = true; }
     }
     private async void RecoverClicked(object sender, RoutedEventArgs e)
     {
-        if (_client is null || Active || _busy) return;
+        if (_model is null || Active || _busy) return;
         _busy = true; UpdateUi();
         try
         {
-            foreach (var session in new GammaCalibrationStore(DataPaths.DefaultRoot).Sessions().Where(s => s.NeedsRecovery))
-            { _session = await _client.RecoverAsync(session.Id); if (_session.NeedsRecovery) break; }
-            ShowState();
+            var report = await Task.Run(_recovery.Recover);
+            ReloadSession();
+            if (report.Reason == "preview_busy") Show("RecoveryBusy", InfoBarSeverity.Warning);
+            else if (report.Reason == "recovery_required") Show("RecoveryMessage", InfoBarSeverity.Warning);
+            else if (report.Reason == "recovery_finished") Show("RecoveryFinished", InfoBarSeverity.Success);
         }
         catch (Exception ex) { ShowError(ex); }
         finally { _busy = false; UpdateUi(); RefreshRecovery(); }
@@ -426,5 +456,14 @@ public sealed partial class CalibrationWorkspace : UserControl
     private void Show(string key, InfoBarSeverity severity)
     { if (_model is null) return; Outcome.Message = _model.Text[key]; Outcome.Severity = severity; Outcome.IsOpen = true; }
     private void ShowError(Exception ex)
-    { if (_model is null) return; Outcome.Message = _model.Text["Error"] + " " + ex.Message; Outcome.Severity = InfoBarSeverity.Error; Outcome.IsOpen = true; }
+    {
+        if (_model is null) return;
+        if (ex is ProfilePreviewException { Code: "mhc2_profile_blocked" })
+        { Show("Mhc2ProfileBlocked", InfoBarSeverity.Warning); return; }
+        if (ex is ProfilePreviewException { Code: "profile_state_unavailable" or "profile_scope_unavailable" })
+        { Show("ProfileStateUnavailable", InfoBarSeverity.Warning); return; }
+        Outcome.Message = _model.Text["Error"] + " " + ex.Message;
+        Outcome.Severity = InfoBarSeverity.Error;
+        Outcome.IsOpen = true;
+    }
 }

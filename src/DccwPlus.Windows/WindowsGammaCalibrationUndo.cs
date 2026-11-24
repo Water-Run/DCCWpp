@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using DccwPlus.Core.Calibration;
 using DccwPlus.Core.Storage;
+using static DccwPlus.Windows.WindowsColorProfileQuery;
 
 namespace DccwPlus.Windows;
 
@@ -87,8 +88,7 @@ public sealed partial class WindowsGammaCalibrationBackend
 
         var adapter = Adapter(backup.TargetKey);
         string? userDefault = ReadDefault(adapter, backup.SourceId, 1);
-        Check(ColorProfileGetDisplayUserScope(adapter, backup.SourceId, out int scope));
-        if (scope is not (0 or 1)) throw new InvalidDataException("Unknown current color profile scope.");
+        int scope = ReadScope(adapter, backup.SourceId);
         if (GammaCalibrationTransaction.SameProfile(undo.Original, current) && scope == 1
             && ProfilePreviewPolicy.EqualName(userDefault, backup.CandidateName)) return;
 

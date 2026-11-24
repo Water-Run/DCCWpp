@@ -95,14 +95,13 @@ public sealed class ProfilePreviewClient(string root, string workerExecutable)
         }
         throw new ProfilePreviewException("worker_not_responding", "The preview worker did not acknowledge the request. Check status and recover if necessary.");
     }
-    public Task<ProfilePreviewSession> RecoverAsync(Guid id) => LaunchAsync(new(id, "", "", 30, Recover: true));
+    public Task<ProfilePreviewSession> RecoverAsync(Guid id) => Task.Run(() => new PreviewRecoveryService(root).RecoverProfile(id));
 
     private async Task<ProfilePreviewSession> LaunchAsync(ProfilePreviewRequest request)
     {
         if (!File.Exists(workerExecutable)) throw new FileNotFoundException("The independent preview worker is missing. Rebuild or reinstall DCCW++.", workerExecutable);
         string directory = _store.DirectoryFor(request.Id);
         string errorPath = Path.Combine(directory, "error.json");
-        if (request.Recover && File.Exists(errorPath)) File.Delete(errorPath);
         AtomicFile.Write(Path.Combine(directory, "request.json"), JsonSerializer.SerializeToUtf8Bytes(request, ProfilePreviewStore.Json));
         var start = new ProcessStartInfo(Path.GetFullPath(workerExecutable)) { UseShellExecute = false, CreateNoWindow = true,
             WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(workerExecutable))! };
@@ -119,7 +118,7 @@ public sealed class ProfilePreviewClient(string root, string workerExecutable)
             if (File.Exists(Path.Combine(directory, "state.json")))
             {
                 var session = _store.Load(request.Id);
-                if (request.Recover ? worker.HasExited : session.Status is "previewing" or "reverted" or "recovery-pending") return session;
+                if (session.Status is "previewing" or "reverted" or "recovery-pending") return session;
             }
             if (worker.HasExited) break;
         }

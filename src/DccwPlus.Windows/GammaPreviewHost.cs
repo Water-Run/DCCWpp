@@ -54,7 +54,8 @@ public static class GammaPreviewHost
                 transaction.Begin(id, saved.Preset, request.DisplayId, request.Seconds, saved.Original.Ramp, current, calibrationId);
             }
             else
-                transaction.Begin(id, request.Preset ?? throw new InvalidDataException("A calibration preset is required."), request.DisplayId, request.Seconds);
+                transaction.Begin(id, request.Preset ?? throw new InvalidDataException("A calibration preset is required."),
+                    request.DisplayId, request.Seconds, windowOwned: request.OwnerPid is not null);
             Guid lastCommand = Guid.Empty;
             while (transaction.Session?.Status == "previewing")
             {

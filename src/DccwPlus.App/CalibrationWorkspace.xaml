@@ -23,12 +23,15 @@
           <Button x:Name="MoveDisplayButton" Content="{Binding Text[MoveToDisplay]}" Click="MoveDisplayClicked" />
           <Button x:Name="RefreshDisplaysButton" Content="{Binding Text[Refresh]}" Click="RefreshClicked" />
         </StackPanel>
+        <TextBlock x:Name="DisplayGuidance" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" Visibility="Collapsed" />
         <HyperlinkButton x:Name="DisplaySettingsLink" Content="{Binding Text[OpenDisplaySettings]}"
                          NavigateUri="ms-settings:display" Visibility="Collapsed" />
+        <HyperlinkButton x:Name="HdrCalibrationLink" Content="{Binding Text[OpenHdrCalibrationStore]}"
+                         NavigateUri="ms-windows-store://pdp/?ProductId=9N7F2SM5D1LR" Visibility="Collapsed" />
       </StackPanel>
     </Border>
     <InfoBar x:Name="RecoveryNotice" IsOpen="False" IsClosable="False" Severity="Warning" Title="{Binding Text[RecoveryTitle]}" Message="{Binding Text[RecoveryMessage]}">
-      <InfoBar.ActionButton><Button Content="{Binding Text[Recover]}" Click="RecoverClicked" /></InfoBar.ActionButton>
+      <InfoBar.ActionButton><Button x:Name="RecoveryButton" Content="{Binding Text[Recover]}" Click="RecoverClicked" /></InfoBar.ActionButton>
     </InfoBar>
     <Grid ColumnSpacing="12">
       <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>

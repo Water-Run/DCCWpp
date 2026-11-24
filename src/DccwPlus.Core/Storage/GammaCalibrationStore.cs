@@ -46,6 +46,8 @@ public sealed class GammaCalibrationStore(string root) : IGammaCalibrationJourna
             || string.IsNullOrWhiteSpace(session.Original.TargetKey) || session.Original.TargetKey.Length > 80)
             throw new InvalidDataException("Invalid calibration display identity.");
         PresetCodec.Validate(session.Preset);
+        if (session.Original.SelectedProfileScope is not (null or "current-user" or "system-wide"))
+            throw new InvalidDataException("Invalid selected color profile scope.");
         session.Original.Ramp.Validate(); session.Candidate.Validate(); session.LastWritten.Validate();
         session.BeforeWrite?.Validate();
         if (session.UndoOf == Guid.Empty || session.UndoOf == session.Id || (session.UndoOf is not null && session.IsBindingRestore))

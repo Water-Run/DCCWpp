@@ -1,10 +1,11 @@
-using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using DccwPlus.Core.Calibration;
 using DccwPlus.Core.Storage;
+using static DccwPlus.Windows.WindowsColorProfileQuery;
+using Luid = DccwPlus.Windows.WindowsColorProfileQuery.Luid;
 
 namespace DccwPlus.Windows;
 
@@ -13,7 +14,8 @@ public sealed record IccAssociationBackup(int Scope, string? UserDefault, uint S
     string? UserDefaultHash = null, string? CandidateHash = null);
 
 public sealed record SdrCalibrationDiagnostics(string DisplayId, string ColorState, string? ProfileName, string? ProfileScope,
-    bool? WindowsCalibrationLoaderEnabled, bool? DriverSupportsVcgt, bool? LogicalRampReadable, string ReasonCode);
+    bool? WindowsCalibrationLoaderEnabled, bool? DriverSupportsVcgt, bool? LogicalRampReadable, string ReasonCode,
+    bool? ProfileMhc2Present = null, string? SelectedProfileScope = null, string? ProfileQueryStatus = null);
 
 // SDR compatibility backend. Never used for HDR/ACM, mirrored sources, or an unknown display.
 // Readback verifies the driver's logical gamma table, not optical color accuracy.
@@ -27,12 +29,15 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             ?? throw new ProfilePreviewException("display_disconnected", "The display is not connected.");
         if (display.TargetKey is null || display.SourceId is null)
             throw new ProfilePreviewException("display_identity_unavailable", "The display source identity is unavailable.");
+        if (display.ProfileQueryStatus == "unavailable")
+            throw new ProfilePreviewException("profile_state_unavailable", "Windows could not read the display's current color profile or scope.");
         string material = string.Join('\n', displays.OrderBy(d => d.Id, StringComparer.Ordinal).Select(d =>
             FormattableString.Invariant($"{d.Id}|{d.TargetKey}|{d.SourceId}|{d.DeviceName}|{d.Topology}|{d.ColorState}|{d.Width}|{d.Height}|{d.PositionX}|{d.PositionY}|{d.HdrActive}|{d.AdvancedColorActive}")));
         return new(display.Id, display.DeviceName, display.TargetKey,
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material))), CalibrationService.IsExplicitSdr(display),
             display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1,
-            ReadRamp(display.DeviceName), display.ProfileName, display.ProfileScope, display.SourceId, display.PersistenceKey);
+            ReadRamp(display.DeviceName), display.ProfileName, display.ProfileScope, display.SourceId, display.PersistenceKey,
+            display.Profile?.Mhc2Present, display.SelectedProfileScope);
     }
     public SdrCalibrationDiagnostics Diagnose(string displayId)
     {
@@ -45,6 +50,10 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         string reason = "logical_ramp_readable";
         if (!CalibrationService.IsExplicitSdr(display))
             reason = "sdr_path_blocked";
+        else if (display.Profile?.Mhc2Present == true)
+            reason = "mhc2_profile_blocked";
+        else if (display.ProfileQueryStatus == "unavailable")
+            reason = "profile_state_unavailable";
         else if (display.TargetKey is null || display.SourceId is null)
             reason = "display_identity_unavailable";
         else if (display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1)
@@ -53,8 +62,9 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         {
             var adapter = Adapter(display.TargetKey);
             uint source = display.SourceId.Value;
-            if (ColorProfileGetDisplayUserScope(adapter, source, out int scope) >= 0 && scope is 0 or 1)
+            if (display.SelectedProfileScope is "current-user" or "system-wide")
             {
+                int scope = display.SelectedProfileScope == "current-user" ? CurrentUser : SystemWide;
                 var caps = new VcgtCapabilities { Size = (uint)Marshal.SizeOf<VcgtCapabilities>() };
                 try
                 {
@@ -73,12 +83,15 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
                 reason = "curve_read_failed";
             }
         }
-        return new(display.Id, display.ColorState, display.ProfileName, display.ProfileScope, loader, vcgt, readable, reason);
+        return new(display.Id, display.ColorState, display.ProfileName, display.ProfileScope, loader, vcgt, readable, reason,
+            display.Profile?.Mhc2Present, display.SelectedProfileScope, display.ProfileQueryStatus);
     }
     public void Write(GammaDeviceState expected, GammaRamp ramp)
     {
         ramp.Validate();
         var now = Read(expected.DisplayId);
+        if (now.ProfileMhc2Present == true)
+            throw new ProfilePreviewException("mhc2_profile_blocked", "The selected color profile contains MHC2 hardware calibration.");
         if (!GammaCalibrationTransaction.SameTarget(expected, now) || !GammaCalibrationTransaction.SameProfile(expected, now)
             || !now.Ramp.Matches(expected.Ramp, 257))
             throw new ProfilePreviewException("display_state_changed", "The display changed before its calibration curve could be written.");
@@ -98,8 +111,9 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         var adapter = Adapter(device.TargetKey!);
         uint source = device.SourceId!.Value;
         string deviceKey = device.ProfileDeviceKey ?? throw new ProfilePreviewException("profile_device_unavailable", "Windows did not report the profile device identity.");
-        Check(ColorProfileGetDisplayUserScope(adapter, source, out int scope));
-        if (scope is not (0 or 1)) throw new ProfilePreviewException("profile_scope_unavailable", "Windows reported an unknown color profile scope.");
+        int scope = ReadScope(adapter, source);
+        if (now.SelectedProfileScope != ScopeName(scope))
+            throw new ProfilePreviewException("external_profile_change", "The selected color profile scope changed before saving.");
         string? userDefault = ReadDefault(adapter, source, 1);
         string? effective = (scope == 1 ? userDefault : null) ?? ReadDefault(adapter, source, 0);
         if (!ProfilePreviewPolicy.EqualName(effective, session.Original.ProfileName))
@@ -121,7 +135,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         if (!InstallColorProfile(null, path))
             throw new ProfilePreviewException("profile_install_failed", $"Windows could not install the calibration profile (Win32 {Marshal.GetLastWin32Error()}).");
         var beforeAssociation = Read(device.Id);
-        Check(ColorProfileGetDisplayUserScope(adapter, source, out int beforeScope));
+        int beforeScope = ReadScope(adapter, source);
         if (!GammaCalibrationTransaction.SameTarget(session.Original, beforeAssociation)
             || !GammaCalibrationTransaction.SameProfile(session.Original, beforeAssociation)
             || beforeScope != scope || !ProfilePreviewPolicy.EqualName(ReadDefault(adapter, source, 1), userDefault)
@@ -161,8 +175,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         VerifyAssociationTarget(session, backup, current);
         var adapter = Adapter(backup.TargetKey);
         string? currentUser = ReadDefault(adapter, backup.SourceId, 1);
-        Check(ColorProfileGetDisplayUserScope(adapter, backup.SourceId, out int currentScope));
-        if (currentScope is not (0 or 1)) throw new InvalidDataException("Unknown current color profile scope.");
+        int currentScope = ReadScope(adapter, backup.SourceId);
         if (currentScope == 0 && backup.Scope == 1)
             throw new ProfilePreviewException("external_profile_change", "Another application changed the color profile scope.");
         if (ProfilePreviewPolicy.EqualName(currentUser, backup.CandidateName))
@@ -180,7 +193,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         if (associations.Contains(backup.CandidateName, StringComparer.OrdinalIgnoreCase))
             Check(ColorProfileRemoveDisplayAssociation(1, backup.CandidateName, adapter, backup.SourceId, false));
         if (currentScope != backup.Scope) SetUserScope(backup.DeviceKey, backup.Scope == 1);
-        Check(ColorProfileGetDisplayUserScope(adapter, backup.SourceId, out int restoredScope));
+        int restoredScope = ReadScope(adapter, backup.SourceId);
         string? restoredUserDefault = ReadDefault(adapter, backup.SourceId, 1);
         bool defaultRestored = ProfilePreviewPolicy.EqualName(restoredUserDefault, backup.UserDefault)
             || (backup.UserDefault is null && ProfilePreviewPolicy.EqualName(restoredUserDefault, backup.EffectiveDefault));
@@ -215,28 +228,6 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         if (!GetDeviceGammaRamp(dc.Handle, ref native)) throw new ProfilePreviewException("curve_read_failed", "The display driver does not expose its gamma table.");
         var ramp = new GammaRamp(native.Red, native.Green, native.Blue); ramp.Validate(); return ramp;
     }
-    private static string? ReadDefault(Luid adapter, uint source, int scope)
-    {
-        IntPtr pointer = IntPtr.Zero;
-        try
-        {
-            int result = ColorProfileGetDisplayDefault(scope, adapter, source, 0, 4, out pointer);
-            if (result is unchecked((int)0x80070490) or unchecked((int)0x80070002)) return null;
-            Check(result);
-            if (pointer == IntPtr.Zero) return null;
-            string? value = Marshal.PtrToStringUni(pointer);
-            if (string.IsNullOrWhiteSpace(value)) return null;
-            value = Path.GetFileName(value); IccProfileInspector.ValidateFileName(value); return value;
-        }
-        finally { if (pointer != IntPtr.Zero) LocalFree(pointer); }
-    }
-    private static Luid Adapter(string target)
-    {
-        string[] parts = target.Split(':');
-        if (parts.Length != 3) throw new InvalidDataException("Invalid display adapter.");
-        return new() { High = unchecked((int)uint.Parse(parts[0], NumberStyles.HexNumber, CultureInfo.InvariantCulture)),
-            Low = uint.Parse(parts[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture) };
-    }
     private static void Check(int hr) { if (hr < 0) throw new ProfilePreviewException("profile_write_failed", $"Windows color profile operation failed (0x{hr:X8})."); }
     private static void SetUserScope(string deviceKey, bool perUser)
     {
@@ -256,7 +247,6 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         }
         public void Dispose() => DeleteDC(Handle);
     }
-    [StructLayout(LayoutKind.Sequential)] private struct Luid { public uint Low; public int High; }
     [StructLayout(LayoutKind.Sequential)] private struct VcgtCapabilities { public uint Size; public int Supported; }
     [StructLayout(LayoutKind.Sequential)] private struct NativeRamp
     {
@@ -270,14 +260,11 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
     [DllImport("gdi32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool DeleteDC(IntPtr dc);
     [DllImport("gdi32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetDeviceGammaRamp(IntPtr dc, ref NativeRamp ramp);
     [DllImport("gdi32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetDeviceGammaRamp(IntPtr dc, ref NativeRamp ramp);
-    [DllImport("mscms.dll")] private static extern int ColorProfileGetDisplayUserScope(Luid adapter, uint source, out int scope);
     [DllImport("mscms.dll")] private static extern int ColorProfileGetDeviceCapabilities(int scope, Luid adapter, uint source, int type, ref VcgtCapabilities caps);
     [DllImport("mscms.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool WcsGetCalibrationManagementState(out int enabled);
     [DllImport("mscms.dll", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool WcsSetUsePerUserProfiles(string device, uint deviceClass, [MarshalAs(UnmanagedType.Bool)] bool usePerUser);
-    [DllImport("mscms.dll")] private static extern int ColorProfileGetDisplayDefault(int scope, Luid adapter, uint source, int type, int subtype, out IntPtr name);
     [DllImport("mscms.dll", CharSet = CharSet.Unicode)] private static extern int ColorProfileAddDisplayAssociation(int scope, string name, Luid adapter, uint source, [MarshalAs(UnmanagedType.Bool)] bool setDefault, [MarshalAs(UnmanagedType.Bool)] bool advanced);
     [DllImport("mscms.dll", CharSet = CharSet.Unicode)] private static extern int ColorProfileRemoveDisplayAssociation(int scope, string name, Luid adapter, uint source, [MarshalAs(UnmanagedType.Bool)] bool advanced);
     [DllImport("mscms.dll", CharSet = CharSet.Unicode)] private static extern int ColorProfileSetDisplayDefaultAssociation(int scope, string name, int type, int subtype, Luid adapter, uint source);
     [DllImport("mscms.dll", EntryPoint = "InstallColorProfileW", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool InstallColorProfile(string? machine, string path);
-    [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr pointer);
 }

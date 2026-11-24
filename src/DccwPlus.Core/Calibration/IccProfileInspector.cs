@@ -13,7 +13,8 @@ public sealed record ProfileReport(
     bool? TrcPresent,
     bool? A2bPresent,
     bool? B2aPresent,
-    string ReadStatus);
+    string ReadStatus,
+    bool? Mhc2Present = null);
 
 public static class IccProfileInspector
 {
@@ -32,8 +33,9 @@ public static class IccProfileInspector
         int declared = ReadInt(data, 0);
         bool complete = declared == data.Length && declared >= 128 && declared <= MaxBytes;
         bool signature = data[36] == (byte)'a' && data[37] == (byte)'c' && data[38] == (byte)'s' && data[39] == (byte)'p';
-        var tags = declared >= 128 ? ReadTags(data, Math.Min(data.Length, declared)) : ((bool?)null, (bool?)null, (bool?)null, (bool?)null);
-        return new(fileName, data.Length, Version(data), FourCc(data, 12), FourCc(data, 16), FourCc(data, 20), signature, tags.Item1, tags.Item2, tags.Item3, tags.Item4, complete ? "read" : "truncated");
+        var tags = ReadTags(data, Math.Min(data.Length, declared));
+        return new(fileName, data.Length, Version(data), FourCc(data, 12), FourCc(data, 16), FourCc(data, 20),
+            signature, tags.Vcgt, tags.Trc, tags.A2b, tags.B2a, complete ? "read" : "truncated", tags.Mhc2);
     }
 
     public static void ValidateReport(ProfileReport report)
@@ -48,7 +50,8 @@ public static class IccProfileInspector
         Token(report.ColorSpace);
         Token(report.ConnectionSpace);
         if (report.ReadStatus is not ("read" or "truncated")
-            && (report.SignatureValid || report.VcgtPresent is true || report.TrcPresent is true || report.A2bPresent is true || report.B2aPresent is true))
+            && (report.SignatureValid || report.VcgtPresent is true || report.TrcPresent is true || report.A2bPresent is true
+                || report.B2aPresent is true || report.Mhc2Present is true))
             throw new InvalidDataException("An unread profile cannot claim a signature or calibration tags.");
     }
 
@@ -65,26 +68,27 @@ public static class IccProfileInspector
         return new(fileName, bytes, "unknown", "unknown", "unknown", "unknown", false, null, null, null, null, status);
     }
 
-    private static (bool? Vcgt, bool? Trc, bool? A2b, bool? B2a) ReadTags(ReadOnlySpan<byte> data, int limit)
+    private static (bool? Vcgt, bool? Trc, bool? A2b, bool? B2a, bool? Mhc2) ReadTags(ReadOnlySpan<byte> data, int limit)
     {
-        if (limit < 132 || limit > data.Length) return (null, null, null, null);
+        if (limit < 132) return default;
         uint count = ReadUInt(data, 128);
-        if (count > 4096 || 132L + count * 12L > limit) return (null, null, null, null);
-        bool vcgt = false, red = false, green = false, blue = false, a2b = false, b2a = false;
+        if (count > 4096 || 132L + count * 12L > limit) return default;
+        bool vcgt = false, red = false, green = false, blue = false, a2b = false, b2a = false, mhc2 = false;
         for (int index = 0; index < count; index++)
         {
             int entry = 132 + index * 12;
             uint offset = ReadUInt(data, entry + 4);
             uint size = ReadUInt(data, entry + 8);
-            if (offset > (uint)limit || size > (uint)limit - offset) return (null, null, null, null);
+            if (offset > (uint)limit || size > (uint)limit - offset) return default;
             if (Matches(data, entry, "vcgt"u8)) vcgt = true;
+            else if (Matches(data, entry, "MHC2"u8)) mhc2 = true;
             else if (Matches(data, entry, "rTRC"u8)) red = true;
             else if (Matches(data, entry, "gTRC"u8)) green = true;
             else if (Matches(data, entry, "bTRC"u8)) blue = true;
             else if (Matches(data, entry, "A2B0"u8) || Matches(data, entry, "A2B1"u8) || Matches(data, entry, "A2B2"u8)) a2b = true;
             else if (Matches(data, entry, "B2A0"u8) || Matches(data, entry, "B2A1"u8) || Matches(data, entry, "B2A2"u8)) b2a = true;
         }
-        return (vcgt, red && green && blue, a2b, b2a);
+        return (vcgt, red && green && blue, a2b, b2a, mhc2);
     }
 
     private static string Version(ReadOnlySpan<byte> data)

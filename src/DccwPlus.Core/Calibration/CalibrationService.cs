@@ -27,7 +27,9 @@ public sealed record DisplayInfo(
     uint? SourceId = null,
     string? ProfileDeviceKey = null,
     string? PersistenceKey = null,
-    string? PersistenceKind = null);
+    string? PersistenceKind = null,
+    string? SelectedProfileScope = null,
+    string? ProfileQueryStatus = null);
 
 public interface IDisplayService { IReadOnlyList<DisplayInfo> Enumerate(); }
 
@@ -46,6 +48,9 @@ public sealed class CalibrationService(IDisplayService displays)
         if (!IsExplicitSdr(display))
             return new(preset.Id, displayId, "icc-wcs", false, "sdr_path_blocked",
             ["Read the display color mode", "Refuse the SDR calibration path while the mode is not explicit SDR", "Leave the display unchanged"]);
+        if (display.Profile?.Mhc2Present == true)
+            return new(preset.Id, displayId, "icc-wcs", false, "mhc2_profile_blocked",
+                ["Use Windows color settings to manage the hardware calibration profile"]);
         return new(preset.Id, displayId, "icc-wcs", false, "calibration_backend_pending",
         ["Confirm the display is explicit SDR", "Snapshot the existing profile and vcgt presence",
          "Generate and validate an ICC calibration without replacing the saved association yet",

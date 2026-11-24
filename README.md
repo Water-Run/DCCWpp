@@ -11,11 +11,12 @@ DCCW++ is a native WinUI 3 display color calibration app for Windows 11. It aims
 - Select a display and step through gamma, brightness, contrast, grayscale color balance, and before/after comparison. View example gamma patterns, inspect a full-screen test pattern on the chosen display, or skip hardware controls. The app can open Windows ClearType tuning after calibration.
 - Preview an SDR curve with a bounded timer and an independent recovery process. Confirm to generate an ICC profile with the new calibration curve and associate it with the selected display. Driver readback can verify the logical curve. Optical results require separate validation.
 - Undo a saved calibration on the selected display. A timed preview shows the previous curve before you confirm the change to the previous Windows profile and its scope.
+- Find and recover interrupted curve or ICC previews from the wizard or the CLI.
 - Create, rename, and delete local presets. Import versioned JSON, reuse a previously imported preset, or make a separate copy. Import places presets in the library for review. Display bindings stay local and protect referenced presets from deletion.
 - Inspect displays and profiles, manage presets, and run calibration transactions from `dccwpp.exe`. The CLI provides stable JSON fields, exit codes, and request IDs for retrying a preview safely. It shares calibration logic with the GUI.
 - Use the app in English, Simplified Chinese, or Traditional Chinese. View local PNG, JPEG, or TIFF photos as visual references.
 
-The SDR curve backend excludes HDR, Advanced Color, cloned displays, and ambiguous targets. Saving through this backend also excludes base profiles with MHC2 calibration data. In the installed MSIX, enable the Windows sign-in task and opt in for each calibrated display in Settings. The background monitor checks saved bindings at sign-in, on resume, and after a display change. Packaged activation and hardware restoration still need acceptance testing.
+The SDR curve backend requires an independent display in SDR and checks for MHC2 hardware calibration before previewing. The wizard links to Windows display settings for Advanced Color and MHC2, and to Microsoft's HDR calibration tool for active HDR displays. In the installed MSIX, enable the Windows sign-in task and opt in for each calibrated display in Settings. The background monitor checks saved bindings at sign-in, on resume, and after a display change. Packaged activation and hardware restoration still need acceptance testing.
 
 ## Build from source
 
@@ -33,15 +34,17 @@ The first command builds the unpackaged app and CLI and runs core and simulated 
 The MSIX declares the `dccwpp.exe` execution alias. For local development, run the built CLI directly or use `dotnet run --project src/DccwPlus.Cli --` followed by the arguments.
 
 ```powershell
+dccwpp.exe capabilities --json
 dccwpp.exe displays list --json
 dccwpp.exe presets validate examples/neutral.dccw.json --json
 dccwpp.exe calibration diagnose --display $displayId --json
 dccwpp.exe apply $presetId --display $displayId --dry-run --json
 dccwpp.exe bindings restore --dry-run --json
 dccwpp.exe startup last-restore --json
+dccwpp.exe recovery status --json
 ```
 
-For a dry run, set `$presetId` to a saved preset ID and `$displayId` to an ID from `displays list`. Calling `apply` without it starts a real, timed SDR preview on the selected display. See the [CLI reference](docs/CLI.md) for the transaction commands, machine-readable results, and exit codes.
+Agents can use `capabilities --json` to discover command effects, dry-run support, and request ID support. For a dry run, set `$presetId` to a saved preset ID and `$displayId` to an ID from `displays list`. Calling `apply` without `--dry-run` starts an SDR preview on the selected display with a fixed deadline. Use the returned session ID to check its status, confirm, or revert. See the [CLI reference](docs/CLI.md) for the transaction commands, machine-readable results, and exit codes.
 
 ## Project layout
 

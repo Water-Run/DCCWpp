@@ -28,7 +28,22 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
             checks += 1
         return response.get("data", response.get("error"))
 
-    call("--help")
+    help_info = call("--help")
+    capabilities = call("capabilities")
+    public_commands = {command["name"]: command for command in capabilities["commands"]}
+    assert capabilities["contractVersion"] == 1
+    assert capabilities["version"] == help_info["version"]
+    assert [command["usage"] for command in capabilities["commands"]] == help_info["commands"]
+    assert len(public_commands) == len(help_info["commands"])
+    assert all(not name.startswith("__") for name in public_commands)
+    assert public_commands["capabilities"]["effect"] == "read"
+    assert public_commands["presets import"]["effect"] == "local-write"
+    assert public_commands["apply"]["effect"] == "display-preview"
+    assert public_commands["apply"]["supportsDryRun"] is True
+    assert public_commands["apply"]["supportsRequestId"] is True
+    assert public_commands["calibration confirm"]["effect"] == "display-change"
+    assert public_commands["calibration confirm"]["supportsDryRun"] is False
+    assert not data.exists(), "Help and capabilities must leave app data untouched"
     assert call("status")["calibrationAvailable"] is True
     call("presets", "validate", str(root / "examples/neutral.dccw.json"))
     created = call("presets", "create", "CLI 中文预设")
@@ -98,11 +113,16 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     document = json.dumps(calibration_state).encode()
     interrupted.write_bytes(document)
     assert call("bindings", "restore", "--dry-run")["reason"] == "recovery_required"
+    pending = call("recovery", "status")["sessions"]
+    assert len(pending) == 1 and pending[0]["sessionId"] == str(interrupted_id)
+    assert pending[0]["kind"] == "calibration" and pending[0]["needsRecovery"] is True
     assert interrupted.read_bytes() == document
     # Simulate the journal from a prior request. Its preset is deleted and its display ID is only a fixture.
     calibration_state.update(status="reverted", reasonCode="preview_expired", preset=copy)
     terminal = json.dumps(calibration_state).encode()
     interrupted.write_bytes(terminal)
+    assert call("recovery", "status")["sessions"] == []
+    assert call("recovery", "run") == dict(schemaVersion=1, reason="no_recovery_needed", sessions=[])
     request = interrupted.parent / "request.json"
     reservation = json.dumps(dict(id=str(interrupted_id), displayId="0123456789abcdef",
                                   preset=copy, seconds=30, allowRetries=True)).encode()
@@ -136,9 +156,15 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     for display in displays:
         assert display["colorState"] in allowed, display
         assert display["identityScope"] == "topology-query"
+        assert display["selectedProfileScope"] in (None, "current-user", "system-wide")
+        assert display["profileQueryStatus"] in (None, "read", "not-found", "unavailable")
         assert display["hdrActive"] is not True or display["colorState"] != "sdr"
         profile_name = display.get("profileName")
         profile = display.get("profile")
+        if display["profileQueryStatus"] in ("not-found", "unavailable"):
+            assert profile_name is None and profile is None
+        if display["profileQueryStatus"] == "read":
+            assert profile_name and display["selectedProfileScope"] and display["profileScope"]
         if profile_name:
             assert profile["fileName"] == profile_name
             assert profile["readStatus"] in profile_statuses
@@ -149,6 +175,9 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
                 assert profile["trcPresent"] is not True
                 assert profile["a2bPresent"] is not True
                 assert profile["b2aPresent"] is not True
+                assert profile["mhc2Present"] is not True
+            if profile["mhc2Present"] is not None:
+                assert isinstance(profile["mhc2Present"], bool), profile
         else:
             assert profile is None
     if displays:
@@ -173,8 +202,12 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         assert diagnostic["displayId"] == display
         for key in ("windowsCalibrationLoaderEnabled", "driverSupportsVcgt", "logicalRampReadable"):
             assert diagnostic[key] is None or isinstance(diagnostic[key], bool), diagnostic
-        if diagnostic["reasonCode"] in {"sdr_path_blocked", "display_identity_unavailable", "shared_source_blocked"}:
+        if diagnostic["reasonCode"] in {"sdr_path_blocked", "display_identity_unavailable", "shared_source_blocked",
+                                        "mhc2_profile_blocked", "profile_state_unavailable"}:
             assert diagnostic["logicalRampReadable"] is None
+        assert "profileQueryStatus" in diagnostic and "selectedProfileScope" in diagnostic
+        if diagnostic["reasonCode"] == "mhc2_profile_blocked":
+            assert diagnostic["profileMhc2Present"] is True
         # Automated checks only probe the plan. Never invoke a real display preview here.
         dry_id = uuid4()
         dry = call("apply", created["id"], "--display", display, "--dry-run", "--request-id", str(dry_id), expected=(0, 4))
@@ -182,9 +215,10 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         if "canPreview" in dry:
             assert dry["canPreview"] is True and dry["changesDisplay"] is False
         elif "canApply" in dry:
-            assert dry["canApply"] is False and dry["reasonCode"] == "sdr_path_blocked"
+            assert dry["canApply"] is False and dry["reasonCode"] in {"sdr_path_blocked", "mhc2_profile_blocked"}
         else:
-            assert dry["code"] in {"curve_read_failed", "display_identity_unavailable", "shared_source_blocked"}
+            assert dry["code"] in {"curve_read_failed", "display_identity_unavailable", "shared_source_blocked",
+                                   "mhc2_profile_blocked", "profile_state_unavailable"}
         restore = call("displays", "restore-plan", "--display", display)
         assert restore["canRestore"] is False
         assert restore["displayId"] == display

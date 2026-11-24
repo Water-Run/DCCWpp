@@ -20,7 +20,26 @@ public sealed class IccProfileInspectorTests
         Assert.True(report.TrcPresent);
         Assert.True(report.A2bPresent);
         Assert.True(report.B2aPresent);
+        Assert.False(report.Mhc2Present);
         IccProfileInspector.ValidateReport(report);
+    }
+
+    [Fact]
+    public void Mhc2TagIsReportedAndBlocksTheSdrPlan()
+    {
+        var current = Sample();
+        var report = IccProfileInspector.Inspect(current.ProfileName!, Profile("MHC2"));
+        Assert.True(report.Mhc2Present);
+        Assert.False(report.VcgtPresent);
+        var display = current with { Profile = report };
+        var plan = new CalibrationService(new FixedDisplays(display)).Plan(CalibrationPreset.Create("Draft"), display.Id);
+        Assert.False(plan.CanApply);
+        Assert.Equal("mhc2_profile_blocked", plan.ReasonCode);
+
+        var invalid = IccProfileInspector.Inspect(current.ProfileName!, Profile(true, true, "MHC2"));
+        Assert.Null(invalid.Mhc2Present);
+        Assert.Throws<InvalidDataException>(() =>
+            IccProfileInspector.ValidateReport(IccProfileInspector.Missing(current.ProfileName!) with { Mhc2Present = true }));
     }
 
     [Fact]

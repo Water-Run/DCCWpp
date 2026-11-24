@@ -27,6 +27,11 @@ public sealed class GammaWorkerTests : IDisposable
         {
             var preview = await WaitForPreviewAsync(store, id, worker);
             Assert.Equal(1, backend.Writes);
+            var recovery = new PreviewRecoveryService(_root);
+            Assert.Equal(id, Assert.Single(recovery.List()).SessionId);
+            Assert.Equal("preview_busy", recovery.Recover().Reason);
+            Assert.Equal("previewing", store.Load(id).Status);
+            Assert.Equal(1, backend.Writes);
             int duplicate = await Task.Run(() => GammaPreviewHost.Run(_root, id,
                 () => throw new InvalidOperationException("A second backend must not open a session."), attemptId: Guid.NewGuid()));
             Assert.Equal(10, duplicate);
@@ -39,6 +44,9 @@ public sealed class GammaWorkerTests : IDisposable
             var updates = await Task.WhenAll(a.CommandAsync(id, "update", firstEdit), b.CommandAsync(id, "update", secondEdit));
             Assert.Contains(updates, s => s.Preset.Calibration == firstEdit.Calibration);
             Assert.Contains(updates, s => s.Preset.Calibration == secondEdit.Calibration);
+            Assert.All(updates, s => Assert.Equal(preview.ExpiresAt, s.ExpiresAt));
+            Assert.Equal(preview.ExpiresAt, (await a.CommandAsync(id, "heartbeat")).ExpiresAt);
+            Assert.Equal(preview.ExpiresAt, (await b.CommandAsync(id, "review")).ExpiresAt);
             Assert.Equal(3, backend.Writes);
 
             Assert.Equal("reverted", (await a.CommandAsync(id, "revert")).Status);
@@ -55,6 +63,52 @@ public sealed class GammaWorkerTests : IDisposable
                 await new GammaPreviewClient(_root, "unused").CommandAsync(id, "revert");
             await worker.WaitAsync(TimeSpan.FromSeconds(35));
         }
+    }
+
+    [Fact]
+    public async Task CommonRecoveryRestoresBothJournalsAndPreservesTheProfileRequest()
+    {
+        var gamma = new SimulatedGammaBackend();
+        var profile = new SimulatedProfileBackend();
+        var gammaStore = new GammaCalibrationStore(_root);
+        var profileStore = new ProfilePreviewStore(_root);
+        var gammaId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        new GammaCalibrationTransaction(gamma, gammaStore).Begin(gammaId,
+            CalibrationPreset.Create("Initial", new() { RedGain = .9 }), gamma.State.DisplayId, 30);
+        new ProfilePreviewTransaction(profile, profileStore).Begin(profileId, profile.State.DisplayId, "candidate.icc", 30);
+        string requestPath = Path.Combine(profileStore.DirectoryFor(profileId), "request.json");
+        byte[] request = JsonSerializer.SerializeToUtf8Bytes(
+            new ProfilePreviewRequest(profileId, profile.State.DisplayId, "candidate.icc", 30), ProfilePreviewStore.Json);
+        AtomicFile.Write(requestPath, request, overwrite: false);
+
+        var service = new PreviewRecoveryService(_root);
+        var pending = service.List();
+        Assert.Equal(2, pending.Count);
+        Assert.Contains(pending, result => result.SessionId == gammaId && result.Kind == "calibration");
+        Assert.Contains(pending, result => result.SessionId == profileId && result.Kind == "profile");
+        profile.Disconnected = true;
+        PreviewRecoveryReport report;
+        using (DisplayMutationLock.Acquire())
+            report = service.RecoverLocked(gamma, profile);
+
+        Assert.Equal("recovery_required", report.Reason);
+        Assert.Equal(2, report.Sessions.Count);
+        Assert.Equal(profileId, Assert.Single(service.List()).SessionId);
+        Assert.True(gamma.State.Ramp.Matches(GammaRamp.Identity()));
+        Assert.Equal("candidate.icc", profile.State.CurrentProfile);
+
+        profile.Disconnected = false;
+        using (DisplayMutationLock.Acquire())
+            report = service.RecoverLocked(gamma, profile);
+        Assert.Equal("recovery_finished", report.Reason);
+        Assert.Equal("reverted", Assert.Single(report.Sessions).Status);
+        Assert.Empty(service.List());
+        Assert.Equal("original.icc", profile.State.CurrentProfile);
+
+        var terminal = await new ProfilePreviewClient(_root, "unused").RecoverAsync(profileId);
+        Assert.Equal("reverted", terminal.Status);
+        Assert.Equal(request, File.ReadAllBytes(requestPath));
     }
 
     [Fact]
@@ -94,6 +148,20 @@ public sealed class GammaWorkerTests : IDisposable
     public void Dispose()
     {
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+    }
+
+    private sealed class SimulatedProfileBackend : IProfileAssociationBackend
+    {
+        public ProfileAssociationState State { get; private set; } = new("0123456789abcdef", "simulated-profile-target",
+            1, new string('A', 64), "original.icc", "current-user", true, false,
+            [new("original.icc", new string('B', 64), true), new("candidate.icc", new string('C', 64), true)]);
+
+        public bool Disconnected { get; set; }
+        public ProfileAssociationState Read(string displayId) => Disconnected
+            ? throw new ProfilePreviewException("display_disconnected", "Simulated disconnected display.")
+            : State;
+        public void SetDefault(ProfileAssociationState expected, string profile, string sha256) =>
+            State = State with { CurrentProfile = profile };
     }
 
     private sealed class SimulatedGammaBackend : IGammaCalibrationBackend
