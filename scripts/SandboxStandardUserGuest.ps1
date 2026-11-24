@@ -113,6 +113,19 @@ public static class SandboxIccProfile {
         if ($capabilities.contractVersion -ne 1) { throw 'The installed alias did not report the CLI v1 contract.' }
         $result.cliContractVersion = $capabilities.contractVersion
         $result.cliRequestIdCommands = @($capabilities.commands | Where-Object { $_.supportsRequestId } | ForEach-Object { $_.name })
+        if ($capabilities.commands.name -contains 'calibration observe') {
+            $result.step = 'cli_observe'
+            foreach ($group in 'calibration', 'profiles') {
+                $command = $capabilities.commands | Where-Object { $_.name -eq "$group observe" }
+                $missingId = [Guid]::NewGuid().ToString('D')
+                $response = & $alias $group observe $missingId --wait-seconds 1 --json | ConvertFrom-Json
+                if ($LASTEXITCODE -ne 3 -or $response.ok -or $response.error.code -ne 'not_found' -or
+                    !$command -or $command.effect -ne 'read') {
+                    throw "The packaged CLI did not report the expected $group observe contract."
+                }
+            }
+            $result.cliObserveMissingSessions = $true
+        }
         $inlinePreview = $capabilities.commands | Where-Object { $_.name -eq 'calibration preview' }
         if ($inlinePreview) {
             $result.step = 'cli_inline_preview'

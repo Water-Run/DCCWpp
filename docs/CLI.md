@@ -13,7 +13,18 @@
 | `display-preview` | 开始或更新限时预览 |
 | `display-change` | 确认、取消或恢复显示状态 |
 
-Agent 从 `displays list` 选择明确的显示器，再用 `calibration preview --dry-run` 检查直接输入的参数，或从 `presets list` 取得预设 UUID 后执行 `apply --dry-run`。实际预览返回会话 ID 与 `expiresAt`。通过 `calibration status` 读回状态，并在得到用户选择后调用 `calibration confirm` 或 `calibration revert`。显示会话来自当前 Windows 用户和桌面。Agent 应读取退出码、`ok`、状态和原因码。`--request-id` 适用于 `calibration preview`、`apply`、`calibration undo` 和 `profiles preview`，可在客户端超时或响应丢失时查回同一个会话。
+Agent 从 `displays list` 选择明确的显示器，再用 `calibration preview --dry-run` 检查直接输入的参数，或从 `presets list` 取得预设 UUID 后执行 `apply --dry-run`。实际预览返回会话 ID 与 `expiresAt`。通过 `calibration observe` 查询工作进程和会话结果，并在得到用户选择后调用 `calibration confirm` 或 `calibration revert`。显示会话来自当前 Windows 用户和桌面。Agent 应读取退出码、`ok`、状态和原因码。`--request-id` 适用于 `calibration preview`、`apply`、`calibration undo` 和 `profiles preview`，可在客户端超时或响应丢失时查回同一个会话。
+
+`calibration observe` 和 `profiles observe` 支持 `--wait-seconds`，范围为 0–60，默认 0。命令只读取会话与预览进程的锁。等待期间不会提交命令、改变显示状态或延长预览。响应的 `data.session` 与相应 `status` 命令的 `data` 同形，`data.outcome` 表示本次观察结果。
+
+| `outcome` | 含义 |
+| --- | --- |
+| `in_progress` | 即时查询时，未完成的会话仍由工作进程持有 |
+| `wait_timeout` | 本次等待用完，工作进程仍在处理会话 |
+| `recovery_required` | 会话或已确认的本地绑定仍待处理，预览工作进程已释放锁或退出 |
+| `finished` | 已观察到终态，具体结果见 `session.status` 和 `session.reasonCode` |
+
+四种观察结果都返回退出码 0。会话不存在返回 `not_found` 和退出码 3。`finished` 时分别检查 `confirmed`、`reverted` 或 `superseded`。`in_progress` 时同时检查 `session.status` 和 `session.expiresAt`，工作进程可能正在保存或回退。需要恢复时，用相应的 `calibration recover` 或 `profiles recover`。
 
 ## 命令参考
 
@@ -113,6 +124,7 @@ dccwpp apply <preset-uuid> --display <display-id> --seconds 30 --json
 dccwpp apply <preset-uuid> --display <display-id> --seconds 30 --request-id <request-uuid> --json
 dccwpp calibration sessions --json
 dccwpp calibration status <session-id> --json
+dccwpp calibration observe <session-id> --wait-seconds 15 --json
 dccwpp calibration update <session-id> --preset <preset-uuid> --json
 dccwpp calibration update <session-id> --green-gain 0.96 --json
 dccwpp calibration update <session-id> --original --json
@@ -169,6 +181,7 @@ dccwpp profiles list --display <display-id> --json
 dccwpp profiles preview <profile-name> --display <display-id> --dry-run --json
 dccwpp profiles preview <profile-name> --display <display-id> --seconds 30 --request-id <request-uuid> --json
 dccwpp profiles status <session-id> --json
+dccwpp profiles observe <session-id> --wait-seconds 15 --json
 dccwpp profiles confirm <session-id> --json
 dccwpp profiles revert <session-id> --json
 dccwpp profiles recover <session-id> --json

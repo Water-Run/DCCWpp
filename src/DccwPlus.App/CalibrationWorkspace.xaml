@@ -61,8 +61,11 @@
         <TextBlock x:Name="StepInstructions" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
         <StackPanel x:Name="GammaControls" Visibility="Collapsed" Spacing="12">
           <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="120" /></Grid.ColumnDefinitions>
-            <Slider x:Name="GammaSlider" Header="{Binding Text[GammaAdjustment]}" Minimum="1" Maximum="3" StepFrequency="0.02" Value="2.2" ValueChanged="ValuesChanged" AutomationProperties.Name="{Binding Text[GammaAdjustment]}" />
-            <NumberBox x:Name="GammaNumber" Grid.Column="1" Value="{Binding ElementName=GammaSlider, Path=Value, Mode=TwoWay}" Minimum="1" Maximum="3" SmallChange="0.02" SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="{Binding Text[GammaAdjustment]}" />
+            <Slider x:Name="GammaSlider" Header="{Binding Text[GammaAdjustment]}" Minimum="1" Maximum="3" Value="2.2"
+                    StepFrequency="0.02" SmallChange="0.02" LargeChange="0.20" ValueChanged="ValuesChanged" AutomationProperties.Name="{Binding Text[GammaAdjustment]}" />
+            <NumberBox x:Name="GammaNumber" Grid.Column="1" Value="{Binding ElementName=GammaSlider, Path=Value, Mode=TwoWay}" Minimum="1" Maximum="3"
+                       SmallChange="{Binding ElementName=GammaSlider, Path=SmallChange}" LargeChange="{Binding ElementName=GammaSlider, Path=LargeChange}"
+                       SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="{Binding Text[GammaAdjustment]}" />
           </Grid>
           <Grid ColumnSpacing="10">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
@@ -83,12 +86,21 @@
         <Grid x:Name="BalanceControls" Visibility="Collapsed" ColumnSpacing="16" RowSpacing="8">
           <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="120" /></Grid.ColumnDefinitions>
           <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-          <Slider x:Name="RedSlider" Header="{Binding Text[Red]}" Minimum="0.5" Maximum="1.5" StepFrequency="0.01" Value="1" ValueChanged="ValuesChanged" AutomationProperties.Name="{Binding Text[Red]}" />
-          <NumberBox x:Name="RedNumber" Grid.Column="1" Value="{Binding ElementName=RedSlider, Path=Value, Mode=TwoWay}" Minimum="0.5" Maximum="1.5" SmallChange="0.01" SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="{Binding Text[Red]}" />
-          <Slider x:Name="GreenSlider" Grid.Row="1" Header="{Binding Text[Green]}" Minimum="0.5" Maximum="1.5" StepFrequency="0.01" Value="1" ValueChanged="ValuesChanged" AutomationProperties.Name="{Binding Text[Green]}" />
-          <NumberBox x:Name="GreenNumber" Grid.Row="1" Grid.Column="1" Value="{Binding ElementName=GreenSlider, Path=Value, Mode=TwoWay}" Minimum="0.5" Maximum="1.5" SmallChange="0.01" SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="{Binding Text[Green]}" />
-          <Slider x:Name="BlueSlider" Grid.Row="2" Header="{Binding Text[Blue]}" Minimum="0.5" Maximum="1.5" StepFrequency="0.01" Value="1" ValueChanged="ValuesChanged" AutomationProperties.Name="{Binding Text[Blue]}" />
-          <NumberBox x:Name="BlueNumber" Grid.Row="2" Grid.Column="1" Value="{Binding ElementName=BlueSlider, Path=Value, Mode=TwoWay}" Minimum="0.5" Maximum="1.5" SmallChange="0.01" SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="{Binding Text[Blue]}" />
+          <Slider x:Name="RedSlider" Header="{Binding Text[Red]}" Minimum="0.5" Maximum="1.5" Value="1"
+                  StepFrequency="0.01" SmallChange="0.01" LargeChange="0.10" ValueChanged="ValuesChanged" AutomationProperties.Name="{Binding Text[Red]}" />
+          <NumberBox x:Name="RedNumber" Grid.Column="1" Value="{Binding ElementName=RedSlider, Path=Value, Mode=TwoWay}" Minimum="0.5" Maximum="1.5"
+                     SmallChange="{Binding ElementName=RedSlider, Path=SmallChange}" LargeChange="{Binding ElementName=RedSlider, Path=LargeChange}"
+                     SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="{Binding Text[Red]}" />
+          <Slider x:Name="GreenSlider" Grid.Row="1" Header="{Binding Text[Green]}" Minimum="0.5" Maximum="1.5" Value="1"
+                  StepFrequency="0.01" SmallChange="0.01" LargeChange="0.10" ValueChanged="ValuesChanged" AutomationProperties.Name="{Binding Text[Green]}" />
+          <NumberBox x:Name="GreenNumber" Grid.Row="1" Grid.Column="1" Value="{Binding ElementName=GreenSlider, Path=Value, Mode=TwoWay}" Minimum="0.5" Maximum="1.5"
+                     SmallChange="{Binding ElementName=GreenSlider, Path=SmallChange}" LargeChange="{Binding ElementName=GreenSlider, Path=LargeChange}"
+                     SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="{Binding Text[Green]}" />
+          <Slider x:Name="BlueSlider" Grid.Row="2" Header="{Binding Text[Blue]}" Minimum="0.5" Maximum="1.5" Value="1"
+                  StepFrequency="0.01" SmallChange="0.01" LargeChange="0.10" ValueChanged="ValuesChanged" AutomationProperties.Name="{Binding Text[Blue]}" />
+          <NumberBox x:Name="BlueNumber" Grid.Row="2" Grid.Column="1" Value="{Binding ElementName=BlueSlider, Path=Value, Mode=TwoWay}" Minimum="0.5" Maximum="1.5"
+                     SmallChange="{Binding ElementName=BlueSlider, Path=SmallChange}" LargeChange="{Binding ElementName=BlueSlider, Path=LargeChange}"
+                     SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="{Binding Text[Blue]}" />
         </Grid>
         <StackPanel x:Name="ReviewControls" Visibility="Collapsed" Spacing="12">
           <ToggleSwitch x:Name="OriginalToggle" Header="{Binding Text[CompareOriginal]}" OnContent="{Binding Text[PreviousCalibration]}" OffContent="{Binding Text[CurrentCalibration]}" Toggled="CompareChanged" />

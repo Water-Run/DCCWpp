@@ -1,5 +1,38 @@
 # 开发交接
 
+## 2026-11-25 · 深色主题与向导无障碍通知
+
+- 前台向导的步骤说明和比较状态在文字变化后发出 UI Automation 的 `LiveRegionChanged`。全屏窗口居于前台时，由全屏说明发出事件。同一段文字在界面反复刷新时不会重复发出事件。[Windows 实时区域示例](https://learn.microsoft.com/en-us/accessibility-tools-docs/items/uwpxaml/text_livesetting)
+- Windows Sandbox build 26100 的普通用户运行 x64 诊断构建。按窗口订阅的 UI Automation 客户端收到六项预期通知，验证 Gamma、亮度及比较步骤的说明，读到了主窗口的原始和调整后状态，以及全屏的调整后状态。隐藏向导的对比度说明未发出事件，并核对了步骤选择、Gamma 滑块和数值框的英文无障碍名称。比较使用内存中的模拟会话，测试前后均无实际校准会话。[无障碍验收项](ROADMAP.md)
+- 在 200% 缩放下实际切换 Windows 深色主题，逐像素检查主窗口和全屏的 Gamma、亮度、对比度共 12 张浅色与深色画面。图案均与预期像素相符，抽查的说明和按钮保持可读。报告位于 `artifacts/accessibility-sandbox/e1d93367-5681-402a-933c-1aa180290ccb/results/`。本机构建、237 项单元及模拟测试和 124 项 CLI 进程检查通过。Narrator 实际语音播报与 SDR 实机校准仍待验收。
+
+## 2026-11-25 · 全屏图案的对比主题底栏
+
+- 全屏图案底栏采用 WinUI 的 `SolidBackgroundFillColorBaseBrush`，随 Windows 主题更新。高对比黑色下，底栏空白区域由窗口默认的纯黑切换为与说明文字配对的系统窗口背景色。[Windows 对比主题指引](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/high-contrast-themes)
+- Windows Sandbox build 26100 的普通用户运行 x64 诊断构建，在 200% 缩放下依次加载四个内置 Windows 对比主题。对 30 张画面逐像素检查，向导与全屏的 Gamma、亮度和对比度图案都与浅色基线及预期像素一致。对比主题下检查的说明、按钮和全屏底栏使用了各主题的系统配色。
+- 沙盒恢复了原主题，诊断包已卸载，前后均无校准会话。报告位于 `artifacts/contrast-theme-sandbox/b7ebcd4c-f0ff-4169-bd27-0b17c71cf9d9/results/rendered-pixels.json`。本机构建、237 项单元及模拟测试和 124 项 CLI 进程检查通过。常规深色主题、Narrator 和实机 SDR 显示效果仍待验收。
+
+## 2026-11-25 · 向导键盘与全屏焦点
+
+- 普通用户在 Windows Sandbox build 26100 的 x64 诊断构建中通过 Windows 键盘输入测试。Gamma 和三个 RGB 通道都通过了滑块方向键、Tab 进入数值框、数值框方向键及 Page Up／Page Down 的检查。Gamma 也通过了上限、重置和返回后保留草稿的检查。
+- 基线 `a478331` 中从亮度页按 Enter 跳过会把焦点送到侧栏。修正后，亮度和对比度两页都能将焦点送到红色滑块，方向键可立即微调，下一次 Tab 进入红色数值框。用 Escape、退出按钮和 Alt+F4 离开全屏参考图后，主窗口都恢复前台与全屏按钮焦点，并保留 Gamma 步骤。[键盘验收项](ROADMAP.md)
+- 两次沙盒验证前后均无校准会话，诊断包已卸载。基线和修正报告分别位于 `artifacts/keyboard-interaction-sandbox/4b4ddf81-5c80-4ccd-91d0-1b808638bc44/results/keyboard-interaction.json` 和 `artifacts/keyboard-interaction-sandbox/ae4d587e-b9fb-4415-a294-3489a6dee7fe/results/keyboard-interaction.json`。237 项单元及模拟测试和 124 项本机 CLI 进程检查通过。Narrator、高对比度和 SDR 实机校准仍待验收。
+
+## 2026-11-25 · Gamma 与 RGB 键盘步长
+
+- Gamma 滑块的细调和粗调步长为 0.02 和 0.20，三个 RGB 滑块为 0.01 和 0.10。相应的数值框读取同一组步长，继续与滑块双向同步。[键盘验收项](ROADMAP.md)
+- WinUI 与 CLI 构建、237 项单元及模拟测试和 124 项本机 CLI 进程检查通过。在 Windows Sandbox 的 x64 诊断构建中，通过读取实际加载的控件属性和程序化设置数值核对了四组步长及双向绑定。前后均无校准会话。报告位于 `artifacts/keyboard-xaml-sandbox/089b56cc-759d-4ced-b0a9-330fb2908aff/results/keyboard-steps.json`。实际按键和全屏返回焦点仍待交互验收。
+
+## 2026-11-24 · Agent 会话观察
+
+- `calibration observe` 和 `profiles observe` 通过 CLI v1 返回工作进程与会话状态，支持最多 60 秒的只读等待。观察未完成的曲线、ICC 预览或绑定补写时，检测工作进程是否仍持有锁。保留会话状态和原预览期限。[CLI 契约](CLI.md)
+- 147 项核心测试、90 项 Windows 测试和本机独立执行的 124 项 CLI 进程检查通过。模拟覆盖工作进程持有预览、取消、等待超时、进程退出及确认后的绑定待处理。x64 开发 MSIX 通过内容检查，Windows Sandbox build 26100 的普通用户已执行新命令的发现与缺失会话检查。报告位于 `artifacts/sandbox-smoke/6abdbccd-ea7c-4752-85c0-f77f2a6d30d0/results/result.json`。实机曲线和 ICC 事务待验收。
+
+## 2026-11-24 · 双架构 CI 证据与商店截图草稿
+
+- GitHub Actions 从同一提交的对应源码生成 x64 和 ARM64 开发 MSIX、源码归档和 SHA-256 清单。提交 `c288968` 的两份 MSIX 都通过内容检查，下载后的源码和包与清单摘要一致。[GitHub Actions](https://github.com/Water-Run/DCCWpp/actions/runs/45428714828)
+- 使用提交 `8aac9a7` 的 x64 `0.2.0.0` 开发包在沙盒拍摄三语各四张界面截图。图像为 2338×1197 PNG，附三语字幕和截图来源记录，草稿位于 `artifacts/store-screenshots/7020a608-c8b8-4705-b622-cf943a77001d/DCCWPlus-Store-screenshots-draft.zip`。正式签名候选和本地 SDR 比较图待采集。[商店素材](STORE_LISTING.md)
+
 ## 2026-11-24 · 显示路径重建后的本地记录恢复
 
 - GUI、CLI 和登录恢复在补写已确认的保存或撤回记录时，可通过唯一的持久身份找到活动路径。补写前核对原 Windows 配置设备、当前有效 ICC、作用域和文件摘要。撤回后清理旧绑定时也核对恢复的 ICC。登录时遇到暂不可读的路径或 ICC，后台沿用最多两次短间隔检查。[CLI 本地记录恢复](CLI.md)

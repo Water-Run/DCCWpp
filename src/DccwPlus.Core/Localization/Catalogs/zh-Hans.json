@@ -105,6 +105,8 @@
   "CalibrationUpdateCliUsage": "使用 calibration update <session-id>，可指定 --preset <preset-id> 或 Gamma 和 RGB 增益选项。用 --original 或 --adjusted 切换视图。",
   "CliCalibrationPresetName": "命令行校准",
   "CliPreviewTimeout": "预览时限必须为 10–60 秒。",
+  "CliObserveUsage": "请用 calibration observe 或 profiles observe 指定会话 UUID，可附加 --wait-seconds。",
+  "CliObserveWaitDuration": "等待时间必须为 0 到 60 秒之间的整数。",
   "CliCalibrationNumberError": "{0} 的数值无效。小数点请使用英文句点。",
   "ProfilePreviewUsage": "使用 profiles preview <profile-name> --display <display-id> [--seconds 30] [--request-id <uuid>] [--dry-run]。",
   "PreviewRequestIdOwnership": "CLI 预览的请求 ID 必须为非空 UUID。",

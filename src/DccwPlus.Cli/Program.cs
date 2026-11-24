@@ -51,6 +51,9 @@ internal static class Cli
             }
 
             string root = dataDirectory ?? DataPaths.DefaultRoot;
+            if (remaining is ["calibration" or "profiles", "observe", ..])
+                return await ObserveAsync(root, remaining, json);
+
             var store = new PresetStore(root);
             var displays = new WindowsDisplayService();
 
@@ -302,6 +305,28 @@ internal static class Cli
             displayId, backend = "sdr-gamma-icc", calibration = preset.Calibration, canPreview = reasonCode is null,
             reasonCode, requiresConfirmation = true, timeoutSeconds = seconds, changesDisplay = false
         };
+    }
+
+    private static async Task<int> ObserveAsync(string root, List<string> args, bool json)
+    {
+        string? duration = TakeOption(args, "--wait-seconds");
+        if (args is not ["calibration" or "profiles", "observe", var sessionId]
+            || !Guid.TryParse(sessionId, out Guid id) || id == Guid.Empty)
+            throw new ArgumentException(new LocalizationService()["CliObserveUsage"]);
+        int waitSeconds = 0;
+        if (duration is not null && (!int.TryParse(duration, NumberStyles.None, CultureInfo.InvariantCulture, out waitSeconds)
+            || waitSeconds > PreviewSessionObserver.MaximumWaitSeconds))
+            throw new ArgumentException(new LocalizationService()["CliObserveWaitDuration"]);
+
+        var observer = new PreviewSessionObserver(root);
+        if (args[0] == "calibration")
+        {
+            var (session, outcome) = await observer.ObserveCalibrationAsync(id, waitSeconds);
+            return Success(new { outcome, session = SessionSummary(session) }, json);
+        }
+
+        var (profile, profileOutcome) = await observer.ObserveProfileAsync(id, waitSeconds);
+        return Success(new { outcome = profileOutcome, session = profile }, json);
     }
 
     private static object SessionSummary(GammaCalibrationSession session) => new

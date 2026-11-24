@@ -105,6 +105,8 @@
   "CalibrationUpdateCliUsage": "Use calibration update <session-id> with --preset <preset-id> or Gamma and RGB gain options. Use --original or --adjusted to select a view.",
   "CliCalibrationPresetName": "Command-line calibration",
   "CliPreviewTimeout": "Preview timeout must be 10–60 seconds.",
+  "CliObserveUsage": "Run calibration observe or profiles observe with a session UUID and optional --wait-seconds.",
+  "CliObserveWaitDuration": "The wait duration must be a whole number from 0 to 60 seconds.",
   "CliCalibrationNumberError": "Invalid number for {0}. Use a period as the decimal separator.",
   "ProfilePreviewUsage": "Use profiles preview <profile-name> --display <display-id> [--seconds 30] [--request-id <uuid>] [--dry-run].",
   "PreviewRequestIdOwnership": "A request ID must be nonempty and belongs to a CLI preview.",

@@ -5,6 +5,8 @@ using DccwPlus.Windows;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Windows.Globalization.NumberFormatting;
 
@@ -16,6 +18,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private MainViewModel? _model;
     private Window? _window;
     private Window? _patternWindow;
+    private Window? _activeWindow;
     private PatternSurface? _fullScreenPattern;
     private (Button Exit, Button Compare, Button Cancel, TextBlock Guide, TextBlock Countdown)? _fullScreenControls;
     private GammaPreviewClient? _client;
@@ -31,6 +34,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private bool UndoActive => Active && _session?.UndoOf is not null;
     private bool ReviewSelected => StepPicker.SelectedIndex == 5;
     private bool IsReviewing => Active && _session?.IsReviewing == true;
+    private bool AnnounceWizardChanges => _calibrationPageVisible && ReferenceEquals(_activeWindow, _window);
     private bool PreviewUpdatePending => Active && !UndoActive && (_dirty || ReviewSelected != IsReviewing);
     internal bool HasActivePreview => Active;
     internal bool CanCancelPreview => Active && !_busy;
@@ -62,6 +66,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         window.Closed += (_, _) => ClosePatternWindow();
         window.Activated += (_, e) =>
         {
+            TrackActiveWindow(window, e.WindowActivationState);
             if (!_busy && e.WindowActivationState != WindowActivationState.Deactivated)
             {
                 UpdateUi();
@@ -292,7 +297,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     {
         if (_model is null) return;
         int step = Math.Max(0, StepPicker.SelectedIndex);
-        StepInstructions.Text = _model.Text["StepInstruction" + step];
+        UpdateStepInstructions(step);
         PreparationControls.Visibility = step == 0 ? Visibility.Visible : Visibility.Collapsed;
         GammaControls.Visibility = step == 1 ? Visibility.Visible : Visibility.Collapsed;
         BalanceControls.Visibility = step == 4 ? Visibility.Visible : Visibility.Collapsed;
@@ -358,13 +363,25 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (CountdownText.Visibility == Visibility.Visible)
             CountdownText.Text = string.Format(_model.Text[undo ? "UndoCountdown" : "PreviewCountdown"],
                 Math.Max(0, (int)Math.Ceiling((_session!.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds)));
-        StepInstructions.Text = _model.Text[undo ? "UndoPreview" : "StepInstruction" + Math.Max(0, StepPicker.SelectedIndex)];
-        ComparisonState.Text = _model.Text[undo ? "ShowingPreviousSavedCurve" : !Active ? "ComparisonRequiresPreview"
-            : updatingComparison ? "UpdatingComparison" : _session!.ShowingOriginal ? "ShowingOriginal" : "ShowingAdjusted"];
+        UpdateStepInstructions(Math.Max(0, StepPicker.SelectedIndex));
+        SetLiveText(ComparisonState, _model.Text[undo ? "ShowingPreviousSavedCurve" : !Active ? "ComparisonRequiresPreview"
+            : updatingComparison ? "UpdatingComparison" : _session!.ShowingOriginal ? "ShowingOriginal" : "ShowingAdjusted"],
+            AnnounceWizardChanges && ReviewSelected);
         UpdateFullScreenControls();
         UpdateDisplaySummary(remote);
         ResetButton.Visibility = StepPicker.SelectedIndex is 1 or 4 ? Visibility.Visible : Visibility.Collapsed;
         PreviewUiUpdated?.Invoke();
+    }
+
+    private void UpdateStepInstructions(int step) => SetLiveText(StepInstructions,
+        _model!.Text[UndoActive ? "UndoPreview" : "StepInstruction" + step], AnnounceWizardChanges);
+
+    private static void SetLiveText(TextBlock element, string text, bool announce)
+    {
+        if (element.Text == text) return;
+        element.Text = text;
+        if (announce && element.IsLoaded && AutomationPeer.ListenerExists(AutomationEvents.LiveRegionChanged))
+            FrameworkElementAutomationPeer.CreatePeerForElement(element)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
     }
     private void SaveDraftClicked(object sender, RoutedEventArgs e)
     {
@@ -392,7 +409,13 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
     private void PreviousClicked(object sender, RoutedEventArgs e) => StepPicker.SelectedIndex = Math.Max(0, StepPicker.SelectedIndex - 1);
     private void NextClicked(object sender, RoutedEventArgs e) => StepPicker.SelectedIndex = Math.Min(5, StepPicker.SelectedIndex + 1);
-    private void SkipHardwareClicked(object sender, RoutedEventArgs e) => StepPicker.SelectedIndex = 4;
+
+    private void SkipHardwareClicked(object sender, RoutedEventArgs e)
+    {
+        bool keyboardFocused = SkipHardwareButton.FocusState == FocusState.Keyboard;
+        StepPicker.SelectedIndex = 4;
+        if (keyboardFocused) RedSlider.Focus(FocusState.Keyboard);
+    }
     private void ResetClicked(object sender, RoutedEventArgs e)
     { if (StepPicker.SelectedIndex == 1) GammaSlider.Value = 2.2; else { RedSlider.Value = GreenSlider.Value = BlueSlider.Value = 1; } }
     private void DisplayChanged(object sender, SelectionChangedEventArgs e)
@@ -466,17 +489,23 @@ public sealed partial class CalibrationWorkspace : UserControl
         var text = _model.Text;
         var pattern = new PatternSurface();
         pattern.SetPattern((ReferencePatternKind)Math.Max(0, StepPicker.SelectedIndex));
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(pattern, text["CalibrationPattern"]);
+        AutomationProperties.SetName(pattern, text["CalibrationPattern"]);
         var exit = new Button();
         var compare = new Button();
         var cancel = new Button();
         var guide = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        AutomationProperties.SetLiveSetting(guide, AutomationLiveSetting.Polite);
         var countdown = new TextBlock { TextWrapping = TextWrapping.Wrap };
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         actions.Children.Add(exit);
         actions.Children.Add(compare);
         actions.Children.Add(cancel);
-        var footer = new StackPanel { Padding = new Thickness(16, 10, 16, 10), Spacing = 6 };
+        var footer = new StackPanel
+        {
+            Style = (Style)Application.Current.Resources["FullScreenPatternFooter"],
+            Padding = new Thickness(16, 10, 16, 10),
+            Spacing = 6
+        };
         footer.Children.Add(guide);
         footer.Children.Add(countdown);
         footer.Children.Add(new ScrollViewer
@@ -495,8 +524,10 @@ public sealed partial class CalibrationWorkspace : UserControl
         _fullScreenPattern = pattern;
         _fullScreenControls = (exit, compare, cancel, guide, countdown);
         UpdateFullScreenControls();
+        window.Activated += (_, e) => TrackActiveWindow(window, e.WindowActivationState);
         window.Closed += (_, _) =>
         {
+            if (ReferenceEquals(_activeWindow, window)) _activeWindow = null;
             if (ReferenceEquals(_patternWindow, window))
             {
                 _patternWindow = null;
@@ -543,9 +574,16 @@ public sealed partial class CalibrationWorkspace : UserControl
         controls.Cancel.Content = text["CancelCalibration"];
         controls.Cancel.Visibility = CancelButton.Visibility;
         controls.Cancel.IsEnabled = CancelButton.IsEnabled;
-        controls.Guide.Text = reviewing ? ComparisonState.Text : StepInstructions.Text;
+        SetLiveText(controls.Guide, reviewing ? ComparisonState.Text : StepInstructions.Text,
+            ReferenceEquals(_patternWindow, _activeWindow));
         controls.Countdown.Visibility = CountdownText.Visibility;
         controls.Countdown.Text = CountdownText.Text;
+    }
+
+    private void TrackActiveWindow(Window window, WindowActivationState activation)
+    {
+        if (activation != WindowActivationState.Deactivated) _activeWindow = window;
+        else if (ReferenceEquals(_activeWindow, window)) _activeWindow = null;
     }
     private bool OnPreviewDisplay()
     {

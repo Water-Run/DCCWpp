@@ -16,7 +16,7 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 | SDR 写入和 ICC | 已有曲线读回、`vcgt` 生成、默认关联提交和限时撤回预览。关联前后检查安装文件的摘要，回滚检查日志中的摘要。x64 沙盒普通用户已通过 Windows API 验证虚拟显示器的 ICC 选择、替换和作用域回退 | 本地实机验证曲线写入、系统加载、应用内确认与撤回、退出和重连恢复 |
 | 多屏和重连 | 已探测活动拓扑和彩色模式，分开当前查询 ID 和持久身份 | 同型号/无序列号屏、扩展和复制切换、换端口的实机验证 |
 | HDR 与 Advanced Color 入口 | 区分 SDR、WCG 和 HDR，查询对应的默认 ICC，向导已接入 Windows 设置和 HDR 校准入口 | 核对实际 HDR、WCG 和 MHC2 的显示提示与跳转 |
-| 预设与 CLI | 已有草稿参数、绑定保护、重复导入和命令发现。直接预览、应用预设、撤回校准和试用 ICC 支持预演与请求 ID。Agent 可在限时预览中调整数值及切换原始与候选视图。x64 沙盒已验证 CLI 创建的预设在 GUI 可见，以及 GUI 导入、重复导入和显式副本的 CLI 查验 | 实机显示事务及跨版本兼容性 |
+| 预设与 CLI | 已有草稿参数、绑定保护、重复导入和命令发现。直接预览、应用预设、撤回校准和试用 ICC 支持预演与请求 ID。Agent 可在限时预览中调整数值及切换原始与候选视图，也可查询或限时等待会话结果。x64 沙盒已验证 CLI 创建的预设在 GUI 可见，以及 GUI 导入、重复导入和显式副本的 CLI 查验 | 实机显示事务及跨版本兼容性 |
 | 登录恢复 | StartupTask 与逐屏恢复开关已接通。x64 沙盒普通用户已验证实际重新登录触发无窗口后台，断开测试目标被跳过，关闭后后台退出且下次登录不再触发 | 实机恢复匹配显示器、睡眠唤醒、热插拔及策略禁用 |
 | 语言和照片 | en-US、zh-Hans、zh-Hant，可打开本机照片。x64 沙盒中可切换三语并保留向导当前步骤 | 各页面文案和参考照片的实机验收，内置照片依赖项目所有者供片及许可 |
 | 商店包 | 双架构开发 MSIX、对应源码与依赖许可已验证。x64 已在沙盒验证普通用户安装、交互式 GUI 冷启动、CLI 执行、原地升级保留数据及卸载 | 原生 ARM64 安装与运行、Store 签名包升级、DCCW++ 专属商店身份及认证 |
@@ -73,6 +73,14 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 | 完成、取消与 ClearType | 确认后可在 Windows 中识别新 ICC，取消恢复原状态。完成后可按用户选择打开 ClearType。 |
 
 依照 WinUI Gallery 的控件和交互习惯完善布局。实测浅色、深色、高对比度、窄窗口、键盘导航、Narrator、焦点和三种语言。新文案同步维护三个 catalog，CLI 的字段和原因码保持语言无关。[WinUI Gallery](https://github.com/microsoft/WinUI-Gallery)
+
+切换 Windows 对比主题时核对向导和全屏说明的文字、按钮及背景都使用系统配色。以每种主题下的画面采样比对 Gamma、亮度和对比度图案的渲染像素，另行在人工作业中验收物理显示效果。[Windows 对比主题指引](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/high-contrast-themes)
+
+在未启动预览时，用 Tab 聚焦 Gamma 和 RGB 的滑块与数值框。核对方向键每次分别改变 0.02 和 0.01，数值框的 Page Up／Page Down 分别改变 0.20 和 0.10，且滑块同步变化。验证到达上下限、重置及返回上一步后保留草稿数值。[WinUI 滑块步长](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.primitives.rangebase.smallchange?view=windows-app-sdk-1.8) · [数值框步长](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.numberbox.largechange?view=windows-app-sdk-1.8)
+
+在亮度或对比度页用键盘执行跳过，核对焦点移到灰阶页的红色滑块，并可立即用方向键微调。在 Gamma 页用 Tab 进入全屏按钮后打开参考图，分别用 Escape、退出按钮和 Alt+F4 返回，核对焦点回到全屏按钮并保留所选步骤。[Windows 键盘焦点指引](https://learn.microsoft.com/en-us/windows/apps/develop/input/keyboard-interactions)
+
+订阅 Windows UI Automation 的 `LiveRegionChanged`，核对前台向导的步骤说明和比较状态。全屏比较使用当前全屏说明作为事件来源。同一段文字在界面定时刷新时应保持安静，隐藏的向导页也不应播报。另行用 Narrator 核对实际播报内容和时机。[Windows 实时区域示例](https://learn.microsoft.com/en-us/accessibility-tools-docs/items/uwpxaml/text_livesetting)
 
 验证滚动参考内容时，步骤选择、全屏和底部操作始终可用。实际预览时另行确认窄窗口中的取消、确认和倒计时可见。通过上一步返回时应保留草稿值，切换页面后应回到原来的校准步骤。[Windows 响应式布局](https://learn.microsoft.com/en-us/windows/apps/develop/ui/layouts-with-xaml)
 

@@ -42,6 +42,10 @@ public sealed class GammaWorkerTests : IDisposable
             var a = new GammaPreviewClient(_root, "unused");
             var b = new GammaPreviewClient(_root, "unused");
             Assert.True(a.Observe(id).WorkerRunning);
+            var observer = new PreviewSessionObserver(_root);
+            var active = await observer.ObserveCalibrationAsync(id, 0);
+            Assert.Equal("in_progress", active.Outcome);
+            Assert.Equal(preview.ExpiresAt, active.Session.ExpiresAt);
             Assert.Equal(preview.ExpiresAt, a.FindByRequestId(id, displayId, preset.Id, 30)!.ExpiresAt);
 
             var firstEdit = preset with { Calibration = new() { RedGain = .8 } };
@@ -54,7 +58,12 @@ public sealed class GammaWorkerTests : IDisposable
             Assert.Equal(preview.ExpiresAt, (await b.CommandAsync(id, "review")).ExpiresAt);
             Assert.Equal(3, backend.Writes);
 
+            var observing = observer.ObserveCalibrationAsync(id, 4);
+            Assert.False(observing.IsCompleted);
             Assert.Equal("reverted", (await a.CommandAsync(id, "revert")).Status);
+            var observed = await observing;
+            Assert.Equal("finished", observed.Outcome);
+            Assert.Equal("reverted", observed.Session.Status);
             Assert.Equal(0, await worker.WaitAsync(TimeSpan.FromSeconds(4)));
             Assert.Equal(4, backend.Writes);
             Assert.True(backend.State.Ramp.Matches(GammaRamp.Identity()));
@@ -184,9 +193,17 @@ public sealed class GammaWorkerTests : IDisposable
             Assert.Equal("candidate.icc", profile.State.CurrentProfile);
             Assert.Equal(10, await Task.Run(() => ProfilePreviewHost.Run(_root, id, Guid.NewGuid(),
                 () => throw new InvalidOperationException("A second backend must not open a session."))));
-            Assert.Equal(store.Load(id).ExpiresAt, (await client.BeginAsync(displayId, "candidate.icc", requestId: id)).ExpiresAt);
+            var expiresAt = store.Load(id).ExpiresAt;
+            Assert.Equal(expiresAt, (await client.BeginAsync(displayId, "candidate.icc", requestId: id)).ExpiresAt);
+            var observer = new PreviewSessionObserver(_root);
+            var timeout = await observer.ObserveProfileAsync(id, 1);
+            Assert.Equal("wait_timeout", timeout.Outcome);
+            Assert.Equal("previewing", timeout.Session.Status);
+            Assert.Equal(expiresAt, timeout.Session.ExpiresAt);
+            Assert.Equal("candidate.icc", profile.State.CurrentProfile);
             Assert.Equal("reverted", (await client.CommandAsync(id, "revert")).Status);
             Assert.Equal(0, await worker.WaitAsync(TimeSpan.FromSeconds(4)));
+            Assert.Equal("finished", (await observer.ObserveProfileAsync(id, 0)).Outcome);
             Assert.Equal(0, ProfilePreviewHost.Run(_root, id, Guid.NewGuid(),
                 () => throw new InvalidOperationException("A finished session must not reopen.")));
             Assert.Equal("reverted", (await client.BeginAsync(displayId, "CANDIDATE.ICC", requestId: id)).Status);
@@ -218,6 +235,8 @@ public sealed class GammaWorkerTests : IDisposable
         AtomicFile.Write(requestPath, request, overwrite: false);
 
         var service = new PreviewRecoveryService(_root);
+        var observer = new PreviewSessionObserver(_root);
+        Assert.Equal("recovery_required", (await observer.ObserveProfileAsync(profileId, 0)).Outcome);
         var pending = service.List();
         Assert.Equal(2, pending.Count);
         Assert.Contains(pending, result => result.SessionId == gammaId && result.Kind == "calibration");
@@ -262,6 +281,9 @@ public sealed class GammaWorkerTests : IDisposable
         var client = new GammaPreviewClient(_root, "unused");
         Assert.False(client.Observe(id).WorkerRunning);
         Assert.Equal("previewing", client.Status(id).Status);
+        var observed = await new PreviewSessionObserver(_root).ObserveCalibrationAsync(id, 0);
+        Assert.Equal("recovery_required", observed.Outcome);
+        Assert.Equal("previewing", observed.Session.Status);
         var error = await Assert.ThrowsAsync<ProfilePreviewException>(() => client.CommandAsync(id, "confirm"));
         Assert.Equal("recovery_required", error.Code);
         Assert.False(File.Exists(Path.Combine(store.DirectoryFor(id), "command.json")));
@@ -308,6 +330,7 @@ public sealed class GammaWorkerTests : IDisposable
         var id = Guid.NewGuid();
         var preview = new GammaCalibrationTransaction(backend, store).Begin(id,
             CalibrationPreset.Create("Confirmed", new() { RedGain = .9 }), backend.State.DisplayId, 30);
+        var observer = new PreviewSessionObserver(_root);
 
         Task<GammaCalibrationSession> confirming;
         using (var worker = PreviewWorkerFiles.TryLock(store.DirectoryFor(id), "worker"))
@@ -320,11 +343,13 @@ public sealed class GammaWorkerTests : IDisposable
                 Status = "confirmed", BindingStatus = "pending", ProfileCommitStarted = true,
                 CurveReadbackVerified = true, InstalledProfile = $"DCCWPlus-{id:N}.icc"
             });
+            Assert.Equal("in_progress", (await observer.ObserveCalibrationAsync(id, 0)).Outcome);
         }
 
         var result = await confirming.WaitAsync(TimeSpan.FromSeconds(3));
         Assert.Equal("confirmed", result.Status);
         Assert.True(result.NeedsBindingCompletion);
+        Assert.Equal("recovery_required", (await observer.ObserveCalibrationAsync(id, 0)).Outcome);
     }
 
     private static async Task<GammaCalibrationSession> WaitForPreviewAsync(GammaCalibrationStore store, Guid id, Task<int> worker)

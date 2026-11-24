@@ -57,6 +57,8 @@ Agents can use `capabilities --json` to discover command effects, dry-run suppor
 
 For direct numeric control, use `calibration preview` with a display ID and Gamma or RGB gain values. Start with `--dry-run` and check `data.canPreview`. Once the user is ready to review, run the preview with a request UUID and use its `sessionId` with `calibration update` to tune individual values or switch between `--original` and `--adjusted`. The 10–60 second deadline is fixed for a CLI preview. Ask the user to inspect the display before confirming. The preset can enter the library as part of the confirmed save.
 
+Use `calibration observe <session-id> --json` or `profiles observe <session-id> --json` to check whether the preview worker is still handling an unfinished session. Add `--wait-seconds 15` to wait up to 15 seconds for a final outcome. Read `data.outcome` alongside `data.session.status`. The observation leaves the display and the original preview deadline untouched.
+
 If a confirmed session reports `bindingStatus: pending`, query it with `calibration status <session-id> --json` and try `calibration recover <session-id> --json` to finish the local records. Use `recovery status --json` to find outstanding work across sessions.
 
 Generate a UUID before starting a preview with `calibration preview`, `apply`, `calibration undo`, or `profiles preview` and pass it as `--request-id`. If the response is lost, use that UUID to check the session or retry the same command and arguments. Check the exit code and JSON `ok` field, then read the outcome fields in `data`. The [CLI reference](docs/CLI.md) covers command effects, transaction states, and exit codes.

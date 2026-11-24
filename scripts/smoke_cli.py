@@ -49,6 +49,13 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert public_commands["calibration confirm"]["supportsDryRun"] is False
     assert public_commands["calibration verify"]["effect"] == "read"
     assert call("calibration", "verify", str(uuid4()), expected=3)["code"] == "not_found"
+    for group in ("calibration", "profiles"):
+        assert public_commands[f"{group} observe"]["effect"] == "read"
+        observe = (group, "observe", str(uuid4()))
+        assert call(group, "observe", "invalid-session", expected=2)["code"] == "invalid_arguments"
+        assert call(*observe, "--wait-seconds", "60", expected=3)["code"] == "not_found"
+        for invalid_wait in ("-1", "61", "1.5"):
+            assert call(*observe, "--wait-seconds", invalid_wait, expected=2)["code"] == "invalid_arguments"
     assert not data.exists(), "Help and capabilities must leave app data untouched"
 
     inline_preview = ("calibration", "preview", "--display", "missing-monitor", "--dry-run")
@@ -165,6 +172,9 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         startedAt=created["createdAt"], expiresAt=created["createdAt"])
     document = json.dumps(calibration_state).encode()
     interrupted.write_bytes(document)
+    observed = call("calibration", "observe", str(interrupted_id), "--wait-seconds", "2")
+    assert observed["outcome"] == "recovery_required" and observed["session"]["status"] == "applying"
+    assert not interrupted.with_name("worker.lock").exists()
     assert call("bindings", "restore", "--dry-run")["reason"] == "recovery_required"
     dry_blocked_id = uuid4()
     preflight = call("apply", created["id"], "--display", "0123456789abcdef", "--dry-run",
@@ -194,6 +204,7 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert not (data / "calibration-sessions" / dry_undo_id.hex).exists()
     replay_args = ("apply", copy["id"], "--display", "0123456789abcdef", "--request-id", str(interrupted_id))
     prior = call("calibration", "status", str(interrupted_id))
+    assert call("calibration", "observe", str(interrupted_id)) == dict(outcome="finished", session=prior)
     verification = call("calibration", "verify", str(interrupted_id))
     assert verification["savedStatus"] == "reverted" and verification["status"] == "inconclusive"
     assert verification["reasonCode"] == "calibration_not_confirmed" and verification["capturedAt"] is None
@@ -244,6 +255,8 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
                      installedProfile=f"DCCWPlus-{saved_id.hex}.icc", profileCommitStarted=True, curveReadbackVerified=True,
                      bindingStatus="pending", bindingIntent=dict(previousProfileName=None))
     saved_state.write_text(json.dumps(confirmed), encoding="utf-8")
+    observed = call("calibration", "observe", str(saved_id))
+    assert observed["outcome"] == "recovery_required" and observed["session"]["bindingStatus"] == "pending"
     pending = call("recovery", "status")["sessions"]
     assert pending == [dict(sessionId=str(saved_id), kind="binding", status="pending",
                             reasonCode="binding_pending", needsRecovery=True)]
@@ -302,7 +315,9 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
                                           seconds=30, allowRetries=True)).encode()
     profile_request.write_bytes(profile_reservation)
     profile_args = ("profiles", "preview", candidate_profile, "--display", profile_display, "--request-id", str(profile_id))
-    assert call(*profile_args) == call("profiles", "status", str(profile_id))
+    prior = call("profiles", "status", str(profile_id))
+    assert call(*profile_args) == prior
+    assert call("profiles", "observe", str(profile_id)) == dict(outcome="finished", session=prior)
     assert call(*profile_args, "--seconds", "20", expected=4)["code"] == "request_id_conflict"
     assert call(*profile_args, "--dry-run", expected=4)["code"] == "display_disconnected"
     assert profile_request.read_bytes() == profile_reservation
