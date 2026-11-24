@@ -56,5 +56,6 @@ public sealed class GammaCalibrationStore(string root) : IGammaCalibrationJourna
             && !session.Candidate.Matches(GammaRampMath.Compose(session.Original.Ramp, session.Preset.Calibration)))
             throw new InvalidDataException("The saved candidate does not match its calibration intent.");
         if (session.InstalledProfile is not null) IccProfileInspector.ValidateFileName(session.InstalledProfile);
+        if (session.BindingIntent?.PreviousProfileName is { } previousProfile) IccProfileInspector.ValidateFileName(previousProfile);
     }
 }

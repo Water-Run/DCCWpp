@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -7,6 +8,11 @@ namespace DccwPlus.Core.Calibration;
 public sealed record MonitorPersistenceIdentity(string Key, string Kind);
 public static class MonitorIdentity
 {
+    public static bool IsPersistenceKey([NotNullWhen(true)] string? key) =>
+        key is { Length: 69 }
+        && (key.StartsWith("edid:", StringComparison.Ordinal) || key.StartsWith("path:", StringComparison.Ordinal))
+        && ProfilePreviewPolicy.IsHash(key[5..]);
+
     public static MonitorPersistenceIdentity FromEdid(ReadOnlySpan<byte> edid, string devicePath)
     {
         if (edid.Length >= 128 && edid[..8].SequenceEqual(new byte[] { 0, 255, 255, 255, 255, 255, 255, 0 })

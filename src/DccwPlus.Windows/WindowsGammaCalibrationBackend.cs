@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using DccwPlus.Core.Calibration;
 using DccwPlus.Core.Localization;
+using DccwPlus.Core.Presets;
 using DccwPlus.Core.Storage;
 using static DccwPlus.Windows.WindowsColorProfileQuery;
 using Luid = DccwPlus.Windows.WindowsColorProfileQuery.Luid;
@@ -28,6 +29,11 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         var displays = new WindowsDisplayService().Enumerate();
         var display = displays.SingleOrDefault(d => d.Id == displayId)
             ?? throw new ProfilePreviewException("display_disconnected", "The display is not connected.");
+        return ReadSnapshot(display, displays);
+    }
+
+    private static GammaDeviceState ReadSnapshot(DisplayInfo display, IReadOnlyList<DisplayInfo> displays)
+    {
         if (display.TargetKey is null || display.SourceId is null)
             throw new ProfilePreviewException("display_identity_unavailable", "The display source identity is unavailable.");
         if (display.ProfileQueryStatus == "unavailable")
@@ -39,6 +45,40 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1,
             ReadRamp(display.DeviceName), display.ProfileName, display.ProfileScope, display.SourceId, display.PersistenceKey,
             display.Profile?.Mhc2Present, display.SelectedProfileScope);
+    }
+
+    internal GammaDeviceState CheckPreviewStart(string displayId, CalibrationPreset preset)
+    {
+        PresetCodec.Validate(preset);
+        var displays = new WindowsDisplayService().Enumerate();
+        var device = displays.SingleOrDefault(d => d.Id == displayId)
+            ?? throw new ProfilePreviewException("display_disconnected", new LocalizationService()["DisplayUnavailable"]);
+        if (SdrBlockReason(device, displays) is { } blocked)
+            throw new ProfilePreviewException(blocked, new LocalizationService()[blocked switch
+            {
+                "sdr_path_blocked" => "SdrRequired",
+                "mhc2_profile_blocked" => "Mhc2ProfileBlocked",
+                "shared_source_blocked" => "MirroredDisplay",
+                "profile_state_unavailable" => "ProfileStateUnavailable",
+                _ => "DisplayUnavailable"
+            }]);
+        GammaDeviceState current;
+        try { current = ReadSnapshot(device, displays); }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or ProfilePreviewException { Code: "curve_read_failed" })
+        {
+            throw new ProfilePreviewException("curve_read_failed", new LocalizationService()["CurveReadUnavailable"]);
+        }
+        var ramp = GammaRampMath.Compose(current.Ramp, preset.Calibration);
+        try { ramp.Validate(); }
+        catch (InvalidDataException)
+        {
+            throw new ProfilePreviewException("curve_candidate_invalid", new LocalizationService()["CurveCandidateInvalid"]);
+        }
+        var adapter = Adapter(device.TargetKey!);
+        uint source = device.SourceId!.Value;
+        _ = PrepareIcc(device, current, ramp, Guid.Empty, InstalledProfileReader.ReadBytes,
+            scope => ReadDefault(adapter, source, scope), () => ReadScope(adapter, source));
+        return current;
     }
     public SdrCalibrationDiagnostics Diagnose(string displayId)
     {
@@ -105,31 +145,19 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
     public string? Commit(GammaCalibrationSession session)
     {
         if (session.UndoOf is Guid calibrationId) return CommitUndo(session, calibrationId);
-        var device = new WindowsDisplayService().Enumerate().Single(d => d.Id == session.Original.DisplayId);
-        var now = Read(device.Id);
+        var displays = new WindowsDisplayService().Enumerate();
+        var device = displays.SingleOrDefault(d => d.Id == session.Original.DisplayId)
+            ?? throw new ProfilePreviewException("display_disconnected", new LocalizationService()["DisplayUnavailable"]);
+        var now = ReadSnapshot(device, displays);
         if (!GammaCalibrationTransaction.SameTarget(session.Original, now) || !GammaCalibrationTransaction.SameProfile(session.Original, now)
             || !now.Ramp.Matches(session.Candidate, 257))
             throw new ProfilePreviewException("display_state_changed", "The display changed before the calibration could be saved.");
         var adapter = Adapter(device.TargetKey!);
         uint source = device.SourceId!.Value;
-        string deviceKey = device.ProfileDeviceKey ?? throw new ProfilePreviewException("profile_device_unavailable", "Windows did not report the profile device identity.");
-        int scope = ReadScope(adapter, source);
-        if (now.SelectedProfileScope != ScopeName(scope))
-            throw new ProfilePreviewException("external_profile_change", "The selected color profile scope changed before saving.");
-        string? userDefault = ReadDefault(adapter, source, 1);
-        string? effective = (scope == 1 ? userDefault : null) ?? ReadDefault(adapter, source, 0);
-        if (!ProfilePreviewPolicy.EqualName(effective, session.Original.ProfileName))
-            throw new ProfilePreviewException("external_profile_change", "The original color profile changed before it could be saved.");
-        string baseName = effective ?? "sRGB Color Space Profile.icm";
-        byte[] original = InstalledProfileReader.ReadBytes(baseName);
-        string candidate = "DCCWPlus-" + session.Id.ToString("N") + ".icc";
+        var (backup, profile) = PrepareIcc(device, now, session.Candidate, session.Id, InstalledProfileReader.ReadBytes,
+            scope => ReadDefault(adapter, source, scope), () => ReadScope(adapter, source));
+        string candidate = backup.CandidateName;
         string directory = _store.DirectoryFor(session.Id);
-        byte[] profile = IccCalibrationWriter.Build(original, session.Candidate, session.Id);
-        string? effectiveHash = effective is null ? null : Convert.ToHexString(SHA256.HashData(original));
-        string? userHash = userDefault is null ? null
-            : ProfilePreviewPolicy.EqualName(userDefault, effective) ? effectiveHash : InstalledProfileReader.ReadSha256(userDefault);
-        var backup = new IccAssociationBackup(scope, userDefault, source, device.TargetKey!, candidate, deviceKey,
-            effective, effectiveHash, userHash, Convert.ToHexString(SHA256.HashData(profile)));
         string backupPath = Path.Combine(directory, "association.json");
         AtomicFile.Write(backupPath, JsonSerializer.SerializeToUtf8Bytes(backup, ProfilePreviewStore.Json), overwrite: false);
         string path = Path.Combine(directory, candidate);
@@ -142,11 +170,11 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         int beforeScope = ReadScope(adapter, source);
         if (!GammaCalibrationTransaction.SameTarget(session.Original, beforeAssociation)
             || !GammaCalibrationTransaction.SameProfile(session.Original, beforeAssociation)
-            || beforeScope != scope || !ProfilePreviewPolicy.EqualName(ReadDefault(adapter, source, 1), userDefault)
+            || beforeScope != backup.Scope || !ProfilePreviewPolicy.EqualName(ReadDefault(adapter, source, CurrentUser), backup.UserDefault)
             || !beforeAssociation.Ramp.Matches(session.Candidate, 257))
             throw new ProfilePreviewException("display_state_changed", "The display changed while the calibration profile was being installed.");
         AtomicFile.Write(Path.Combine(directory, "association-mutation-started"), []);
-        if (scope != 1) SetUserScope(deviceKey, true);
+        if (backup.Scope != CurrentUser) SetUserScope(backup.DeviceKey, true);
         Check(ColorProfileAddDisplayAssociation(1, candidate, adapter, source, true, false));
         var associated = Read(device.Id);
         if (!GammaCalibrationTransaction.SameTarget(session.Original, associated)
@@ -156,6 +184,43 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         // Profile notification may reload calibration. Reapply only this same confirmed curve.
         if (!associated.Ramp.Matches(session.Candidate, 257)) Write(associated, session.Candidate);
         return candidate;
+    }
+
+    internal static (IccAssociationBackup Backup, byte[] Profile) PrepareIcc(DisplayInfo device, GammaDeviceState current,
+        GammaRamp ramp, Guid id, Func<string, byte[]> readFile, Func<int, string?> readDefault, Func<int> readScope)
+    {
+        if (device.ProfileDeviceKey is not { } deviceKey
+            || !deviceKey.StartsWith(@"\Registry\Machine\System\", StringComparison.OrdinalIgnoreCase))
+            throw new ProfilePreviewException("profile_device_unavailable", new LocalizationService()["ProfileDeviceUnavailable"]);
+        int scope = readScope();
+        string? userDefault = readDefault(CurrentUser);
+        string? effective = (scope == CurrentUser ? userDefault : null) ?? readDefault(SystemWide);
+        if (current.SelectedProfileScope != ScopeName(scope) || !ProfilePreviewPolicy.EqualName(effective, current.ProfileName)
+            || readScope() != scope)
+            throw new ProfilePreviewException("external_profile_change", new LocalizationService()["ProfileChangedBeforeSave"]);
+        string baseName = effective ?? "sRGB Color Space Profile.icm";
+        byte[] original = ReadIccForSave(baseName, readFile);
+        byte[] profile;
+        try { profile = IccCalibrationWriter.Build(original, ramp, id); }
+        catch (InvalidDataException)
+        {
+            throw new ProfilePreviewException("icc_base_unsupported", new LocalizationService()["IccBaseUnsupported"]);
+        }
+        string? effectiveHash = effective is null ? null : Convert.ToHexString(SHA256.HashData(original));
+        string? userHash = userDefault is null ? null : ProfilePreviewPolicy.EqualName(userDefault, effective) ? effectiveHash
+            : Convert.ToHexString(SHA256.HashData(ReadIccForSave(userDefault, readFile)));
+        var backup = new IccAssociationBackup(scope, userDefault, device.SourceId!.Value, device.TargetKey!,
+            $"DCCWPlus-{id:N}.icc", deviceKey, effective, effectiveHash, userHash, Convert.ToHexString(SHA256.HashData(profile)));
+        return (backup, profile);
+    }
+
+    private static byte[] ReadIccForSave(string name, Func<string, byte[]> readFile)
+    {
+        try { return readFile(name); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            throw new ProfilePreviewException("profile_file_unavailable", new LocalizationService()["IccFileUnavailable"]);
+        }
     }
 
     internal string ReadConfirmedProfileHash(GammaCalibrationSession session)

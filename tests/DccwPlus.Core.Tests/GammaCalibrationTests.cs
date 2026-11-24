@@ -95,6 +95,19 @@ public sealed class GammaCalibrationTests
         Assert.True(fixture.Backend.State.Ramp.Matches(GammaRampMath.Compose(GammaRamp.Identity(), edited.Calibration)));
         Assert.True(fixture.Backend.Committed);
     }
+
+    [Fact] public void BindingIntentIsJournaledBeforeCommittingTheProfile()
+    {
+        var fixture = new Fixture();
+        fixture.Begin();
+        var intent = new BindingSaveIntent("DCCWPlus-previous.icc");
+        fixture.Backend.BeforeCommit = () => Assert.Equal(intent, fixture.Journal.LastCommitting?.BindingIntent);
+
+        var confirmed = fixture.Engine.Confirm(intent);
+
+        Assert.True(confirmed.NeedsBindingCompletion);
+        Assert.Equal(intent, confirmed.BindingIntent);
+    }
     [Fact] public void TimeoutsAndOwnerExitRestoreOriginalWithoutSavingIcc()
     {
         var fixture = new Fixture(); fixture.Begin(); fixture.Clock.Advance(31);
@@ -319,6 +332,21 @@ public sealed class GammaCalibrationTests
         byte[] profile = Profile(); Encoding.ASCII.GetBytes("MHC2").CopyTo(profile, 132);
         Assert.Throws<InvalidDataException>(() => IccCalibrationWriter.Build(profile, GammaRamp.Identity(), Guid.NewGuid()));
     }
+    [Fact] public void IccWriterBoundsGrowthWhenMultipleTagsShareTheSameLargePayload()
+    {
+        byte[] source = Profile();
+        int payloadBytes = IccProfileInspector.MaxBytes / 2;
+        Array.Resize(ref source, 168 + payloadBytes);
+        BinaryPrimitives.WriteUInt32BigEndian(source, (uint)source.Length);
+        for (int i = 0; i < 3; i++)
+        {
+            int entry = 132 + i * 12;
+            BinaryPrimitives.WriteUInt32BigEndian(source.AsSpan(entry + 4), 168);
+            BinaryPrimitives.WriteUInt32BigEndian(source.AsSpan(entry + 8), (uint)payloadBytes);
+        }
+        Assert.Equal("read", IccProfileInspector.Inspect("shared.icc", source).ReadStatus);
+        Assert.Throws<InvalidDataException>(() => IccCalibrationWriter.Build(source, GammaRamp.Identity(), Guid.NewGuid()));
+    }
     [Fact] public void GammaJournalRoundTripPreservesRecoveryAndRejectsAlteredIntent()
     {
         string root = Path.Combine(Path.GetTempPath(), "dccwpp-gamma-tests", Guid.NewGuid().ToString("N"));
@@ -382,9 +410,11 @@ public sealed class GammaCalibrationTests
     private sealed class Journal : IGammaCalibrationJournal
     {
         public GammaCalibrationSession? LastApplying { get; private set; }
+        public GammaCalibrationSession? LastCommitting { get; private set; }
         public void Save(GammaCalibrationSession session)
         {
             if (session.Status == "applying") LastApplying = session;
+            if (session.Status == "committing") LastCommitting = session;
         }
     }
     private sealed class FakeClock : TimeProvider
@@ -399,7 +429,7 @@ public sealed class GammaCalibrationTests
         public GammaDeviceState State { get; set; } = new("0123456789abcdef", @"\\.\DISPLAY1", "00000000:00000001:1",
             new string('A', 64), true, false, GammaRamp.Identity(), SourceId: 1, PersistenceKey: "path:" + new string('D', 64));
         public bool Committed, FailCommit, FailNextWrite, ProfileRestoreCalled, Disconnected, MisreportCommit;
-        public Action? BeforeRead, BeforeWrite, BeforeRestoreProfile;
+        public Action? BeforeRead, BeforeWrite, BeforeRestoreProfile, BeforeCommit;
         public GammaDeviceState Read(string displayId)
         {
             BeforeRead?.Invoke();
@@ -414,6 +444,7 @@ public sealed class GammaCalibrationTests
         }
         public string Commit(GammaCalibrationSession session)
         {
+            BeforeCommit?.Invoke();
             if (FailCommit) throw new IOException("commit failure");
             Committed = true;
             const string installed = "DCCWPlus-test.icc";

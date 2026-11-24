@@ -1,4 +1,5 @@
 using DccwPlus.Core.Presets;
+using System.Text.Json.Serialization;
 
 namespace DccwPlus.Core.Calibration;
 
@@ -6,6 +7,8 @@ public sealed record GammaDeviceState(string DisplayId, string DeviceName, strin
     string TopologyFingerprint, bool ExplicitSdr, bool SharedSource, GammaRamp Ramp,
     string? ProfileName = null, string? ProfileScope = null, uint? SourceId = null, string? PersistenceKey = null,
     bool? ProfileMhc2Present = null, string? SelectedProfileScope = null);
+
+public sealed record BindingSaveIntent(string? PreviousProfileName);
 public sealed record GammaCalibrationSession
 {
     public int SchemaVersion { get; init; } = 1;
@@ -23,12 +26,16 @@ public sealed record GammaCalibrationSession
     public string? InstalledProfile { get; init; }
     public string? BindingStatus { get; init; }
     public string? BindingReasonCode { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public BindingSaveIntent? BindingIntent { get; init; }
     public bool CurveReadbackVerified { get; init; }
     public bool IsBindingRestore { get; init; }
     public Guid? UndoOf { get; init; }
     public bool ProfileCommitStarted { get; init; }
     public bool ColorAccuracyVerified => false;
     public bool NeedsRecovery => Status is "prepared" or "applying" or "previewing" or "committing" or "recovering" or "recovery-pending";
+    [JsonIgnore]
+    public bool NeedsBindingCompletion => Status == "confirmed" && !IsBindingRestore && BindingStatus == "pending";
 }
 public interface IGammaCalibrationBackend
 {
@@ -43,7 +50,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
     TimeProvider? timeProvider = null)
 {
     private const int ReadbackTolerance = 257;
-    private static readonly TimeSpan WindowPreviewLimit = TimeSpan.FromMinutes(30);
+    public static TimeSpan WindowPreviewLimit { get; } = TimeSpan.FromMinutes(30);
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private long _deadlineStart;
     private TimeSpan _deadlineDuration;
@@ -61,7 +68,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         var original = backend.Read(displayId); original.Ramp.Validate(); EnsureSupported(original);
         if (expected is not null && (!SameTarget(expected, original) || !SameProfile(expected, original)
             || !original.Ramp.Matches(expected.Ramp, ReadbackTolerance)))
-            throw new ProfilePreviewException("display_state_changed", "The display changed after the restore check.");
+            throw new ProfilePreviewException("display_state_changed", "The display changed after the preflight check.");
         _sessionStart = _deadlineStart = _time.GetTimestamp();
         _deadlineDuration = TimeSpan.FromSeconds(seconds);
         _allowsWindowEdits = windowOwned && savedCurve is null;
@@ -132,14 +139,14 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         if (!_allowsWindowEdits || _reviewing == reviewing || Tick().Status != "previewing") return;
         if (RestartDeadline(TimeSpan.FromSeconds(reviewing ? 30 : 60))) _reviewing = reviewing;
     }
-    public GammaCalibrationSession Confirm()
+    public GammaCalibrationSession Confirm(BindingSaveIntent? bindingIntent = null)
     {
         Tick(); if (Session!.Status != "previewing") return Session;
         try
         {
             Apply(Session.Candidate);
             if (Session.Status != "previewing" || RevertIfExpired()) return Session;
-            Session = Session! with { ProfileCommitStarted = true, ShowingOriginal = false };
+            Session = Session! with { ProfileCommitStarted = true, ShowingOriginal = false, BindingIntent = bindingIntent };
             Persist("committing", "saving_profile");
             if (RevertIfExpired()) return Session;
             string? installed = backend.Commit(Session!);

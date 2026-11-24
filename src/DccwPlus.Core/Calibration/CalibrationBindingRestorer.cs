@@ -26,10 +26,12 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
             if (!CalibrationService.IsExplicitSdr(display)) return Result("skipped", "sdr_path_blocked");
             if (display.Topology == "clone" || connected.Count(d => d.DeviceName == display.DeviceName) > 1)
                 return Result("skipped", "shared_source_blocked");
+            if (display.Profile?.Mhc2Present == true) return Result("skipped", "mhc2_profile_blocked");
             var state = backend.Read(display.Id);
             if (!state.ExplicitSdr || state.SharedSource || state.PersistenceKey != binding.PersistenceKey
                 || state.SourceId != display.SourceId || state.TargetKey != display.TargetKey)
                 return Result("skipped", "display_state_changed");
+            if (state.ProfileMhc2Present == true) return Result("skipped", "mhc2_profile_blocked");
             var checkedBackend = new SelectedProfileBackend(backend, binding, hashInstalledProfile);
             checkedBackend.VerifyProfile(state);
             if (state.Ramp.Matches(binding.Ramp, 257)) return Result("unchanged", "already_active");

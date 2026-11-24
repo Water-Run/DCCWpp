@@ -67,17 +67,28 @@ python ./scripts/build_release_evidence.py review-01
 
 在已关联并核对 DCCW++ 身份的本地工作区中生成提交候选包。
 
-```powershell
-./scripts/Build.ps1 -Configuration Release -Architecture x64 -Package -Store -Test
-./scripts/Build.ps1 -Configuration Release -Architecture ARM64 -Package -Store
+在本地 `store/identity.local.json` 保存 Partner Center **Product identity** 中的三个值。此文件已被 Git 忽略。先关联项目，再使用同一页面的信息独立核对清单。清单的开发版号可用于本地侧载。首发候选用递增的四段 MSIX 版本号，主版本非零，末段留为 `0`。[MSIX 包版本规则](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements) · [发布前检查](https://learn.microsoft.com/en-us/windows/apps/publish/store-readiness-checklist)
+
+```json
+{
+  "name": "<Package/Identity/Name>",
+  "publisher": "<Package/Identity/Publisher>",
+  "publisherDisplayName": "<Package/Properties/PublisherDisplayName>"
+}
 ```
 
-`-Store` 拒绝开发占位身份，切换为 `StoreUpload` 构建模式。归档 x64 产物后再构建 ARM64，核对两者的归档文件名、版本、身份与架构，并检查包中的两个入口和对应运行时。使用 Visual Studio 生成的 Store 上传文件，或上传已核对的两份独立 MSIX。Partner Center 支持独立 MSIX 并推荐 `.msixupload` 或 `.appxupload`。Store 在发布流程中签署 MSIX。[上传 MSIX](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/upload-app-packages) · [商店分发与签名](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/choose-distribution-path)
+```powershell
+./scripts/Build.ps1 -Configuration Release -Architecture x64 -Package -Store -Test -PackageRun store-x64
+./scripts/Build.ps1 -Configuration Release -Architecture ARM64 -Package -Store -PackageRun store-arm64
+python ./scripts/verify_package.py $x64Upload $arm64Upload --store-identity ./store/identity.local.json
+```
+
+`-Store` 在构建前用 Python 核对本地身份、源清单和版本，再切换到 `StoreUpload` 模式。将两份生成的单架构 `.msixupload` 路径传给验包脚本。脚本会检查上传文件中的实际 MSIX，并核对身份、版本、CPU 架构、清单入口、语言和运行时。也可直接传入两份独立 MSIX。Store 在发布流程中签署 MSIX。[上传 MSIX](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/upload-app-packages) · [商店分发与签名](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/choose-distribution-path)
 
 ## 验收与提交
 
 - 在干净的 Windows 11 x64 和原生 ARM64 设备上用普通用户验证安装、启动、别名、升级数据迁移和卸载，并核对 Windows 颜色设置能找到或移除已保存的 ICC。
 - 验证登录任务启用、用户或组织禁用、登录后后台恢复及无匹配显示器的处理。关闭可见窗口后检查睡眠唤醒和热插拔。用 `dccwpp startup last-restore --json` 核对触发原因和逐屏结果，并验证关闭启动任务后后台退出。用装包版本检查 GUI/CLI 数据互通及进程返回值。
-- 准备三种语言的商店描述、真实界面截图和产品支持地址。按提交时的产品能力核对隐私说明，并为认证人员记录选屏、预览、取消恢复和命令行测试步骤。说明 `runFullTrust` 用于桌面显示、文件选择和预览工作进程。[隐私说明](PRIVACY.md)
+- 按首发验收结果审阅三语文案与认证说明，并上传当前构建的真实界面截图。[商店文案及截图清单](STORE_LISTING.md) · [隐私说明](PRIVACY.md)
 - 归档候选版对应的源码、构建说明、GPL 文本及第三方许可。保存照片作者和许可。GitHub 源码版本与商店包版本保持可追溯。
 - 在 Partner Center 核对包身份、架构、版本、上架范围和认证反馈。WACK 可作为本地辅助检查。首次发布可用 Private audience 让选定测试人员获得 Store 签名包，完成实际安装和升级验证后再公开可见性。[MSIX 本地检查](https://learn.microsoft.com/en-us/windows/msix/package/packaging-uwp-apps#validate-your-app-package-locally) · [首次发布的可见性选项](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/visibility-options)

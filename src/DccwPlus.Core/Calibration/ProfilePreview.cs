@@ -1,9 +1,12 @@
+using System.Text.Json.Serialization;
+
 namespace DccwPlus.Core.Calibration;
 
 public sealed record AssociatedProfile(string FileName, string? Sha256, bool CanSelect);
 public sealed record ProfileAssociationState(string DisplayId, string TargetKey, uint SourceId,
     string TopologyFingerprint, string? CurrentProfile, string Scope, bool ExplicitSdr,
-    bool SharedSource, IReadOnlyList<AssociatedProfile> Profiles);
+    bool SharedSource, IReadOnlyList<AssociatedProfile> Profiles,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PersistenceKey = null);
 public sealed record ProfilePreviewPlan(bool CanPreview, string ReasonCode, ProfileAssociationState State,
     string CandidateProfile, string? CandidateSha256);
 
@@ -39,8 +42,13 @@ public static class ProfilePreviewPolicy
     public static bool IsHash(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
     public static bool EqualName(string? left, string? right) => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
     public static bool SameTarget(ProfileAssociationState before, ProfileAssociationState now) =>
+        SamePath(before, now) && before.TopologyFingerprint == now.TopologyFingerprint;
+    public static bool SameRecoveryTarget(ProfileAssociationState before, ProfileAssociationState now) =>
+        SamePath(before, now) && (before.TopologyFingerprint == now.TopologyFingerprint || before.PersistenceKey is not null);
+    private static bool SamePath(ProfileAssociationState before, ProfileAssociationState now) =>
         before.DisplayId == now.DisplayId && before.TargetKey == now.TargetKey && before.SourceId == now.SourceId
-        && before.TopologyFingerprint == now.TopologyFingerprint && now.ExplicitSdr && !now.SharedSource
+        && (before.PersistenceKey is null || before.PersistenceKey == now.PersistenceKey)
+        && now.ExplicitSdr && !now.SharedSource
         && before.Scope == now.Scope && now.Scope == "current-user";
 }
 
@@ -130,30 +138,35 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
             // A journal failure must not prevent an already-required rollback.
             try { Persist("recovering", reason); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
             var current = backend.Read(Session.Original.DisplayId);
-            if (!ProfilePreviewPolicy.SameTarget(Session.Original, current))
+            if (!ProfilePreviewPolicy.SameRecoveryTarget(Session.Original, current))
                 return Pending("recovery_target_changed");
             var original = ProfilePreviewPolicy.ValidProfile(Session.Original, Session.Original.CurrentProfile)!;
-            var available = ProfilePreviewPolicy.ValidProfile(current, original.FileName);
-            if (available?.Sha256 != original.Sha256) return Pending("original_profile_changed");
-            if (ProfilePreviewPolicy.EqualName(current.CurrentProfile, original.FileName))
-            {
-                Persist("reverted", reason, true);
-                return Session;
-            }
-            if (!ProfilePreviewPolicy.EqualName(current.CurrentProfile, Session.CandidateProfile))
+            bool originalSelected = ProfilePreviewPolicy.EqualName(current.CurrentProfile, original.FileName);
+            if (!originalSelected && !ProfilePreviewPolicy.EqualName(current.CurrentProfile, Session.CandidateProfile))
             {
                 // Do not overwrite a change made by Windows or another color application.
                 Persist("superseded", "external_profile_change");
                 return Session;
             }
+            if (ProfilePreviewPolicy.ValidProfile(current, original.FileName)?.Sha256 != original.Sha256)
+                return Pending("original_profile_changed");
+            if (originalSelected)
+            {
+                Persist("reverted", reason, true);
+                return Session;
+            }
+            if (ProfilePreviewPolicy.ValidProfile(current, Session.CandidateProfile)?.Sha256 != Session.CandidateSha256)
+                return Pending("profile_file_changed");
             backend.SetDefault(current, original.FileName, original.Sha256!);
             var restored = backend.Read(Session.Original.DisplayId);
-            if (!ProfilePreviewPolicy.SameTarget(Session.Original, restored)
+            if (!ProfilePreviewPolicy.SameTarget(current, restored)
                 || !ProfilePreviewPolicy.EqualName(restored.CurrentProfile, original.FileName)
                 || ProfilePreviewPolicy.ValidProfile(restored, original.FileName)?.Sha256 != original.Sha256)
                 return Pending("restore_not_verified");
             Persist("reverted", reason, true);
         }
+        catch (ProfilePreviewException ex) when (ex.Code is "display_disconnected" or "profile_scope_unavailable"
+            or "profile_state_unavailable" or "profile_file_changed") { return Pending(ex.Code); }
         catch (Exception) { return Pending("restore_failed"); }
         return Session!;
     }

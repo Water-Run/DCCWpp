@@ -11,6 +11,7 @@ public sealed record CalibrationRestoreReport(int SchemaVersion, bool Applied, s
 public sealed class CalibrationBindingService(string root)
 {
     private readonly CalibrationBindingStore _store = new(root);
+    private readonly CalibrationCompletionService _completion = new(root);
     private readonly string _reportPath = Path.Combine(Path.GetFullPath(root), "startup-status.json");
 
     public IReadOnlyList<CalibrationBinding> List() => _store.List();
@@ -18,60 +19,15 @@ public sealed class CalibrationBindingService(string root)
     public CalibrationBinding Remove(string persistenceKey)
     {
         using var gate = DisplayMutationLock.Acquire();
-        return _store.Remove(persistenceKey);
+        return _store.Remove(persistenceKey, () => _completion.RetirePending(
+            session => session.Original.PersistenceKey == persistenceKey, "binding_removed_by_user"));
     }
 
     public void DeletePreset(Guid id)
     {
         using var gate = DisplayMutationLock.Acquire();
-        new PresetStore(root).Delete(id);
-    }
-
-    // Called with the display mutation lock after the previous ICC and curve were restored.
-    internal bool RemoveUndoneBinding(GammaCalibrationSession saved)
-    {
-        var binding = _store.List().SingleOrDefault(b => b.PersistenceKey == saved.Original.PersistenceKey
-            && ProfilePreviewPolicy.EqualName(b.ProfileName, saved.InstalledProfile));
-        if (binding is null) return false;
-        _store.Remove(binding.PersistenceKey);
-        return true;
-    }
-
-    // The caller holds the display mutation lock through both confirmation and binding save.
-    public void SaveConfirmed(GammaCalibrationSession session)
-    {
-        if (session.Status != "confirmed" || session.InstalledProfile is null || session.IsBindingRestore)
-            throw new InvalidOperationException("A newly confirmed calibration is required.");
-        var presets = new PresetStore(root);
-        try { _ = presets.Get(session.Preset.Id); }
-        catch (FileNotFoundException) { presets.Add(session.Preset); }
-        catch (DirectoryNotFoundException) { presets.Add(session.Preset); }
-        var displays = new WindowsDisplayService().Enumerate();
-        var display = displays.SingleOrDefault(d => d.Id == session.Original.DisplayId);
-        if (display?.PersistenceKey is null || display.PersistenceKind is null
-            || session.Original.PersistenceKey is null || session.Original.PersistenceKey != display.PersistenceKey
-            || displays.Count(d => d.PersistenceKey == display.PersistenceKey) != 1)
-            throw new ProfilePreviewException("display_identity_unavailable", "A unique persistent display identity is required.");
-        var backend = new WindowsGammaCalibrationBackend(root);
-        var saved = backend.Read(display.Id);
-        if (!GammaCalibrationTransaction.SameTarget(session.Original, saved) || saved.ProfileScope != "current-user"
-            || !ProfilePreviewPolicy.EqualName(saved.ProfileName, session.InstalledProfile))
-            throw new ProfilePreviewException("profile_selection_changed", "The confirmed profile is no longer selected.");
-
-        var old = _store.List().SingleOrDefault(b => b.PersistenceKey == display.PersistenceKey);
-        _store.Save(new()
-        {
-            PersistenceKey = display.PersistenceKey,
-            IdentityKind = display.PersistenceKind,
-            DisplayName = display.Name,
-            PresetId = session.Preset.Id,
-            ProfileName = session.InstalledProfile,
-            ProfileSha256 = backend.ReadConfirmedProfileHash(session),
-            Ramp = session.Candidate.Copy(),
-            OriginalRamp = session.Original.Ramp.Copy(),
-            RestoreEnabled = old?.RestoreEnabled ?? false,
-            SavedAt = DateTimeOffset.UtcNow
-        });
+        new PresetStore(root).Delete(id, () => _completion.RetirePending(
+            session => session.UndoOf is null && session.Preset.Id == id, "preset_removed_by_user"));
     }
 
     public CalibrationBinding SetEnabled(string persistenceKey, bool enabled)
@@ -79,6 +35,9 @@ public sealed class CalibrationBindingService(string root)
         using var gate = DisplayMutationLock.Acquire();
         var binding = _store.List().SingleOrDefault(b => b.PersistenceKey == persistenceKey)
             ?? throw new KeyNotFoundException("No saved calibration is bound to that display.");
+        if (binding.RestoreEnabled != enabled)
+            _completion.RetirePending(session => session.UndoOf is not null && session.Original.PersistenceKey == persistenceKey
+                && ProfilePreviewPolicy.EqualName(session.Original.ProfileName, binding.ProfileName), "binding_changed");
         var updated = binding with { RestoreEnabled = enabled };
         _store.Save(updated);
         return updated;
@@ -90,9 +49,9 @@ public sealed class CalibrationBindingService(string root)
         if (gate is null) return Report("preview_busy");
 
         var recovery = new PreviewRecoveryService(root);
-        if (dryRun && recovery.List().Count > 0) return Report("recovery_required");
+        if (dryRun && recovery.List().Any(item => item.Kind != "binding")) return Report("recovery_required");
         var recoveries = dryRun ? [] : recovery.RecoverLocked().Sessions;
-        if (recoveries.Any(r => r.NeedsRecovery)) return Report("recovery_required", recoveries: recoveries);
+        if (recoveries.Any(r => r.NeedsRecovery && r.Kind != "binding")) return Report("recovery_required", recoveries: recoveries);
 
         var gammaStore = new GammaCalibrationStore(root);
         var backend = new WindowsGammaCalibrationBackend(root);

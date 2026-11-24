@@ -12,6 +12,13 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
     private static readonly TimeSpan WaitLimit = TimeSpan.FromSeconds(10);
     private readonly GammaCalibrationStore _store = new(root);
 
+    public void CheckCanPreview(string displayId, CalibrationPreset preset)
+    {
+        using var gate = DisplayMutationLock.Acquire();
+        GammaPreviewHost.RequireNoInterruptedPreview(root);
+        _ = new WindowsGammaCalibrationBackend(root).CheckPreviewStart(displayId, preset);
+    }
+
     public GammaCalibrationSession? FindByRequestId(Guid requestId, string displayId, Guid presetId, int seconds) =>
         FindByRequestId(requestId, seconds, displayId, presetId, undoOf: null);
 
@@ -81,6 +88,7 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
     public Task<GammaCalibrationSession> RecoverAsync(Guid id)
     {
         var session = _store.Load(id);
+        if (session.NeedsBindingCompletion) return Task.Run(() => new CalibrationCompletionService(root).Recover(id));
         return session.NeedsRecovery ? LaunchAsync(id, recover: true) : Task.FromResult(session);
     }
 

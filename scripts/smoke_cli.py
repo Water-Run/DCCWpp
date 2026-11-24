@@ -123,6 +123,7 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         schemaVersion=1, persistenceKey=key, identityKind="device-path", displayName="Fixture only",
         presetId=created["id"], profileName=f"DCCWPlus-{uuid4().hex}.icc", profileSha256="0" * 64,
         ramp=ramp, restoreEnabled=False, savedAt=created["createdAt"])), encoding="utf-8")
+    saved_binding = binding_path.read_bytes()
     assert call("bindings", "list")[0]["restoreEnabled"] is False
     assert call("bindings", "enable", key)["restoreEnabled"] is True
     plan = call("bindings", "restore", "--dry-run")
@@ -145,6 +146,11 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     document = json.dumps(calibration_state).encode()
     interrupted.write_bytes(document)
     assert call("bindings", "restore", "--dry-run")["reason"] == "recovery_required"
+    dry_blocked_id = uuid4()
+    preflight = call("apply", created["id"], "--display", "0123456789abcdef", "--dry-run",
+                     "--request-id", str(dry_blocked_id), expected=4)
+    assert preflight["code"] == "recovery_required"
+    assert not (data / "calibration-sessions" / dry_blocked_id.hex).exists()
     pending = call("recovery", "status")["sessions"]
     assert len(pending) == 1 and pending[0]["sessionId"] == str(interrupted_id)
     assert pending[0]["kind"] == "calibration" and pending[0]["needsRecovery"] is True
@@ -184,6 +190,39 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         assert worker.returncode == 0 and not worker.stdout and not worker.stderr, worker
         assert request.read_bytes() == reservation and interrupted.read_bytes() == terminal
         checks += 1
+
+    saved_id = uuid4()
+    saved_state = data / "calibration-sessions" / saved_id.hex / "state.json"
+    saved_state.parent.mkdir()
+    pending_preset = call("presets", "create", "Pending completion fixture")
+    confirmed = dict(calibration_state, id=str(saved_id), status="confirmed", reasonCode="confirmed", preset=pending_preset,
+                     original=dict(calibration_state["original"], persistenceKey=key),
+                     installedProfile=f"DCCWPlus-{saved_id.hex}.icc", profileCommitStarted=True, curveReadbackVerified=True,
+                     bindingStatus="pending", bindingIntent=dict(previousProfileName=None))
+    saved_state.write_text(json.dumps(confirmed), encoding="utf-8")
+    pending = call("recovery", "status")["sessions"]
+    assert pending == [dict(sessionId=str(saved_id), kind="binding", status="pending",
+                            reasonCode="binding_pending", needsRecovery=True)]
+    assert call("bindings", "restore", "--dry-run")["reason"] == "no_bindings_enabled"
+    interrupted.write_text(json.dumps(dict(calibration_state, id=str(interrupted_id), status="previewing")), encoding="utf-8")
+    assert call("calibration", "recover", str(saved_id), expected=4)["code"] == "recovery_required"
+    blocked_report = call("recovery", "run")
+    assert blocked_report["reason"] == "recovery_required" and pending[0] in blocked_report["sessions"]
+    interrupted.write_bytes(terminal)
+    assert call("calibration", "recover", str(saved_id), expected=4)["code"] == "display_disconnected"
+    report = call("recovery", "run")
+    assert report["reason"] == "recovery_required" and report["sessions"][0]["kind"] == "binding"
+    assert call("presets", "delete", pending_preset["id"])["deleted"] is True
+    retired = call("calibration", "status", str(saved_id))
+    assert retired["status"] == "confirmed" and retired["bindingReasonCode"] == "preset_removed_by_user"
+
+    binding_path.write_bytes(saved_binding)
+    saved_state.write_text(json.dumps(dict(confirmed, preset=created)), encoding="utf-8")
+    assert call("bindings", "remove", key)["removed"] is True
+    retired = call("calibration", "status", str(saved_id))
+    assert retired["bindingStatus"] == "unchanged" and retired["bindingReasonCode"] == "binding_removed_by_user"
+    assert call("recovery", "status")["sessions"] == []
+
     undo_id, source_id = uuid4(), uuid4()
     undo_state = data / "calibration-sessions" / undo_id.hex / "state.json"
     undo_state.parent.mkdir()
@@ -259,6 +298,7 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert observed["kind"] == "display-observation"
     assert call("displays", "snapshot", "show")["capturedAt"] == observed["capturedAt"]
     call("apply", created["id"], "--display", "missing-monitor", "--dry-run", expected=3)
+    assert call("apply", created["id"], "--display", "missing-monitor", expected=3)["code"] == "not_found"
     call("calibration", "diagnose", "--display", "missing-monitor", expected=3)
     call("calibration", "capture", "--display", "missing-monitor", expected=3)
     call("displays", "restore-plan", "--display", "missing-monitor", expected=3)
@@ -299,7 +339,9 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
             assert dry["canApply"] is False and dry["reasonCode"] in {"sdr_path_blocked", "mhc2_profile_blocked"}
         else:
             assert dry["code"] in {"curve_read_failed", "display_identity_unavailable", "shared_source_blocked",
-                                   "mhc2_profile_blocked", "profile_state_unavailable"}
+                                   "mhc2_profile_blocked", "profile_state_unavailable", "profile_scope_unavailable",
+                                   "profile_device_unavailable", "profile_file_unavailable", "icc_base_unsupported",
+                                   "curve_candidate_invalid", "external_profile_change", "preview_busy", "recovery_required"}
         restore = call("displays", "restore-plan", "--display", display)
         assert restore["canRestore"] is False
         assert restore["displayId"] == display

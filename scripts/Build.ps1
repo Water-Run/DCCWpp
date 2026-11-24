@@ -28,10 +28,12 @@ try {
     if ($Store -and -not $Package) { throw '-Store requires -Package.' }
     if ($PackageRun -and -not $Package) { throw '-PackageRun requires -Package.' }
     if ($Store) {
-        [xml]$manifest = Get-Content -LiteralPath 'src\DccwPlus.App\Package.appxmanifest' -Raw
-        if ($manifest.Package.Identity.Name -eq 'DCCWPlus.Development' -or $manifest.Package.Identity.Publisher -eq 'CN=DCCWPlus-Development') {
-            throw 'Associate DCCW++ with its own Partner Center identity before generating a Store submission. See docs/STORE.md.'
+        $identityFile = 'store/identity.local.json'
+        if (-not (Test-Path -LiteralPath $identityFile -PathType Leaf)) {
+            throw 'Create the local identity file using the DCCW++ values from Partner Center. See docs/STORE.md.'
         }
+        & python ./scripts/verify_package.py --manifest-only src/DccwPlus.App/Package.appxmanifest --store-identity $identityFile
+        if ($LASTEXITCODE -ne 0) { throw 'Store manifest verification failed. See docs/STORE.md.' }
     }
     if ($Test) {
         & dotnet test 'tests\DccwPlus.Core.Tests\DccwPlus.Core.Tests.csproj' -c $Configuration --nologo

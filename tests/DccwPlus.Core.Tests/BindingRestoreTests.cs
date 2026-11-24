@@ -76,6 +76,22 @@ public sealed class BindingRestoreTests
         Assert.Empty(test.Journal.Sessions);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AHardwareCalibrationProfileBlocksAutomaticRestoreAndItsDryRun(bool dryRun)
+    {
+        var test = new Fixture();
+        test.Backend.State = test.Backend.State with { ProfileMhc2Present = true };
+
+        var result = test.Restorer.Restore(test.Binding, dryRun);
+
+        Assert.Equal("skipped", result.Status);
+        Assert.Equal("mhc2_profile_blocked", result.ReasonCode);
+        Assert.Equal(0, test.Backend.Writes);
+        Assert.Empty(test.Journal.Sessions);
+    }
+
     private sealed class Fixture
     {
         public FakeDisplays Displays { get; } = new();

@@ -10,46 +10,88 @@ internal static class DisplayConfigurationQuery
 {
     private const uint ActiveVirtualFlags = 0x00000002 | 0x00000010;
     private const uint DatabaseCurrent = 0x00000004;
+    private const uint PathActive = 0x00000001;
+    private const uint PathSupportsVirtualMode = 0x00000008;
+    private const int SourceModeType = 1;
     private const int ErrorInsufficientBuffer = 122;
     private const int DefaultDisplayProfile = 4; // CPST_NONE selects the standard display profile.
     private const int ExtendedDisplayProfile = 8; // CPST_EXTENDED_DISPLAY_COLOR_MODE
 
     public static string? ReadActivePathStamp()
     {
-        if (GetDisplayConfigBufferSizes(ActiveVirtualFlags, out uint pathCount, out uint modeCount) != 0) return null;
-        if (pathCount == 0) return "";
-        var paths = new PathInfo[pathCount];
-        var modes = new ModeInfo[Math.Max(modeCount, 1)];
-        if (QueryDisplayConfig(ActiveVirtualFlags, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero) != 0) return null;
-        return string.Join('\n', paths.Take((int)pathCount).Where(p => (p.Flags & 1) != 0).Select(p =>
-            FormattableString.Invariant($"{p.SourceAdapterHigh:X8}{p.SourceAdapterLow:X8}:{p.SourceId}|{p.TargetAdapterHigh:X8}{p.TargetAdapterLow:X8}:{p.TargetId}|{ReadTarget(p.TargetAdapterLow, p.TargetAdapterHigh, p.TargetId).MonitorPath}"))
-            .Order(StringComparer.Ordinal));
+        var configuration = ReadActiveConfiguration();
+        if (configuration is null) return null;
+        var stamps = configuration.Paths.Where(path => (path.Flags & PathActive) != 0).Select(path =>
+        {
+            var target = ReadTarget(path.TargetAdapterLow, path.TargetAdapterHigh, path.TargetId);
+            var color = ReadColor(path.TargetAdapterLow, path.TargetAdapterHigh, path.TargetId);
+            return PathStamp(path, configuration.Modes, target.MonitorPath, color);
+        });
+        return string.Join('\n', stamps.Order(StringComparer.Ordinal));
     }
 
     public static DisplayProbe? TryQuery()
+    {
+        var configuration = ReadActiveConfiguration();
+        if (configuration is null) return null;
+        string topology = ReadTopology();
+        if (configuration.Paths.Length == 0) return new(topology, []);
+
+        var names = ReadGdiDevices();
+        var displays = new List<DisplayInfo>();
+        foreach (var path in configuration.Paths)
+        {
+            if ((path.Flags & PathActive) == 0) continue;
+            var display = Describe(path, configuration.Modes, names, topology);
+            if (displays.All(existing => existing.Id != display.Id)) displays.Add(display);
+        }
+        return new(topology, displays);
+    }
+
+    private static ActiveConfiguration? ReadActiveConfiguration()
     {
         if (Marshal.SizeOf<PathInfo>() != 72 || Marshal.SizeOf<ModeInfo>() != 64) return null;
         for (int attempt = 0; attempt < 3; attempt++)
         {
             if (GetDisplayConfigBufferSizes(ActiveVirtualFlags, out uint pathCount, out uint modeCount) != 0) return null;
-            if (pathCount == 0) return new(ReadTopology(), []);
+            if (pathCount == 0) return new([], []);
             var paths = new PathInfo[pathCount];
             var modes = new ModeInfo[Math.Max(modeCount, 1)];
             int result = QueryDisplayConfig(ActiveVirtualFlags, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero);
             if (result == ErrorInsufficientBuffer) continue;
             if (result != 0) return null;
-            var names = ReadGdiDevices();
-            var displays = new List<DisplayInfo>();
-            string topology = ReadTopology();
-            foreach (var path in paths.Take((int)pathCount))
-            {
-                if ((path.Flags & 1) == 0) continue;
-                var display = Describe(path, modes, names, topology);
-                if (displays.All(existing => existing.Id != display.Id)) displays.Add(display);
-            }
-            return new(topology, displays);
+            Array.Resize(ref paths, (int)pathCount);
+            Array.Resize(ref modes, (int)modeCount);
+            return new(paths, modes);
         }
         return null;
+    }
+
+    internal static ModeInfo? SourceMode(PathInfo path, ReadOnlySpan<ModeInfo> modes)
+    {
+        bool virtualPath = (path.Flags & PathSupportsVirtualMode) != 0;
+        uint index = virtualPath ? path.SourceModeInfo >> 16 : path.SourceModeInfo;
+        if ((virtualPath && index == ushort.MaxValue) || index >= (uint)modes.Length) return null;
+
+        var mode = modes[(int)index];
+        return mode.InfoType == SourceModeType && mode.Id == path.SourceId
+            && mode.AdapterLow == path.SourceAdapterLow && mode.AdapterHigh == path.SourceAdapterHigh ? mode : null;
+    }
+
+    internal static int? CloneGroup(PathInfo path)
+    {
+        int group = (int)(path.SourceModeInfo & 0xffff);
+        return (path.Flags & PathSupportsVirtualMode) != 0 && group != ushort.MaxValue ? group : null;
+    }
+
+    internal static string PathStamp(PathInfo path, ReadOnlySpan<ModeInfo> modes, string? monitorPath, ColorProbe color)
+    {
+        var mode = SourceMode(path, modes);
+        string source = FormattableString.Invariant($"{path.SourceAdapterHigh:X8}{path.SourceAdapterLow:X8}:{path.SourceId}");
+        string target = FormattableString.Invariant($"{path.TargetAdapterHigh:X8}{path.TargetAdapterLow:X8}:{path.TargetId}");
+        string layout = FormattableString.Invariant($"{CloneGroup(path)}|{mode?.Width}|{mode?.Height}|{mode?.PositionX}|{mode?.PositionY}|{mode?.PixelFormat}");
+        string signal = FormattableString.Invariant($"{path.Rotation}|{path.Scaling}|{Millihertz(path.RefreshNumerator, path.RefreshDenominator)}");
+        return $"{source}|{target}|{monitorPath}|{path.TargetAvailable}|{layout}|{signal}|{color.State}";
     }
 
     private static DisplayInfo Describe(PathInfo path, ModeInfo[] modes, Dictionary<string, GdiDevice> names, string topology)
@@ -61,32 +103,24 @@ internal static class DisplayConfigurationQuery
         string targetKey = $"{path.TargetAdapterHigh:X8}:{path.TargetAdapterLow:X8}:{path.TargetId}";
         string material = string.IsNullOrWhiteSpace(target.MonitorPath) ? "target:" + targetKey : "path:" + target.MonitorPath;
         string id = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material)))[..16].ToLowerInvariant();
-        int modeIndex = unchecked((int)(path.SourceModeInfo >> 16));
-        int? width = null, height = null, x = null, y = null;
-        if (modeIndex >= 0 && modeIndex < modes.Length && modes[modeIndex].InfoType == 1)
-        {
-            width = checked((int)modes[modeIndex].Width);
-            height = checked((int)modes[modeIndex].Height);
-            x = modes[modeIndex].PositionX;
-            y = modes[modeIndex].PositionY;
-        }
+        var mode = SourceMode(path, modes);
+        int? x = mode?.PositionX, y = mode?.PositionY;
         var color = ReadColor(path.TargetAdapterLow, path.TargetAdapterHigh, path.TargetId);
         var profile = color.ProfileSubtype is int subtype
             ? WindowsColorProfileQuery.TryReadEffective(new() { Low = path.TargetAdapterLow, High = path.TargetAdapterHigh }, path.SourceId, subtype)
             : default;
-        int cloneGroup = unchecked((int)(path.SourceModeInfo & 0xFFFF));
         string? friendly = string.Equals(target.FriendlyName, "Display", StringComparison.OrdinalIgnoreCase) ? null : target.FriendlyName;
         string name = new string(FirstText(friendly, monitorName, target.FriendlyName, gdiName, "Display").Where(c => !char.IsControl(c)).ToArray()).Trim();
         if (string.IsNullOrWhiteSpace(name)) name = "Display";
         if (name.Length > 128) name = name[..128];
         bool primary = names.Values.Any(device => device.Primary) ? gdi.Primary : x == 0 && y == 0;
-        int? reportedWidth = width is > 0 and <= 16384 ? width : null;
-        int? reportedHeight = height is > 0 and <= 16384 ? height : null;
+        int? reportedWidth = mode?.Width is > 0 and <= 16384 ? (int)mode.Value.Width : null;
+        int? reportedHeight = mode?.Height is > 0 and <= 16384 ? (int)mode.Value.Height : null;
         string? profileName = profile.Name;
         var persistence = WindowsMonitorIdentity.Read(target.MonitorPath);
         return new(id, name, string.IsNullOrWhiteSpace(gdiName) ? "DISPLAY" : gdiName, primary, color.State, "topology-query", topology, targetKey,
             OutputName(path.OutputTechnology), reportedWidth, reportedHeight, x, y,
-            Millihertz(path.RefreshNumerator, path.RefreshDenominator), cloneGroup == 0xFFFF ? null : cloneGroup,
+            Millihertz(path.RefreshNumerator, path.RefreshDenominator), CloneGroup(path),
             profileName, profileName is null ? null : profile.Scope, color.HdrActive, color.AdvancedColorActive,
             InstalledProfileReader.Read(profileName), path.SourceId,
             MatchMonitorKey(target.MonitorPath, gdi.Monitors ?? []), persistence?.Key, persistence?.Kind,
@@ -241,14 +275,14 @@ internal static class DisplayConfigurationQuery
     }
     [StructLayout(LayoutKind.Sequential)] private struct AdvancedColor { public DeviceInfo Header; public uint Value; public uint Encoding; public uint BitsPerChannel; }
     [StructLayout(LayoutKind.Sequential)] private struct AdvancedColor2 { public DeviceInfo Header; public uint Value; public uint Encoding; public uint BitsPerChannel; public uint ActiveColorMode; }
-    [StructLayout(LayoutKind.Sequential)] private struct PathInfo
+    [StructLayout(LayoutKind.Sequential)] internal struct PathInfo
     {
         public uint SourceAdapterLow; public int SourceAdapterHigh; public uint SourceId; public uint SourceModeInfo; public uint SourceStatus;
         public uint TargetAdapterLow; public int TargetAdapterHigh; public uint TargetId; public uint TargetModeInfo; public int OutputTechnology;
         public int Rotation; public int Scaling; public uint RefreshNumerator; public uint RefreshDenominator; public int ScanLineOrdering;
         [MarshalAs(UnmanagedType.Bool)] public bool TargetAvailable; public uint TargetStatus; public uint Flags;
     }
-    [StructLayout(LayoutKind.Explicit, Size = 64)] private struct ModeInfo
+    [StructLayout(LayoutKind.Explicit, Size = 64)] internal struct ModeInfo
     {
         [FieldOffset(0)] public int InfoType;
         [FieldOffset(4)] public uint Id;
@@ -272,6 +306,7 @@ internal static class DisplayConfigurationQuery
     }
 
     private readonly record struct GdiMonitor(string DeviceId, string Name, string DeviceKey);
+    private sealed record ActiveConfiguration(PathInfo[] Paths, ModeInfo[] Modes);
     private readonly record struct GdiDevice(bool Primary, IReadOnlyList<GdiMonitor> Monitors);
     private readonly record struct TargetDetails(string? FriendlyName, string? MonitorPath);
     internal readonly record struct ColorProbe(string State, bool? HdrActive, bool? AdvancedColorActive)

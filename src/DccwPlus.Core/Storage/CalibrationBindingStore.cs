@@ -29,10 +29,11 @@ public sealed class CalibrationBindingStore(string root)
         Validate(binding);
         AtomicFile.Write(FileFor(binding.PersistenceKey), JsonSerializer.SerializeToUtf8Bytes(binding, ProfilePreviewStore.Json));
     }
-    public CalibrationBinding Remove(string persistenceKey)
+    public CalibrationBinding Remove(string persistenceKey, Action? beforeRemove = null)
     {
         var binding = List().SingleOrDefault(b => b.PersistenceKey == persistenceKey)
             ?? throw new KeyNotFoundException("No saved calibration is bound to that display.");
+        beforeRemove?.Invoke();
         File.Delete(FileFor(binding.PersistenceKey));
         return binding;
     }
@@ -49,9 +50,7 @@ public sealed class CalibrationBindingStore(string root)
     }
     public static void Validate(CalibrationBinding binding)
     {
-        if (binding.SchemaVersion != 1 || binding.PersistenceKey is null || binding.PersistenceKey.Length != 69
-            || !(binding.PersistenceKey.StartsWith("edid:", StringComparison.Ordinal) || binding.PersistenceKey.StartsWith("path:", StringComparison.Ordinal))
-            || !ProfilePreviewPolicy.IsHash(binding.PersistenceKey[5..])
+        if (binding.SchemaVersion != 1 || !MonitorIdentity.IsPersistenceKey(binding.PersistenceKey)
             || binding.IdentityKind != (binding.PersistenceKey.StartsWith("edid:", StringComparison.Ordinal) ? "edid-serial" : "device-path")
             || binding.PresetId == Guid.Empty || string.IsNullOrWhiteSpace(binding.DisplayName) || binding.DisplayName.Length > 128
             || !ProfilePreviewPolicy.IsHash(binding.ProfileSha256) || binding.SavedAt.Year is < 2020 or > 2100)

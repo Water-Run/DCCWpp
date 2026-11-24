@@ -45,7 +45,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         _timer = DispatcherQueue.CreateTimer(); _timer.Interval = TimeSpan.FromSeconds(1); _timer.Tick += TimerTick;
         _debounce = DispatcherQueue.CreateTimer(); _debounce.Interval = TimeSpan.FromMilliseconds(180); _debounce.IsRepeating = false;
         _debounce.Tick += async (_, _) => await PushAsync();
-        model.Text.LanguageChanged += (_, _) => { UpdateStep(); UpdateUi(); };
+        model.Text.LanguageChanged += (_, _) => { UpdateStep(); UpdateUi(); RefreshRecovery(); };
         window.Closed += (_, _) => ClosePatternWindow();
         window.Activated += (_, e) =>
         {
@@ -162,8 +162,11 @@ public sealed partial class CalibrationWorkspace : UserControl
             ClosePatternWindow();
             _session = await _client.CommandAsync(_session!.Id, "confirm");
             if (_session.Status == "confirmed" && undo)
-                Show(_session.BindingStatus == "failed" ? "UndoSavedBindingWarning" : "UndoSaved",
-                    _session.BindingStatus == "failed" ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
+            {
+                bool bindingWarning = _session.BindingStatus is "failed" or "pending";
+                Show(bindingWarning ? "UndoSavedBindingWarning" : "UndoSaved",
+                    bindingWarning ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
+            }
             else if (_session.Status == "confirmed")
             {
                 _model!.RefreshPresets();
@@ -456,10 +459,15 @@ public sealed partial class CalibrationWorkspace : UserControl
     { if (_session is not null && _client is not null) _session = _client.Status(_session.Id); }
     private void RefreshRecovery()
     {
+        if (_model is null) return;
         try
         {
-            RecoveryNotice.IsOpen = _recovery.List().Any(s => s.Kind != "calibration" || s.SessionId != _session?.Id
-                || s.Status == "recovery-pending");
+            var pending = _recovery.List().Where(s => s.Kind != "calibration" || s.SessionId != _session?.Id
+                || s.Status == "recovery-pending").ToArray();
+            bool onlyBindings = pending.Length > 0 && pending.All(s => s.Kind == "binding");
+            RecoveryNotice.Title = _model.Text[onlyBindings ? "BindingRecoveryTitle" : "RecoveryTitle"];
+            RecoveryNotice.Message = _model.Text[onlyBindings ? "BindingRecoveryMessage" : "RecoveryMessage"];
+            RecoveryNotice.IsOpen = pending.Length > 0;
         }
         catch (Exception ex) { ShowError(ex); RecoveryNotice.IsOpen = true; }
     }
@@ -471,9 +479,18 @@ public sealed partial class CalibrationWorkspace : UserControl
         {
             var report = await Task.Run(_recovery.Recover);
             ReloadSession();
+            bool hasBindings = report.Sessions.Any(s => s.Kind == "binding");
+            if (hasBindings) _model.RefreshPresets();
             if (report.Reason == "preview_busy") Show("RecoveryBusy", InfoBarSeverity.Warning);
-            else if (report.Reason == "recovery_required") Show("RecoveryMessage", InfoBarSeverity.Warning);
-            else if (report.Reason == "recovery_finished") Show("RecoveryFinished", InfoBarSeverity.Success);
+            else if (report.Reason == "recovery_required")
+                Show(report.Sessions.Any(s => s.Kind != "binding" && s.NeedsRecovery) ? "RecoveryMessage" : "BindingRecoveryMessage",
+                    InfoBarSeverity.Warning);
+            else if (report.Reason == "recovery_finished")
+            {
+                bool bindingFailed = report.Sessions.Any(s => s.Kind == "binding" && s.Status == "failed");
+                string message = bindingFailed ? "BindingRecoveryFailed" : hasBindings ? "BindingRecoveryFinished" : "RecoveryFinished";
+                Show(message, bindingFailed ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
+            }
         }
         catch (Exception ex) { ShowError(ex); }
         finally { _busy = false; UpdateUi(); RefreshRecovery(); }
@@ -497,10 +514,23 @@ public sealed partial class CalibrationWorkspace : UserControl
     private void ShowError(Exception ex)
     {
         if (_model is null) return;
-        if (ex is ProfilePreviewException { Code: "mhc2_profile_blocked" })
-        { Show("Mhc2ProfileBlocked", InfoBarSeverity.Warning); return; }
-        if (ex is ProfilePreviewException { Code: "profile_state_unavailable" or "profile_scope_unavailable" })
-        { Show("ProfileStateUnavailable", InfoBarSeverity.Warning); return; }
+        if (ex is ProfilePreviewException preview)
+        {
+            string? guidance = preview.Code switch
+            {
+                "mhc2_profile_blocked" => "Mhc2ProfileBlocked",
+                "profile_state_unavailable" or "profile_scope_unavailable" => "ProfileStateUnavailable",
+                "profile_device_unavailable" => "ProfileDeviceUnavailable",
+                "profile_file_unavailable" => "IccFileUnavailable",
+                "icc_base_unsupported" => "IccBaseUnsupported",
+                "curve_read_failed" => "CurveReadUnavailable",
+                "curve_candidate_invalid" => "CurveCandidateInvalid",
+                "external_profile_change" => "ProfileChangedBeforeSave",
+                "recovery_required" => "RecoveryMessage",
+                _ => null
+            };
+            if (guidance is not null) { Show(guidance, InfoBarSeverity.Warning); return; }
+        }
         Outcome.Message = _model.Text["Error"] + " " + ex.Message;
         Outcome.Severity = InfoBarSeverity.Error;
         Outcome.IsOpen = true;

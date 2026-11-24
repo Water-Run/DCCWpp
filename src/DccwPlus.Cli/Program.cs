@@ -163,6 +163,8 @@ internal static class Cli
                 if (remaining is ["calibration", "recover", var recoverId])
                 {
                     var result = await client.RecoverAsync(ParseId(recoverId));
+                    if (result.NeedsBindingCompletion)
+                        return Failure(result.BindingReasonCode ?? "binding_pending", new LocalizationService()["BindingRecoveryMessage"], 4, json);
                     return result.NeedsRecovery ? Failure(result.ReasonCode, "The original calibration still needs recovery.", 4, json)
                         : Success(SessionSummary(result), json);
                 }
@@ -226,20 +228,24 @@ internal static class Cli
                 if (!dryRun && requestId is Guid replayId && client.FindByRequestId(replayId, display, presetId, seconds) is { } prior)
                     return Success(SessionSummary(prior), json);
                 var preset = store.Get(presetId);
-                var plan = new CalibrationService(displays).Plan(preset, display);
-                if (plan.ReasonCode == "sdr_path_blocked")
-                    return dryRun ? Success(plan, json) : Failure(plan.ReasonCode, "This calibration requires an explicit SDR display.", 4, json);
-                if (plan.ReasonCode == "mhc2_profile_blocked")
-                    return dryRun ? Success(plan, json) : Failure(plan.ReasonCode, "The selected color profile contains MHC2 hardware calibration.", 4, json);
-                var snapshot = new WindowsGammaCalibrationBackend(root).Read(display);
-                if (snapshot.ProfileMhc2Present == true)
-                    return Failure("mhc2_profile_blocked", "The selected color profile contains MHC2 hardware calibration.", 4, json);
-                if (snapshot.SharedSource) return Failure("shared_source_blocked", "Mirrored displays cannot be calibrated independently.", 4, json);
-                _ = GammaRampMath.Compose(snapshot.Ramp, preset.Calibration);
-                if (dryRun) return Success(new { presetId = preset.Id, displayId = display, backend = "sdr-gamma-icc",
-                    canPreview = true, requiresConfirmation = true, timeoutSeconds = seconds, changesDisplay = false }, json);
-                var session = await client.BeginAsync(display, preset, seconds, requestId: requestId);
-                return Success(SessionSummary(session), json);
+                try
+                {
+                    if (dryRun)
+                    {
+                        client.CheckCanPreview(display, preset);
+                        return Success(new { presetId = preset.Id, displayId = display, backend = "sdr-gamma-icc",
+                            canPreview = true, requiresConfirmation = true, timeoutSeconds = seconds, changesDisplay = false }, json);
+                    }
+                    return Success(SessionSummary(await client.BeginAsync(display, preset, seconds, requestId: requestId)), json);
+                }
+                catch (ProfilePreviewException ex) when (dryRun && ex.Code is ("sdr_path_blocked" or "mhc2_profile_blocked"))
+                {
+                    return Success(CalibrationPlan.BlockedByColorMode(preset.Id, display, ex.Code), json);
+                }
+                catch (ProfilePreviewException ex) when (ex.Code == "display_disconnected")
+                {
+                    return Failure("not_found", ex.Message, 3, json);
+                }
             }
             throw new ArgumentException("Unknown command or option. Run dccwpp --help.");
         }

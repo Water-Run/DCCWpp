@@ -82,9 +82,15 @@ dccwpp.exe calibration compare before.json after.json --json
 
 已确认校准的逐屏绑定可在设置或 `bindings` 命令中启用。启用绑定仅保存偏好。Windows 登录任务由设置页单独管理。确认会话的 `bindingStatus` 表示本机绑定保存情况。旧日志中该字段可能为空。
 
+`bindingStatus: pending` 表示显示事务已经确认，本地预设或自动恢复绑定仍待完成。`calibration recover <session-id>` 可再次处理。常规保存会核对目标、当前 ICC、文件摘要和确认时保存的旧绑定。记录已存在时保留其恢复开关和保存时间。用户通过 GUI 或 CLI 移除绑定、删除预设或更改待清理的撤回绑定时，之前的写入意图会结束。旧日志缺少意图且没有已写入的记录时，以 `binding_intent_unavailable` 结束检查。若显示器断开或仍有中断预览，命令返回退出码 4，确认状态仍可通过 `calibration status` 查询。
+
 `startup status` 从当前 MSIX 包查询登录任务。未安装版返回 `unpackaged`，Windows 未报告任务时返回 `unavailable`。[Windows 包范围的 StartupTask 查询](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptask.getforcurrentpackageasync)
 
 `bindings restore --dry-run` 生成恢复报告。去掉 `--dry-run` 会先尝试恢复中断预览，再为已启用且符合条件的绑定写回已确认的绝对曲线。只有原目标可唯一识别、当前为独立 SDR 路径、已确认的用户 ICC 仍被选用且摘要一致、当前曲线匹配已知基线时才写入。报告通过 `reason` 和每屏 `status` 表示结果，退出码 0 表示已生成报告。Windows 登录任务使用同一路径。`startup last-restore` 返回后台最近一次报告及触发原因，尚无报告时为 `null`。
+
+后台定期只读检查活动路径、分辨率、桌面位置、刷新率和色彩模式。即使系统未发通知，检测到变化也会触发 `display_changed` 并重新核对绑定。SDR 路径检测到 MHC2 时，预演和实际恢复都会报告 `mhc2_profile_blocked`。[Windows 显示路径与模式](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/relationship-of-mode-information-to-path-information)
+
+后台收到 `preview_busy` 后每 15 秒重试，同一批请求最多等待 31 分钟。等待期间合并显示通知，保留 `resume` 作为优先触发原因。每次尝试前重新读取 Windows 自启动状态和当前绑定。关闭自启动会结束待处理请求，最近一条后台报告可显示 `startup_disabled`。手动执行 `bindings restore` 仍立即返回本次结果。[Windows 登录任务状态](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptaskstate?view=winrt-26100)
 
 校准操作：
 
@@ -103,13 +109,15 @@ dccwpp calibration undo <calibration-id> --dry-run --json
 dccwpp calibration undo <calibration-id> --seconds 30 --request-id <request-uuid> --json
 ```
 
+`apply --dry-run` 与向导、CLI 的实际预览共用启动检查。检查未完成的显示事务、SDR 路径、逻辑曲线、默认 ICC 及作用域，并在内存中生成候选 ICC。`canPreview: true` 表示这些检查通过。驱动写入和 Windows 默认关联在实际操作后验证。HDR 或 MHC2 继续返回 `canApply: false` 与原因码。其他阻碍通过错误封装返回，例如 `recovery_required`、`profile_device_unavailable`、`profile_file_unavailable` 和 `icc_base_unsupported`。预演不占用请求 ID，也不生成磁盘 ICC。
+
 **未带 `--dry-run` 的 `apply` 会实际写入所选 SDR 显示器的临时 Gamma 曲线。** 它返回会话 ID 和固定的 `expiresAt`。CLI 时限为 10–60 秒，更新参数或切回原曲线都沿用同一时限。未在到期前进入保存流程的会话会尝试恢复原曲线。`confirm` 保存 ICC 并在 Windows 中选用，`revert` 取消尚未确认的预览，`recover` 尝试恢复中断会话。
 
 Agent 可以在第一次实际预览前生成一个 UUID 并传入 `--request-id`。该 UUID 同时是会话 ID。发生客户端超时或输出丢失时，使用同一个 UUID、预设 ID、显示器 ID 和超时值重试。`apply` 会返回持久日志中的现有会话，包括已超时、已确认或待恢复的会话，以上次保存的状态为准。原显示器断开或原预设已删除时仍可查询已经创建的会话。复用 UUID 提交其他目标、预设或时限会返回 `request_id_conflict`。需要发起新的预览时使用新 UUID。`--dry-run` 不占用请求 ID。
 
 同一会话的命令由 GUI 和 CLI 共同串行发送。遇到 `command_busy`、`worker_start_timeout` 或 `worker_not_responding` 时，先查询会话状态。状态为 `recovery-pending` 时，在目标显示器重新可用后执行 `calibration recover`。恢复会保留最初的请求记录。应用在同一个 Windows 会话内串行执行实际显示写入，忙时返回 `preview_busy`。
 
-`recovery status` 列出尚未结束的曲线与 ICC 预览，`kind` 分别为 `calibration` 和 `profile`。`recovery run` 尝试恢复这些会话，也可在向导里点击恢复。启用的登录绑定由 `bindings restore` 和登录任务管理。命令返回完整报告，调用方可用 `reason` 判断是否为忙碌 `preview_busy`、仍需恢复 `recovery_required`、处理完毕 `recovery_finished` 或无待处理会话 `no_recovery_needed`。仍在运行的预览由原工作进程处理。
+`recovery status` 列出尚未结束的曲线及 ICC 预览和待处理的本地绑定记录，`kind` 分别为 `calibration`、`profile` 和 `binding`。`recovery run` 尝试处理这些会话，也可在向导里点击恢复。处理 `binding` 记录只更新本机状态。`bindings restore` 和登录任务也会先处理这些记录，再按已启用的绑定恢复显示。命令返回完整报告，调用方可用 `reason` 判断是否为忙碌 `preview_busy`、仍需恢复 `recovery_required`、处理完毕 `recovery_finished` 或无待处理会话 `no_recovery_needed`。`recovery_finished` 表示检查结束，各条目的 `status` 和 `reasonCode` 记录结果。仍在运行的预览由原工作进程处理。
 
 GUI 在校准页编辑时使用心跳维持预览，单次会话最多 30 分钟。切到其他页面会暂停心跳，可使用该页面的取消入口。进入比较页后，原始与调整后视图共用最多 30 秒的确认倒计时，且受单次会话总时限约束。`showingOriginal` 记录比较视图选择。窗口进程退出会触发独立工作进程恢复。工作进程自身中断后，需要读取持久日志并恢复。显示器不匹配或不可用时保留待恢复状态。
 
@@ -140,6 +148,8 @@ dccwpp profiles recover <session-id> --json
 ```
 
 这条路径限于已关联的、可验证原默认配置的当前用户 SDR 显示器。它试用默认 ICC 关联，不生成新的校准曲线。
+
+桌面布局改变会结束正在进行的 ICC 预览。新会话记录了可唯一识别的显示器时，恢复可在同一显示器、同一目标和源路径上继续，条件是当前仍为独立 SDR 且作用域一致。缺少该身份的旧日志仍要求原拓扑。回滚前核对当前候选 ICC 与将恢复的原 ICC 摘要。任务仍需处理时，`profiles recover` 返回 `recovery-pending` 和 `reasonCode`，例如 `display_disconnected`、`recovery_target_changed` 或 `profile_file_changed`。检测到其他配置已被选中时，报告 `superseded`。
 
 `profiles preview --request-id` 的 UUID 用于 `profiles status`，也会出现在响应的 `data.id`。用相同 UUID、显示器、ICC 文件名和时限重试会返回已有会话。文件名比较忽略大小写。参数冲突时返回 `request_id_conflict`。ICC 预览有独立的会话 ID 范围，预演不占用 UUID。
 

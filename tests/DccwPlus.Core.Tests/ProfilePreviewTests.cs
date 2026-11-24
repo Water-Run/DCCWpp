@@ -6,6 +6,8 @@ namespace DccwPlus.Core.Tests;
 
 public sealed class ProfilePreviewTests
 {
+    private static readonly string PersistenceKey = "edid:" + new string('F', 64);
+
     [Fact] public void RecoveryJournalPrecedesNativeWriteAndConfirmIsIdempotent()
     {
         var setup = new Fixture();
@@ -58,7 +60,7 @@ public sealed class ProfilePreviewTests
         Assert.Single(setup.Backend.Writes);
     }
 
-    [Fact] public void DisconnectedOrChangedTargetRetainsRecoveryJournalWithoutWritingAnotherDisplay()
+    [Fact] public void LegacyJournalRequiresItsOriginalTopology()
     {
         var setup = new Fixture(); setup.Start();
         setup.Backend.State = setup.Backend.State with { TopologyFingerprint = new string('E', 64) };
@@ -72,12 +74,92 @@ public sealed class ProfilePreviewTests
         Assert.Equal("original.icc", setup.Backend.State.CurrentProfile);
     }
 
+    [Fact] public void ChangedLayoutEndsThePreviewAndRestoresOnTheSameDisplayPath()
+    {
+        var setup = new Fixture();
+        setup.Backend.State = setup.Backend.State with { PersistenceKey = PersistenceKey };
+        setup.Start();
+        setup.Backend.State = setup.Backend.State with { TopologyFingerprint = new string('E', 64) };
+
+        var result = setup.Transaction.Confirm();
+
+        Assert.Equal("reverted", result.Status);
+        Assert.Equal("display_state_changed", result.ReasonCode);
+        Assert.True(result.AssociationVerified);
+        Assert.Equal(new[] { "candidate.icc", "original.icc" }, setup.Backend.Writes);
+    }
+
+    [Fact] public void ReconnectCanRestoreOnTheSameDisplayPathAfterTheLayoutChanges()
+    {
+        var setup = new Fixture();
+        setup.Backend.State = setup.Backend.State with { PersistenceKey = PersistenceKey };
+        setup.Start();
+        setup.Backend.Disconnected = true;
+        var pending = setup.Transaction.Tick();
+        Assert.Equal("display_disconnected", pending.ReasonCode);
+        Assert.True(pending.NeedsRecovery);
+        Assert.Single(setup.Backend.Writes);
+        setup.Backend.Disconnected = false;
+        setup.Backend.State = setup.Backend.State with { TopologyFingerprint = new string('E', 64) };
+
+        var recovered = new ProfilePreviewTransaction(setup.Backend, setup.Journal).Recover(pending);
+
+        Assert.Equal("reverted", recovered.Status);
+        Assert.Equal("original.icc", setup.Backend.State.CurrentProfile);
+    }
+
+    [Theory]
+    [InlineData("identity")]
+    [InlineData("identity-unavailable")]
+    [InlineData("target")]
+    [InlineData("source")]
+    [InlineData("scope")]
+    [InlineData("cloned")]
+    [InlineData("hdr")]
+    public void RecoveryWaitsIfTheOriginalIndependentSdrPathCannotBeVerified(string change)
+    {
+        var setup = new Fixture();
+        setup.Backend.State = setup.Backend.State with { PersistenceKey = PersistenceKey };
+        setup.Start();
+        var changed = setup.Backend.State with { TopologyFingerprint = new string('E', 64) };
+        setup.Backend.State = change switch
+        {
+            "identity" => changed with { PersistenceKey = "edid:" + new string('E', 64) },
+            "identity-unavailable" => changed with { PersistenceKey = null },
+            "target" => changed with { TargetKey = "00000000:00000001:257" },
+            "source" => changed with { SourceId = 1 },
+            "scope" => changed with { Scope = "system-wide" },
+            "cloned" => changed with { SharedSource = true },
+            "hdr" => changed with { ExplicitSdr = false },
+            _ => throw new ArgumentOutOfRangeException(nameof(change))
+        };
+
+        var result = setup.Transaction.Revert();
+
+        Assert.Equal("recovery-pending", result.Status);
+        Assert.Equal("recovery_target_changed", result.ReasonCode);
+        Assert.Single(setup.Backend.Writes);
+    }
+
     [Fact] public void ChangedOriginalFilePreventsRestoringDifferentBytes()
     {
         var setup = new Fixture(); setup.Start();
         setup.Backend.State = setup.Backend.State with { Profiles =
             [new("original.icc", new string('E', 64), true), new("candidate.icc", new string('C', 64), true)] };
         Assert.Equal("original_profile_changed", setup.Transaction.Revert().ReasonCode);
+        Assert.Single(setup.Backend.Writes);
+    }
+
+    [Fact] public void ReplacedCandidateFilePreventsRestoringOverAnUnverifiedSelection()
+    {
+        var setup = new Fixture(); setup.Start();
+        setup.Backend.State = setup.Backend.State with { Profiles =
+            [new("original.icc", new string('B', 64), true), new("candidate.icc", new string('E', 64), true)] };
+
+        var result = setup.Transaction.Tick();
+
+        Assert.Equal("recovery-pending", result.Status);
+        Assert.Equal("profile_file_changed", result.ReasonCode);
         Assert.Single(setup.Backend.Writes);
     }
 
@@ -119,8 +201,12 @@ public sealed class ProfilePreviewTests
         string directory = Path.Combine(Path.GetTempPath(), "dccwpp-preview-tests", Guid.NewGuid().ToString("N"));
         try
         {
-            var setup = new Fixture(); var session = setup.Start(); var store = new ProfilePreviewStore(directory);
+            var setup = new Fixture();
+            setup.Backend.State = setup.Backend.State with { PersistenceKey = PersistenceKey };
+            var session = setup.Start(); var store = new ProfilePreviewStore(directory);
             store.Save(session); Assert.Equal(session.Id, store.Load(session.Id).Id);
+            Assert.Equal(PersistenceKey, store.Load(session.Id).Original.PersistenceKey);
+            Assert.Throws<InvalidDataException>(() => store.Save(session with { Original = session.Original with { PersistenceKey = "invalid" } }));
             Assert.Single(store.Incomplete()); store.Request(session.Id, "revert"); store.Request(session.Id, "revert");
             Assert.True(store.Requested(session.Id, "revert"));
             Assert.Throws<InvalidDataException>(() => store.Save(session with { CandidateSha256 = new string('D', 64) }));
@@ -142,7 +228,10 @@ public sealed class ProfilePreviewTests
             [new("original.icc", new string('B', 64), true), new("candidate.icc", new string('C', 64), true)]);
         public List<string> Writes { get; } = []; public Action? BeforeWrite { get; set; }
         public bool FailFirstAfterWrite { get; set; }
-        public ProfileAssociationState Read(string id) => State;
+        public bool Disconnected { get; set; }
+        public ProfileAssociationState Read(string id) => Disconnected
+            ? throw new ProfilePreviewException("display_disconnected", "Simulated disconnected display.")
+            : State;
         public void SetDefault(ProfileAssociationState expected, string profile, string hash)
         {
             BeforeWrite?.Invoke(); Writes.Add(profile); State = State with { CurrentProfile = profile };

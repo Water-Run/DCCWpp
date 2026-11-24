@@ -34,7 +34,13 @@ public sealed record DisplayInfo(
 public interface IDisplayService { IReadOnlyList<DisplayInfo> Enumerate(); }
 
 public sealed record CalibrationPlan(Guid PresetId, string DisplayId, string Backend, bool CanApply,
-    string ReasonCode, IReadOnlyList<string> Steps);
+    string ReasonCode, IReadOnlyList<string> Steps)
+{
+    public static CalibrationPlan BlockedByColorMode(Guid presetId, string displayId, string reason) =>
+        new(presetId, displayId, "icc-wcs", false, reason, reason == "mhc2_profile_blocked"
+            ? ["Use Windows color settings to manage the hardware calibration profile"]
+            : ["Read the display color mode", "Refuse the SDR calibration path while the mode is not explicit SDR", "Leave the display unchanged"]);
+}
 
 // The same boundary is consumed by GUI, CLI, and future startup recovery.
 // A successful plan is not evidence that a display has changed.
@@ -46,11 +52,9 @@ public sealed class CalibrationService(IDisplayService displays)
         var display = displays.Enumerate().FirstOrDefault(item => string.Equals(item.Id, displayId, StringComparison.Ordinal))
             ?? throw new KeyNotFoundException("The requested display is not connected.");
         if (!IsExplicitSdr(display))
-            return new(preset.Id, displayId, "icc-wcs", false, "sdr_path_blocked",
-            ["Read the display color mode", "Refuse the SDR calibration path while the mode is not explicit SDR", "Leave the display unchanged"]);
+            return CalibrationPlan.BlockedByColorMode(preset.Id, displayId, "sdr_path_blocked");
         if (display.Profile?.Mhc2Present == true)
-            return new(preset.Id, displayId, "icc-wcs", false, "mhc2_profile_blocked",
-                ["Use Windows color settings to manage the hardware calibration profile"]);
+            return CalibrationPlan.BlockedByColorMode(preset.Id, displayId, "mhc2_profile_blocked");
         return new(preset.Id, displayId, "icc-wcs", false, "calibration_backend_pending",
         ["Confirm the display is explicit SDR", "Snapshot the existing profile and vcgt presence",
          "Generate and validate an ICC calibration without replacing the saved association yet",

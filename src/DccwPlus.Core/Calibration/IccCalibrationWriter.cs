@@ -18,6 +18,7 @@ public static class IccCalibrationWriter
         int directoryEnd = checked(132 + count * 12);
         var tags = new List<(string Signature, byte[] Data)>();
         var signatures = new HashSet<string>(StringComparer.Ordinal);
+        int dataBytes = 0;
         for (int i = 0; i < count; i++)
         {
             int entry = 132 + 12 * i;
@@ -28,12 +29,18 @@ public static class IccCalibrationWriter
                 throw new InvalidDataException("Invalid or duplicate ICC tag entry.");
             if (signature == "MHC2") throw new InvalidDataException("MHC2 profiles require the hardware calibration backend.");
             if (signature is "vcgt" or "MS00" or "desc") continue;
+            dataBytes += Align(length);
+            if (dataBytes > IccProfileInspector.MaxBytes)
+                throw new InvalidDataException("The calibrated ICC exceeds the supported size.");
             tags.Add((signature, original.Slice(offset, length).ToArray()));
         }
         tags.Add(("desc", Description("DCCW++ " + id.ToString("N")[..12], original[8] == 4)));
         tags.Add(("vcgt", Vcgt(ramp)));
         int position = Align(132 + tags.Count * 12);
-        var output = new byte[position + tags.Sum(t => Align(t.Data.Length))];
+        int outputBytes = position + tags.Sum(t => Align(t.Data.Length));
+        if (outputBytes > IccProfileInspector.MaxBytes)
+            throw new InvalidDataException("The calibrated ICC exceeds the supported size.");
+        var output = new byte[outputBytes];
         original[..128].CopyTo(output);
         Write(output, 0, (uint)output.Length);
         output.AsSpan(84, 16).Clear();

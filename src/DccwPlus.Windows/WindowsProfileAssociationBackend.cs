@@ -24,10 +24,12 @@ public sealed class WindowsProfileAssociationBackend : IProfileAssociationBacken
         var profiles = List(adapter, display.SourceId.Value, scope).Select(Inspect).ToArray();
         string topology = string.Join('\n', displays.OrderBy(d => d.Id, StringComparer.Ordinal).Select(d =>
             FormattableString.Invariant($"{d.Id}|{d.TargetKey}|{d.SourceId}|{d.Topology}|{d.ColorState}|{d.HdrActive}|{d.AdvancedColorActive}|{d.Width}|{d.Height}|{d.PositionX}|{d.PositionY}")));
+        string? persistence = display.PersistenceKey;
+        if (persistence is not null && displays.Count(other => other.PersistenceKey == persistence) != 1) persistence = null;
         return new(display.Id, display.TargetKey, display.SourceId.Value,
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(topology))), current,
             scope == CurrentUser ? "current-user" : "system-wide", CalibrationService.IsExplicitSdr(display),
-            display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1, profiles);
+            display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1, profiles, persistence);
     }
 
     public void SetDefault(ProfileAssociationState expected, string profile, string sha256)
@@ -37,7 +39,9 @@ public sealed class WindowsProfileAssociationBackend : IProfileAssociationBacken
         if (!ProfilePreviewPolicy.SameTarget(expected, now)
             || !ProfilePreviewPolicy.EqualName(expected.CurrentProfile, now.CurrentProfile))
             throw new ProfilePreviewException("display_state_changed", "The display changed before the profile could be selected.");
-        if (ProfilePreviewPolicy.ValidProfile(now, profile)?.Sha256 != sha256)
+        var current = ProfilePreviewPolicy.ValidProfile(expected, expected.CurrentProfile);
+        if (current is null || ProfilePreviewPolicy.ValidProfile(now, now.CurrentProfile)?.Sha256 != current.Sha256
+            || ProfilePreviewPolicy.ValidProfile(now, profile)?.Sha256 != sha256)
             throw new ProfilePreviewException("profile_file_changed", "The associated profile is missing, invalid, or has changed.");
         Check(ColorProfileSetDisplayDefaultAssociation(CurrentUser, profile, Icc, StandardDisplay,
             Adapter(now.TargetKey), now.SourceId), "profile_write_failed");

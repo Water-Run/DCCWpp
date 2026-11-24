@@ -38,8 +38,11 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 以 0.2 为基线，先验证 Windows 颜色状态能完整恢复。对固定的 Windows build、GPU 驱动和 SDR 显示器组合，记录预览前默认 profile、作用域和逻辑曲线。分别验证取消、超时、确认、异常退出和重新登录后的状态。保存样例应在 Windows 颜色配置页可见。确认前后的 ICC、曲线、读回和视觉观察各自留证。
 
 - 核对系统是否加载 `vcgt`、何时会重载，以及设备上校准加载器的状态。记录彩色管理应用与普通 SDR 应用的差异，验证标准用户可用的 API 及安装路径。发现标准用户权限阻断时，先解决发布后端路径，再启用对应的保存入口。
+- 用同一条只读检查评估向导和 CLI 的新预览。验证无法解析的基准 ICC、缺失的设备标识及未恢复的事务能在写入曲线前报出原因。预演通过后仍需单独验收实际曲线写入和关联。
 - 审查安装、关联、提交记录、预设及绑定持久化之间的失败窗口。验证进程在每一步中断后的恢复，以及用户或其他程序在预览时切换 profile 或作用域的处理。记录系统选用的作用域、实际 ICC 关联来源和查询状态。读取过期日志时以原物理目标、当前模式和状态所有权重新校验。
+- 对已确认但本地记录仍待保存的事务，检查持久意图和当前 ICC，尝试补齐预设与绑定。验收应覆盖写入绑定后进程退出、用户随后删除记录、断开重连、较新的绑定以及撤回后的旧绑定清理。
 - 拔出显示器时记录待恢复状态，目标重新出现且身份匹配后再恢复。克隆、远程会话、HDR/Advanced Color、目标不明确或驱动拒绝时，返回可操作的提示和稳定原因码。
+- 对独立的 ICC 关联预览，验证布局改变后可在同一源与目标路径恢复。覆盖同名 ICC 文件替换、不同屏或作用域、克隆和 HDR。没有持久身份的旧会话沿用原拓扑校验。
 - 确认 `SetDeviceGammaRamp` 仅在受控 SDR 兼容路径使用。确定回读容差、驱动拒写后的处理，以及休眠、分辨率变化和外部工具覆盖后的预期行为。使用 ICC 和 Windows 关联作为持久化路线。微软记录了 Gamma Ramp 静默拒写、系统覆盖和 HDR 行为未定义等限制。[Gamma Ramp 文档](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp) · [默认 ICC 关联](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-colorprofilesetdisplaydefaultassociation)
 
 验收以独立的 SDR 显示器完成整轮校准、退出后恢复、确认后重新加载和恢复原关联为准。额外验证撤回已确认校准时，取消和超时可回到撤回前状态，确认可还原前一个 ICC、作用域和曲线。扩展桌面至少验证两台屏幕，确认另一屏的 ICC 和曲线保持原状。模拟测试覆盖失败分支，真实写入仅在人工实机验收中进行。
@@ -67,7 +70,8 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 
 - 从 MSIX StartupTask 接入共享的绑定/恢复用例。将“Windows 允许登录启动”和“此屏启用预设恢复”作为两个独立状态。默认关闭，遵循 Windows 的用户和组织策略状态。
 - 绑定目标使用可靠的持久身份并校验已确认 ICC 的名称和摘要。恢复已确认的绝对曲线，避免重复叠加相对参数。设备路径是较弱的回退身份，换端口或同型号匹配不明确时需要重新确认。
-- 处理登录、续睡、屏幕重连、扩展/复制切换和驱动重置。先对账未完成预览，再检查已确认绑定。合并重复事件，限制重试，避免与 GUI、CLI 的活动预览争用。
+- 处理登录、续睡、屏幕重连、扩展/复制切换和驱动重置。先对账未完成预览，再检查已确认绑定。合并重复事件，限制重试，避免与 GUI、CLI 的活动预览争用。没有系统通知时，轮询活动路径、布局和色彩模式的变化。[Windows 显示路径与模式](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/relationship-of-mode-information-to-path-information)
+- 验收恢复事件发生时已有活动预览的情况。预览结束后，后台在有上限的等待期内重新评估同一请求。等待期间关闭 Windows 自启动或对应显示器的绑定也需验证。
 - 恢复前重新核对 SDR、用户选用的配置、曲线及目标。用户改默认配置或系统改变当前模式时暂停并记录原因。提供暂停、移除绑定和最近一次恢复结果。
 - 验收覆盖首次启用、Windows 禁用后再次登录、重启、睡眠唤醒、拔插、换端口、两个同型号屏和升级。登录不会弹出向导，失败有可查询原因。[StartupTask 状态](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptaskstate)
 
@@ -85,7 +89,7 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 1. 参考 RunOnce 已上架的单项目 MSIX、清单资源和 Store 关联流程，为 DCCW++ 在 Partner Center 预留名称并关联独立产品身份。开发身份与商店身份分别构建。关联文件和签名材料留在本地。[RunOnce](https://github.com/Water-Run/RunOnce)
 2. 从候选版本源码构建 x64 和 ARM64，验证对应 GUI/CLI、运行时、图标、启动任务、别名和语言资源均随包发布。核对版本递增、架构选择和 `runFullTrust` 说明。提交优先使用生成并验证过的上传包。[上传 MSIX](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/upload-app-packages)
 3. 在干净的 Windows 11 x64 和原生 ARM64 设备上验证普通用户安装、冷启动、命令行、登录启动、升级保留数据和卸载。验证已保存 ICC 的移除和恢复指引。可用 WACK 辅助本地检查，正式认证以 Partner Center 为准。[MSIX 打包与验收](https://learn.microsoft.com/en-us/windows/msix/package/packaging-uwp-apps)
-4. 准备英文、简中和繁中商店说明、实拍应用截图、Win11 图标、支持入口、隐私说明及认证测试步骤。根据实际验收填写 SDR 范围和已知限制。归档相同版本完整对应源码、构建方式、依赖许可和照片许可。
+4. 审阅已起草的英文、简中和繁中商店说明，补充实际应用截图。根据验收更新 SDR 范围和已知限制。归档相同版本完整对应源码、构建方式、依赖许可和照片许可。[商店文案及认证说明](STORE_LISTING.md)
 5. 首次发布可用 Private audience 做 Store 签名包的安装验证。已有正式版本后，评估使用 package flights 验证更新。跟踪 Partner Center 认证和 Store 签名安装结果，公开发布后再增加 README 的正式商店入口。[Private audience](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/visibility-options) · [Package flights](https://learn.microsoft.com/en-us/windows/apps/publish/package-flights)
 
 ## 发布后的 HDR 与 Advanced Color

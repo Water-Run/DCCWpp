@@ -11,12 +11,12 @@ DCCW++ is a native WinUI 3 display color calibration app for Windows 11. It aims
 - Select a display and step through gamma, brightness, contrast, grayscale color balance, and before/after comparison. View example gamma patterns, inspect a full-screen test pattern on the chosen display, or skip hardware controls. The app can open Windows ClearType tuning after calibration.
 - Preview an SDR curve with a bounded timer and an independent recovery process. Confirm to generate an ICC profile with the new curve, verify the installed file, and associate it with the selected display. Driver readback can verify the logical curve. Optical results require separate validation.
 - Undo a saved calibration on the selected display. A timed preview shows the previous curve before you confirm the change to the previous Windows profile and its scope.
-- Find and recover interrupted curve or ICC previews from the wizard or the CLI.
+- Find and recover interrupted curve or ICC previews from the wizard or the CLI. If confirmation completed before the worker exited, recovery can finish the saved preset and automatic restore records after checking the current display and the recorded binding.
 - Create, rename, and delete local presets. Import versioned JSON, reuse a previously imported preset, or make a separate copy. Import places presets in the library for review. Display bindings stay local and protect referenced presets from deletion.
 - Inspect displays and profiles, manage presets, and run calibration transactions from `dccwpp.exe`. The CLI provides stable JSON fields, exit codes, and request IDs for retrying a preview safely. It shares calibration logic with the GUI.
 - Use the app in English, Simplified Chinese, or Traditional Chinese. View local PNG, JPEG, or TIFF photos as visual references. You can switch to the References page during a preview. The current deadline still applies, and you can cancel from that page.
 
-The SDR curve backend requires an independent display in SDR and checks for MHC2 hardware calibration before previewing. The wizard links to Windows display settings for Advanced Color and MHC2, and to Microsoft's HDR calibration tool for active HDR displays. In the installed MSIX, enable the Windows sign-in task and opt in for each calibrated display in Settings. The background monitor checks saved bindings at sign-in, on resume, and after a display change. Packaged activation and hardware restoration still need acceptance testing.
+The SDR curve backend requires an independent display in SDR and checks for MHC2 hardware calibration before previewing. The wizard links to Windows display settings for Advanced Color and MHC2, and to Microsoft's HDR calibration tool for active HDR displays. In the installed MSIX, enable the Windows sign-in task and opt in for each calibrated display in Settings. The background monitor checks saved bindings at sign-in, on resume, and after a display change. Its periodic display check also detects layout and color mode changes when no notification arrives. If a preview is active, the monitor retries at 15-second intervals within a bounded wait. Packaged activation and hardware restoration still need acceptance testing.
 
 ## Build from source
 
@@ -45,7 +45,9 @@ dccwpp.exe startup last-restore --json
 dccwpp.exe recovery status --json
 ```
 
-Agents can use `capabilities --json` to discover command effects, dry-run support, and request ID support. For a dry run, set `$presetId` to a saved preset ID and `$displayId` to an ID from `displays list`. Calling `apply` without `--dry-run` starts an SDR preview on the selected display with a fixed deadline. Use `calibration status`, `calibration confirm`, or `calibration revert` with its session ID.
+Agents can use `capabilities --json` to discover command effects, dry-run support, and request ID support. For a dry run, set `$presetId` to a saved preset ID and `$displayId` to an ID from `displays list`. The dry run checks for interrupted previews, reads the current curve and ICC association, and builds a candidate ICC in memory. Calling `apply` without `--dry-run` repeats those checks and starts a timed SDR preview if they pass. Use `calibration status`, `calibration confirm`, or `calibration revert` with its session ID.
+
+If a confirmed session reports `bindingStatus: pending`, query it with `calibration status <session-id> --json` and try `calibration recover <session-id> --json` to finish the local records. Use `recovery status --json` to find outstanding work across sessions.
 
 Generate a UUID before starting a preview with `apply`, `calibration undo`, or `profiles preview` and pass it as `--request-id`. If the response is lost, use that UUID to check the session or retry the same command and arguments. Check the exit code and JSON `ok` field, then read the outcome fields in `data`. The [CLI reference](docs/CLI.md) covers command effects, transaction states, and exit codes.
 

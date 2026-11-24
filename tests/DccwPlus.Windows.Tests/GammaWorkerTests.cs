@@ -30,6 +30,9 @@ public sealed class GammaWorkerTests : IDisposable
             var recovery = new PreviewRecoveryService(_root);
             Assert.Equal(id, Assert.Single(recovery.List()).SessionId);
             Assert.Equal("preview_busy", recovery.Recover().Reason);
+            var startup = new CalibrationBindingService(_root);
+            Assert.Equal("preview_busy", startup.RunStartup(true, "sign_in").Reason);
+            Assert.Equal("sign_in", startup.LastStartupReport()?.Trigger);
             Assert.Equal("previewing", store.Load(id).Status);
             Assert.Equal(1, backend.Writes);
             int duplicate = await Task.Run(() => GammaPreviewHost.Run(_root, id,
@@ -138,6 +141,7 @@ public sealed class GammaWorkerTests : IDisposable
         Assert.Equal("candidate.icc", profile.State.CurrentProfile);
 
         profile.Disconnected = false;
+        profile.ChangeLayout();
         using (DisplayMutationLock.Acquire())
             report = service.RecoverLocked(gamma, profile);
         Assert.Equal("recovery_finished", report.Reason);
@@ -193,9 +197,11 @@ public sealed class GammaWorkerTests : IDisposable
     {
         public ProfileAssociationState State { get; private set; } = new("0123456789abcdef", "simulated-profile-target",
             1, new string('A', 64), "original.icc", "current-user", true, false,
-            [new("original.icc", new string('B', 64), true), new("candidate.icc", new string('C', 64), true)]);
+            [new("original.icc", new string('B', 64), true), new("candidate.icc", new string('C', 64), true)],
+            PersistenceKey: "path:" + new string('D', 64));
 
         public bool Disconnected { get; set; }
+        public void ChangeLayout() => State = State with { TopologyFingerprint = new string('E', 64) };
         public ProfileAssociationState Read(string displayId) => Disconnected
             ? throw new ProfilePreviewException("display_disconnected", "Simulated disconnected display.")
             : State;

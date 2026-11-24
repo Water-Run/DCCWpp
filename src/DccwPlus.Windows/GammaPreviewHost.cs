@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using DccwPlus.Core.Calibration;
+using DccwPlus.Core.Localization;
 using DccwPlus.Core.Presets;
 using DccwPlus.Core.Storage;
 
@@ -39,8 +40,7 @@ public static class GammaPreviewHost
             transaction = new(backend, store);
             if (recovering) return transaction.Recover(store.Load(id)).NeedsRecovery ? 4 : 0;
             if (request is null) throw new InvalidDataException("A calibration request is required.");
-            if (store.Sessions().Any(s => s.Id != id && s.NeedsRecovery) || new ProfilePreviewStore(root).Incomplete().Count > 0)
-                throw new ProfilePreviewException("recovery_required", "An interrupted preview must be recovered first.");
+            RequireNoInterruptedPreview(root);
             if (!OwnerAlive(request)) throw new ProfilePreviewException("owner_exited", "The calibration window has closed.");
             if (request.UndoOf is Guid calibrationId)
             {
@@ -51,8 +51,12 @@ public static class GammaPreviewHost
                 transaction.Begin(id, saved.Preset, request.DisplayId, request.Seconds, saved.Original.Ramp, current, calibrationId);
             }
             else
-                transaction.Begin(id, request.Preset ?? throw new InvalidDataException("A calibration preset is required."),
-                    request.DisplayId, request.Seconds, windowOwned: request.OwnerPid is not null);
+            {
+                var preset = request.Preset ?? throw new InvalidDataException("A calibration preset is required.");
+                var expected = (backend as WindowsGammaCalibrationBackend)?.CheckPreviewStart(request.DisplayId, preset);
+                transaction.Begin(id, preset, request.DisplayId, request.Seconds, expected: expected,
+                    windowOwned: request.OwnerPid is not null);
+            }
             Guid lastCommand = Guid.Empty;
             while (transaction.Session?.Status == "previewing")
             {
@@ -73,9 +77,9 @@ public static class GammaPreviewHost
                                 case "review": transaction.SetReviewMode(true); break;
                                 case "edit": transaction.SetReviewMode(false); break;
                                 case "confirm":
-                                    var confirmed = transaction.Confirm();
-                                    if (confirmed.Status == "confirmed" && backendFactory is null)
-                                        SaveBinding(root, store, confirmed);
+                                    var completion = backendFactory is null ? new CalibrationCompletionService(root) : null;
+                                    var confirmed = transaction.Confirm(completion?.CaptureIntent(transaction.Session));
+                                    completion?.CompleteLocked(confirmed, replay: false);
                                     break;
                                 case "revert": transaction.Revert(); break;
                                 default: throw new InvalidDataException("Unknown calibration action.");
@@ -99,29 +103,13 @@ public static class GammaPreviewHost
         }
         finally { gate?.Dispose(); }
     }
-    private static void SaveBinding(string root, GammaCalibrationStore store, GammaCalibrationSession confirmed)
+
+    internal static void RequireNoInterruptedPreview(string root)
     {
-        string? reason = null;
-        string status = "saved";
-        try
-        {
-            var bindings = new CalibrationBindingService(root);
-            if (confirmed.UndoOf is Guid calibrationId)
-                status = bindings.RemoveUndoneBinding(store.Load(calibrationId)) ? "removed" : "unchanged";
-            else
-                bindings.SaveConfirmed(confirmed);
-        }
-        catch (Exception ex) when (ex is ProfilePreviewException or PresetOperationException or IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
-        {
-            reason = ex switch
-            {
-                ProfilePreviewException preview => preview.Code,
-                PresetOperationException preset => preset.Code,
-                _ => "binding_save_failed"
-            };
-        }
-        store.Save(confirmed with { BindingStatus = reason is null ? status : "failed", BindingReasonCode = reason });
+        if (new PreviewRecoveryService(root).List().Any(item => item.Kind != "binding" && item.NeedsRecovery))
+            throw new ProfilePreviewException("recovery_required", new LocalizationService()["RecoveryMessage"]);
     }
+
     private static void Ack(string directory, GammaPreviewAck ack) => AtomicFile.Write(Path.Combine(directory, "ack.json"), JsonSerializer.SerializeToUtf8Bytes(ack, ProfilePreviewStore.Json));
     private static bool OwnerAlive(GammaPreviewRequest request)
     {

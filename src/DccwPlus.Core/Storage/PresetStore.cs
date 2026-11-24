@@ -86,11 +86,12 @@ public sealed class PresetStore(string root)
         new CalibrationBindingStore(root).List().Where(b => b.PresetId == id).ToArray();
 
     // The Windows caller also holds the display mutation lock while checking and removing references.
-    public void Delete(Guid id) => Mutate(() =>
+    public void Delete(Guid id, Action? beforeDelete = null) => Mutate(() =>
     {
         var preset = Get(id);
         if (BindingsFor(id).Count > 0)
             throw new PresetOperationException("preset_in_use", "Remove the display bindings before deleting this preset.");
+        beforeDelete?.Invoke();
         File.Delete(FileFor(id));
         return preset;
     });
