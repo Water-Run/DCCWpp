@@ -20,6 +20,10 @@
     </InfoBar>
     <NavigationView x:Name="Navigation" Grid.Row="2" IsBackButtonVisible="Collapsed" IsSettingsVisible="True"
        PaneDisplayMode="Auto" OpenPaneLength="216" SelectionChanged="NavigationChanged">
+      <NavigationView.Header>
+        <TextBlock x:Name="PageHeading" Style="{ThemeResource TitleTextBlockStyle}" TextTrimming="CharacterEllipsis"
+                   AutomationProperties.HeadingLevel="Level1" />
+      </NavigationView.Header>
       <NavigationView.MenuItems>
         <NavigationViewItem x:Name="CalibrationNav" Content="{Binding Text[Calibration]}" Tag="calibration">
           <NavigationViewItem.Icon><FontIcon Glyph="&#xE7F4;" /></NavigationViewItem.Icon>
@@ -27,17 +31,11 @@
         <NavigationViewItem Content="{Binding Text[Presets]}" Tag="presets"><NavigationViewItem.Icon><FontIcon Glyph="&#xE8B7;" /></NavigationViewItem.Icon></NavigationViewItem>
         <NavigationViewItem Content="{Binding Text[References]}" Tag="references"><NavigationViewItem.Icon><FontIcon Glyph="&#xEB9F;" /></NavigationViewItem.Icon></NavigationViewItem>
       </NavigationView.MenuItems>
-      <NavigationView.PaneFooter><StackPanel Margin="16,8,16,16" Spacing="4">
-        <TextBlock Text="DCCW++" Style="{ThemeResource BodyStrongTextBlockStyle}" />
-        <TextBlock Text="0.2 · GPL-3.0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Style="{ThemeResource CaptionTextBlockStyle}" />
-      </StackPanel></NavigationView.PaneFooter>
       <ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="28,20,28,32">
         <StackPanel Spacing="20" MaxWidth="1120" HorizontalAlignment="Stretch">
           <StackPanel x:Name="CalibrationPanel"><local:CalibrationWorkspace x:Name="Workspace" /></StackPanel>
           <StackPanel x:Name="PresetsPanel" Visibility="Collapsed" Spacing="20">
-            <StackPanel Spacing="6"><TextBlock Text="{Binding Text[Presets]}" Style="{ThemeResource TitleTextBlockStyle}" />
-              <TextBlock Text="{Binding Text[PresetsSubtitle]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
-            </StackPanel>
+            <TextBlock Text="{Binding Text[PresetsSubtitle]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
             <StackPanel Orientation="Horizontal" Spacing="10">
               <Button Content="{Binding Text[Import]}" Click="ImportClicked" Style="{ThemeResource AccentButtonStyle}" />
               <Button Content="{Binding Text[ImportCopy]}" Click="ImportCopyClicked" />
@@ -61,7 +59,6 @@
             <TextBlock Text="{Binding Text[PresetSafety]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
           </StackPanel>
           <StackPanel x:Name="ReferencesPanel" Visibility="Collapsed" Spacing="20">
-            <TextBlock Text="{Binding Text[References]}" Style="{ThemeResource TitleTextBlockStyle}" />
             <Border Style="{StaticResource Card}"><StackPanel Spacing="16">
               <TextBlock Text="{Binding Text[ReferenceTitle]}" Style="{ThemeResource SubtitleTextBlockStyle}" />
               <TextBlock Text="{Binding Text[ReferenceMessage]}" TextWrapping="Wrap" />
@@ -72,13 +69,10 @@
             </StackPanel></Border>
           </StackPanel>
           <StackPanel x:Name="SettingsPanel" Visibility="Collapsed" Spacing="20">
-            <TextBlock Text="{Binding Text[Settings]}" Style="{ThemeResource TitleTextBlockStyle}" />
             <Border Style="{StaticResource Card}"><StackPanel Spacing="12">
               <TextBlock Text="{Binding Text[Language]}" Style="{ThemeResource BodyStrongTextBlockStyle}" />
-              <ComboBox x:Name="LanguagePicker" SelectionChanged="LanguageChanged" MinWidth="220" AutomationProperties.Name="{Binding Text[Language]}">
-                <ComboBoxItem Tag="system" Content="{Binding Text[SystemLanguage]}" /><ComboBoxItem Tag="en-US" Content="English" />
-                <ComboBoxItem Tag="zh-Hans" Content="简体中文" /><ComboBoxItem Tag="zh-Hant" Content="繁體中文" />
-              </ComboBox>
+              <ComboBox x:Name="LanguagePicker" DisplayMemberPath="Label" SelectionChanged="LanguageChanged"
+                        MinWidth="220" AutomationProperties.Name="{Binding Text[Language]}" />
               <TextBlock Text="{Binding Text[LanguageHint]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
             </StackPanel></Border>
             <Border Style="{StaticResource Card}"><StackPanel Spacing="12">
@@ -98,8 +92,8 @@
               <TextBlock Text="dccwpp --help --json" FontFamily="Cascadia Mono, Consolas" IsTextSelectionEnabled="True" />
               <TextBlock Text="{Binding Text[AgentHint]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
               <TextBlock Text="{Binding DataDirectory}" IsTextSelectionEnabled="True" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" />
-              <HyperlinkButton Content="GPL-3.0" NavigateUri="https://www.gnu.org/licenses/gpl-3.0.html" />
             </StackPanel></Border>
+            <HyperlinkButton Content="DCCW++ 0.2 · GPL-3.0-only" NavigateUri="https://www.gnu.org/licenses/gpl-3.0.html" />
           </StackPanel>
           <TextBlock Text="{Binding Status}" TextWrapping="Wrap" IsTextSelectionEnabled="True" AutomationProperties.LiveSetting="Polite" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
         </StackPanel>

@@ -1,5 +1,23 @@
 # 开发交接
 
+## 2026-11-24 · Agent 直接控制 SDR 预览
+
+- `calibration preview` 接受显示器 ID、Gamma 和 RGB 增益，支持预演和请求 ID。`calibration update` 支持单项调参及切换原始和候选视图。CLI 创建的预览沿用首次设定的截止时间。三语文案和 CLI v1 命令发现已更新。[CLI 参考](CLI.md)
+- 132 项核心测试、59 项 Windows 测试及 113 项 CLI 进程检查通过。模拟覆盖并发调参、请求重试、视图切换和取消后恢复。本机只读预演返回 `curve_read_failed`，没有生成事务。实际曲线写入及 ICC 保存仍待实机验证。
+- x64 和 ARM64 开发 MSIX 通过内容检查。x64 包由 Windows Sandbox 普通用户安装，经 `dccwpp.exe` 别名发现新命令，并核对无目标预演返回 `not_found`，随后卸载。本机沙盒报告位于 `artifacts/sandbox-smoke/9c6ea1e8-9945-42e9-b76c-89d0f1f32550/results/result.json`。
+
+## 2026-11-24 · WinUI 交互冷启动与 200% 缩放
+
+- 在 Windows Sandbox build 26100 的交互桌面冷启动 x64 MSIX。初始窗口将逻辑尺寸按当前显示器 DPI 转为像素，导航标题使用 WinUI 页头。步骤和默认语言均显示已选项，折叠导航栏的版本和许可证信息移到设置页。[WinUI 导航页头](https://learn.microsoft.com/en-us/windows/apps/design/controls/navigationview) · [窗口 DPI 查询](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdpiforwindow)
+- 在该沙盒的管理员账户中，经 UI Automation 验证了 200% 缩放下的冷启动、窄窗口、CLI 创建的预设在 GUI 可见、全屏图案打开和退出。切换三语时保留亮度步骤，重启后保留最后选择的繁体中文。三语界面和报告位于本机 `artifacts/gui-sandbox/1f8e6f12-2953-404e-9f36-d2dfc683c24c/results/`。
+- 132 项核心测试、58 项 Windows 测试和 94 项 CLI 检查通过，x64 和 ARM64 开发 MSIX 通过内容检查。沙盒显示驱动返回 `curve_read_failed`。普通用户交互启动、实机曲线写入、默认 ICC 关联及多屏仍待验收。[发布手册](STORE.md)
+
+## 2026-11-24 · 全屏校准图案与 .NET 运行时更新
+
+- Gamma 圆点沿图案长边排列。暗部和高光阶梯分别以纯黑和纯白为背景，每个色块与背景有不同的数值。全屏图案显示本步说明，比较时可在原会话倒计时内切换曲线或取消并恢复。核对了生成图案的像素和横竖布局。全屏键盘操作、缩放及真实显示效果仍待交互验收。
+- 使用 .NET SDK 10.0.404 重建。两个架构的 GUI 和 CLI 都随附 .NET 10.0.15，包内四份 `coreclr.dll` 的摘要与官方运行时包一致。验包脚本拒绝旧运行时。[微软安全公告](https://github.com/advisories/GHSA-p3jp-9v83-76w9)
+- 132 项核心测试、58 项 Windows 测试和 94 项 CLI 检查通过。x64 和 ARM64 开发 MSIX 通过内容检查，x64 通过沙盒普通用户安装、别名调用和卸载。[向导验收条目](ROADMAP.md)
+
 ## 2026-11-24 · Microsoft Store 提交准备
 
 - 新增英文、简体中文和繁体中文首发文案，核对了文本长度、隐私和支持链接。整理了截图清单及认证人员的预览、取消、保存、撤回、CLI 和登录恢复步骤。实际截图待交互桌面采集。[商店文案](STORE_LISTING.md)

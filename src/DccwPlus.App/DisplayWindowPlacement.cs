@@ -10,11 +10,18 @@ internal static class DisplayWindowPlacement
 {
     private const uint MonitorDefaultToNearest = 2;
 
-    public static void SizeInitialWindow(Window window, SizeInt32 preferredSize)
+    public static void SizeInitialWindow(Window window, SizeInt32 preferredSizeInDips)
     {
-        nint monitor = MonitorFromWindow(WindowNative.GetWindowHandle(window), MonitorDefaultToNearest);
+        nint handle = WindowNative.GetWindowHandle(window);
+        nint monitor = MonitorFromWindow(handle, MonitorDefaultToNearest);
         if (TryGetMonitorInfo(monitor, out var info) && info.WorkRect.HasArea)
-            CenterInWorkArea(window.AppWindow, info.WorkRect, preferredSize);
+        {
+            uint dpi = GetDpiForWindow(handle);
+            double scale = dpi == 0 ? 1 : dpi / 96d;
+            var preferredPixels = new SizeInt32((int)Math.Round(preferredSizeInDips.Width * scale),
+                (int)Math.Round(preferredSizeInDips.Height * scale));
+            CenterInWorkArea(window.AppWindow, info.WorkRect, preferredPixels);
+        }
     }
 
     public static bool IsOnDisplay(Window window, string deviceName)
@@ -82,6 +89,7 @@ internal static class DisplayWindowPlacement
     private delegate bool MonitorCallback(nint monitor, nint dc, nint rect, nint context);
 
     [DllImport("user32.dll")] private static extern nint MonitorFromWindow(nint window, uint flags);
+    [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint window);
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumDisplayMonitors(nint dc, nint clip, MonitorCallback callback, nint context);

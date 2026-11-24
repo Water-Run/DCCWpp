@@ -7,6 +7,7 @@ internal static class CliDiscovery
     private const string LocalWrite = "local-write";
     private const string DisplayPreview = "display-preview";
     private const string DisplayChange = "display-change";
+    private const string CalibrationValues = "[--gamma <value>] [--red-gain <value>] [--green-gain <value>] [--blue-gain <value>]";
 
     private static readonly string[] GlobalOptions = ["--json", "--data-dir <directory>"];
     private static readonly Command[] Commands =
@@ -19,7 +20,7 @@ internal static class CliDiscovery
         new("presets list", Read),
         new("presets show", Read, "<id>"),
         new("presets create", LocalWrite,
-            "<name> [--gamma <value>] [--red-gain <value>] [--green-gain <value>] [--blue-gain <value>] [--author <text>] [--description <text>]"),
+            $"<name> {CalibrationValues} [--author <text>] [--description <text>]"),
         new("presets import", LocalWrite, "<path> [--copy]"),
         new("presets rename", LocalWrite, "<id> <name>"),
         new("presets delete", LocalWrite, "<id>"),
@@ -43,6 +44,9 @@ internal static class CliDiscovery
         new("profiles revert", DisplayChange, "<session-id>"),
         new("profiles recover", DisplayChange, "<session-id>"),
         new("calibration diagnose", Read, "--display <id>"),
+        new("calibration preview", DisplayPreview,
+            $"--display <id> {CalibrationValues} [--seconds 30] [--request-id <uuid>] [--dry-run]",
+            supportsDryRun: true, supportsRequestId: true),
         new("calibration sessions", Read),
         new("calibration status", Read, "<session-id>"),
         new("calibration confirm", DisplayChange, "<session-id>"),
@@ -50,7 +54,7 @@ internal static class CliDiscovery
         new("calibration recover", DisplayChange, "<session-id>"),
         new("calibration undo", DisplayPreview, "<calibration-id> [--seconds 30] [--request-id <uuid>] [--dry-run]",
             supportsDryRun: true, supportsRequestId: true),
-        new("calibration update", DisplayPreview, "<session-id> --preset <preset-id> [--original]"),
+        new("calibration update", DisplayPreview, $"<session-id> [--preset <preset-id> | {CalibrationValues}] [--original | --adjusted]"),
         new("recovery status", Read),
         new("recovery run", DisplayChange),
         new("calibration capture", Read, "[--display <display-id>]"),

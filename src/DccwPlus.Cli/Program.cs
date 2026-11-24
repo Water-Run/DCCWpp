@@ -135,6 +135,21 @@ internal static class Cli
                     return Success(new WindowsGammaCalibrationBackend(root).Diagnose(displayId), json);
                 }
                 var client = new GammaPreviewClient(root, Path.Combine(AppContext.BaseDirectory, "dccwpp.exe"));
+                if (remaining is ["calibration", "preview", ..])
+                {
+                    string? display = TakeOption(remaining, "--display");
+                    string? timeout = TakeOption(remaining, "--seconds");
+                    string? request = TakeOption(remaining, "--request-id");
+                    bool dryRun = remaining.Remove("--dry-run");
+                    var options = ReadCalibrationOptions(remaining);
+                    if (remaining.Count != 2 || string.IsNullOrWhiteSpace(display))
+                        throw new ArgumentException(new LocalizationService()["CalibrationPreviewCliUsage"]);
+                    Guid? requestId = request is null ? null : ParseRequestId(request);
+                    var preset = CalibrationPreset.Create(new LocalizationService()["CliCalibrationPresetName"], options.ApplyTo(new()));
+                    PresetCodec.Validate(preset);
+                    return await PreviewAsync(client, display, preset, PreviewSeconds(timeout), requestId, dryRun, json,
+                        inlineParameters: true);
+                }
                 if (remaining.ElementAtOrDefault(1) == "undo")
                 {
                     bool dryRun = remaining.Remove("--dry-run");
@@ -168,10 +183,24 @@ internal static class Cli
                     return result.NeedsRecovery ? Failure(result.ReasonCode, "The original calibration still needs recovery.", 4, json)
                         : Success(SessionSummary(result), json);
                 }
-                string? updatePreset = TakeOption(remaining, "--preset");
-                bool original = remaining.Remove("--original");
-                if (remaining is ["calibration", "update", var updateId] && updatePreset is not null)
-                    return Success(SessionSummary(await client.CommandAsync(ParseId(updateId), "update", store.Get(ParseId(updatePreset)), original)), json);
+                if (remaining is ["calibration", "update", ..])
+                {
+                    string? updatePreset = TakeOption(remaining, "--preset");
+                    bool original = remaining.Remove("--original");
+                    bool adjusted = remaining.Remove("--adjusted");
+                    var options = ReadCalibrationOptions(remaining);
+                    if (remaining is not ["calibration", "update", var updateId] || (original && adjusted)
+                        || (updatePreset is not null && options.HasValues)
+                        || (updatePreset is null && !options.HasValues && !original && !adjusted))
+                        throw new ArgumentException(new LocalizationService()["CalibrationUpdateCliUsage"]);
+
+                    Guid sessionId = ParseId(updateId);
+                    if (updatePreset is not null)
+                        return Success(SessionSummary(await client.CommandAsync(sessionId, "update", store.Get(ParseId(updatePreset)), original)), json);
+                    if (options.HasValues)
+                        PresetCodec.Validate(CalibrationPreset.Create(new LocalizationService()["CliCalibrationPresetName"], options.ApplyTo(new())));
+                    return Success(SessionSummary(await client.EditAsync(sessionId, options.Edit, original)), json);
+                }
                 throw new ArgumentException("Run dccwpp --help for calibration commands.");
             }
 
@@ -221,31 +250,12 @@ internal static class Cli
                 if (remaining.Count != 2 || display is null)
                     throw new ArgumentException("Use apply <preset-id> --display <display-id> [--request-id <uuid>] [--dry-run].");
                 Guid? requestId = request is null ? null : ParseRequestId(request);
-                int seconds = timeout is null ? 30 : int.TryParse(timeout, NumberStyles.None, CultureInfo.InvariantCulture, out int duration) ? duration : 0;
-                if (seconds is < 10 or > 60) throw new ArgumentException("Preview timeout must be 10–60 seconds.");
+                int seconds = PreviewSeconds(timeout);
                 Guid presetId = ParseId(remaining[1]);
                 var client = new GammaPreviewClient(root, Path.Combine(AppContext.BaseDirectory, "dccwpp.exe"));
                 if (!dryRun && requestId is Guid replayId && client.FindByRequestId(replayId, display, presetId, seconds) is { } prior)
                     return Success(SessionSummary(prior), json);
-                var preset = store.Get(presetId);
-                try
-                {
-                    if (dryRun)
-                    {
-                        client.CheckCanPreview(display, preset);
-                        return Success(new { presetId = preset.Id, displayId = display, backend = "sdr-gamma-icc",
-                            canPreview = true, requiresConfirmation = true, timeoutSeconds = seconds, changesDisplay = false }, json);
-                    }
-                    return Success(SessionSummary(await client.BeginAsync(display, preset, seconds, requestId: requestId)), json);
-                }
-                catch (ProfilePreviewException ex) when (dryRun && ex.Code is ("sdr_path_blocked" or "mhc2_profile_blocked"))
-                {
-                    return Success(CalibrationPlan.BlockedByColorMode(preset.Id, display, ex.Code), json);
-                }
-                catch (ProfilePreviewException ex) when (ex.Code == "display_disconnected")
-                {
-                    return Failure("not_found", ex.Message, 3, json);
-                }
+                return await PreviewAsync(client, display, store.Get(presetId), seconds, requestId, dryRun, json);
             }
             throw new ArgumentException("Unknown command or option. Run dccwpp --help.");
         }
@@ -261,12 +271,44 @@ internal static class Cli
         catch (Exception ex) { return Failure("internal_error", ex.Message, 1, json); }
     }
 
+    private static async Task<int> PreviewAsync(GammaPreviewClient client, string displayId, CalibrationPreset preset,
+        int seconds, Guid? requestId, bool dryRun, bool json, bool inlineParameters = false)
+    {
+        try
+        {
+            if (dryRun)
+            {
+                client.CheckCanPreview(displayId, preset);
+                if (inlineParameters) return Success(InlinePlan(), json);
+                return Success(new { presetId = preset.Id, displayId, backend = "sdr-gamma-icc",
+                    canPreview = true, requiresConfirmation = true, timeoutSeconds = seconds, changesDisplay = false }, json);
+            }
+            return Success(SessionSummary(await client.BeginAsync(displayId, preset, seconds, requestId: requestId,
+                inlineParameters: inlineParameters)), json);
+        }
+        catch (ProfilePreviewException ex) when (dryRun && ex.Code is ("sdr_path_blocked" or "mhc2_profile_blocked"))
+        {
+            return Success(inlineParameters ? InlinePlan(ex.Code) : CalibrationPlan.BlockedByColorMode(preset.Id, displayId, ex.Code), json);
+        }
+        catch (ProfilePreviewException ex) when (ex.Code == "display_disconnected")
+        {
+            return Failure("not_found", ex.Message, 3, json);
+        }
+
+        object InlinePlan(string? reasonCode = null) => new
+        {
+            displayId, backend = "sdr-gamma-icc", calibration = preset.Calibration, canPreview = reasonCode is null,
+            reasonCode, requiresConfirmation = true, timeoutSeconds = seconds, changesDisplay = false
+        };
+    }
+
     private static object SessionSummary(GammaCalibrationSession session) => new
     {
         sessionId = session.Id, displayId = session.Original.DisplayId, presetId = session.Preset.Id,
         session.Status, session.ReasonCode, session.ExpiresAt, session.InstalledProfile,
         session.CurveReadbackVerified, session.ColorAccuracyVerified, session.NeedsRecovery,
-        session.BindingStatus, session.BindingReasonCode, session.ShowingOriginal, session.UndoOf
+        session.BindingStatus, session.BindingReasonCode, session.ShowingOriginal, session.UndoOf,
+        calibration = session.Preset.Calibration
     };
     private static object BindingSummary(CalibrationBinding binding) => new
     {
@@ -277,26 +319,57 @@ internal static class Cli
     private static Guid ParseId(string value) => Guid.TryParse(value, out var id) ? id : throw new ArgumentException("Expected a preset UUID.");
     private static Guid ParseRequestId(string value) => Guid.TryParse(value, out var id) && id != Guid.Empty
         ? id : throw new ArgumentException("Expected a nonempty request UUID.");
+    private static int PreviewSeconds(string? value)
+    {
+        int seconds = value is null ? 30 : int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int duration) ? duration : 0;
+        if (seconds is < 10 or > 60) throw new ArgumentException(new LocalizationService()["CliPreviewTimeout"]);
+        return seconds;
+    }
+
     private static CalibrationPreset ParseNewPreset(List<string> args)
     {
-        double gamma = ReadNumber(args, "--gamma", 2.2);
-        double red = ReadNumber(args, "--red-gain", 1);
-        double green = ReadNumber(args, "--green-gain", 1);
-        double blue = ReadNumber(args, "--blue-gain", 1);
+        var options = ReadCalibrationOptions(args);
         string author = TakeOption(args, "--author") ?? "";
         string description = TakeOption(args, "--description") ?? "";
         if (args is not ["presets", "create", var name] || name.StartsWith("--", StringComparison.Ordinal))
             throw new ArgumentException("Use presets create <name> with optional gamma, RGB gain, author and description flags.");
-        return CalibrationPreset.Create(name, new() { Gamma = gamma, RedGain = red, GreenGain = green, BlueGain = blue })
+        return CalibrationPreset.Create(name, options.ApplyTo(new()))
             with { Author = author, Description = description };
     }
 
-    private static double ReadNumber(List<string> args, string option, double fallback)
+    private static CalibrationOptions ReadCalibrationOptions(List<string> args) => new(
+        ReadNumber(args, "--gamma"), ReadNumber(args, "--red-gain"), ReadNumber(args, "--green-gain"), ReadNumber(args, "--blue-gain"));
+
+    private sealed record CalibrationOptions(double? Gamma, double? RedGain, double? GreenGain, double? BlueGain)
+    {
+        public bool HasValues => Gamma.HasValue || RedGain.HasValue || GreenGain.HasValue || BlueGain.HasValue;
+
+        public SdrCalibration ApplyTo(SdrCalibration current) => current with
+        {
+            Gamma = Gamma ?? current.Gamma,
+            RedGain = RedGain ?? current.RedGain,
+            GreenGain = GreenGain ?? current.GreenGain,
+            BlueGain = BlueGain ?? current.BlueGain
+        };
+
+        public CalibrationPreset Edit(CalibrationPreset current)
+        {
+            var settings = ApplyTo(current.Calibration);
+            return settings == current.Calibration ? current : current with
+            {
+                Id = Guid.NewGuid(),
+                CreatedAt = DateTimeOffset.UtcNow,
+                Calibration = settings
+            };
+        }
+    }
+
+    private static double? ReadNumber(List<string> args, string option)
     {
         string? value = TakeOption(args, option);
-        if (value is null) return fallback;
+        if (value is null) return null;
         if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double result)) return result;
-        throw new ArgumentException($"Invalid number for {option}. Use a period as the decimal separator.");
+        throw new ArgumentException(string.Format(CultureInfo.CurrentCulture, new LocalizationService()["CliCalibrationNumberError"], option));
     }
     private static string? TakeOption(List<string> args, string name)
     {

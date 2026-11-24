@@ -3,10 +3,7 @@
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:local="using:DccwPlus.App">
   <StackPanel x:Name="WorkspaceRoot" Spacing="20">
-    <StackPanel Spacing="6">
-      <TextBlock Text="{Binding Text[CalibrationTitle]}" Style="{ThemeResource TitleTextBlockStyle}" />
-      <TextBlock Text="{Binding Text[WizardSubtitle]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
-    </StackPanel>
+    <TextBlock Text="{Binding Text[WizardSubtitle]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
     <Border Style="{StaticResource Card}">
       <StackPanel Spacing="8">
         <ComboBox x:Name="DisplayPicker" ItemsSource="{Binding Displays}" Header="{Binding Text[Display]}"
@@ -35,11 +32,7 @@
     </InfoBar>
     <Grid ColumnSpacing="12">
       <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-      <ComboBox x:Name="StepPicker" SelectionChanged="StepChanged" HorizontalAlignment="Stretch" AutomationProperties.Name="{Binding Text[WizardStep]}">
-        <ComboBoxItem Content="{Binding Text[StepPrepare]}" /><ComboBoxItem Content="{Binding Text[StepGamma]}" />
-        <ComboBoxItem Content="{Binding Text[StepBrightness]}" /><ComboBoxItem Content="{Binding Text[StepContrast]}" />
-        <ComboBoxItem Content="{Binding Text[StepBalance]}" /><ComboBoxItem Content="{Binding Text[StepReview]}" />
-      </ComboBox>
+      <ComboBox x:Name="StepPicker" SelectionChanged="StepChanged" HorizontalAlignment="Stretch" AutomationProperties.Name="{Binding Text[WizardStep]}" />
       <Button x:Name="FullScreenButton" Grid.Column="1" Content="{Binding Text[FullScreen]}" Click="FullScreenClicked" />
     </Grid>
     <local:PatternSurface x:Name="Pattern" Height="242" AutomationProperties.Name="{Binding Text[CalibrationPattern]}" />

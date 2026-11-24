@@ -41,12 +41,29 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert public_commands["apply"]["effect"] == "display-preview"
     assert public_commands["apply"]["supportsDryRun"] is True
     assert public_commands["apply"]["supportsRequestId"] is True
-    for name in ("calibration undo", "profiles preview"):
+    for name in ("calibration preview", "calibration undo", "profiles preview"):
         assert public_commands[name]["supportsDryRun"] is True
         assert public_commands[name]["supportsRequestId"] is True
+        assert public_commands[name]["effect"] == "display-preview"
     assert public_commands["calibration confirm"]["effect"] == "display-change"
     assert public_commands["calibration confirm"]["supportsDryRun"] is False
     assert not data.exists(), "Help and capabilities must leave app data untouched"
+
+    inline_preview = ("calibration", "preview", "--display", "missing-monitor", "--dry-run")
+    assert call(*inline_preview, expected=3)["code"] == "not_found"
+    for args, error in ((["--gamma", "1,5"], "invalid_arguments"),
+                        (["--red-gain", "NaN"], "invalid_preset"),
+                        (["--blue-gain", "1.6"], "invalid_preset"),
+                        (["--seconds", "61"], "invalid_arguments"),
+                        (["--gamma", "2.2", "--gamma", "2.3"], "invalid_arguments")):
+        assert call(*inline_preview, *args, expected=2)["code"] == error
+    assert call("calibration", "preview", "--dry-run", expected=2)["code"] == "invalid_arguments"
+    update = ("calibration", "update", str(uuid4()))
+    assert call(*update, "--original", "--adjusted", expected=2)["code"] == "invalid_arguments"
+    assert call(*update, "--preset", str(uuid4()), "--red-gain", "1", expected=2)["code"] == "invalid_arguments"
+    assert call(*update, "--gamma", "4", expected=2)["code"] == "invalid_preset"
+    assert call(*update, "--original", expected=3)["code"] == "not_found"
+    assert not data.exists(), "Inline validation and a dry run must leave app data untouched"
 
     before_file = Path(directory) / "校准前 capture.json"
     after_file = Path(directory) / "校准后 capture.json"
@@ -191,6 +208,25 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         assert request.read_bytes() == reservation and interrupted.read_bytes() == terminal
         checks += 1
 
+    inline_id = uuid4()
+    inline_directory = interrupted.parent.parent / inline_id.hex
+    inline_directory.mkdir()
+    inline_state = inline_directory / "state.json"
+    inline_request = inline_directory / "request.json"
+    inline_final = json.dumps(dict(calibration_state, id=str(inline_id))).encode()
+    inline_reservation = json.dumps(dict(id=str(inline_id), displayId="0123456789abcdef", preset=copy,
+                                         seconds=30, allowRetries=True, inlineParameters=True)).encode()
+    inline_state.write_bytes(inline_final)
+    inline_request.write_bytes(inline_reservation)
+    inline_args = ("calibration", "preview", "--display", "0123456789abcdef", "--request-id", str(inline_id))
+    assert call(*inline_args, "--gamma", "2.20") == call("calibration", "status", str(inline_id))
+    assert call(*inline_args)["calibration"] == copy["calibration"]
+    assert call(*inline_args, "--gamma", "2.3", expected=4)["code"] == "request_id_conflict"
+    assert call(*inline_args, "--seconds", "20", expected=4)["code"] == "request_id_conflict"
+    assert call(*inline_args[:-1], str(interrupted_id), expected=4)["code"] == "request_id_conflict"
+    assert call(*replay_args[:-1], str(inline_id), expected=4)["code"] == "request_id_conflict"
+    assert inline_state.read_bytes() == inline_final and inline_request.read_bytes() == inline_reservation
+
     saved_id = uuid4()
     saved_state = data / "calibration-sessions" / saved_id.hex / "state.json"
     saved_state.parent.mkdir()
@@ -333,15 +369,27 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         dry_id = uuid4()
         dry = call("apply", created["id"], "--display", display, "--dry-run", "--request-id", str(dry_id), expected=(0, 4))
         assert not (data / "calibration-sessions" / dry_id.hex).exists()
+        preflight_errors = {"curve_read_failed", "display_identity_unavailable", "shared_source_blocked",
+                            "mhc2_profile_blocked", "profile_state_unavailable", "profile_scope_unavailable",
+                            "profile_device_unavailable", "profile_file_unavailable", "icc_base_unsupported",
+                            "curve_candidate_invalid", "external_profile_change", "preview_busy", "recovery_required"}
         if "canPreview" in dry:
             assert dry["canPreview"] is True and dry["changesDisplay"] is False
         elif "canApply" in dry:
             assert dry["canApply"] is False and dry["reasonCode"] in {"sdr_path_blocked", "mhc2_profile_blocked"}
         else:
-            assert dry["code"] in {"curve_read_failed", "display_identity_unavailable", "shared_source_blocked",
-                                   "mhc2_profile_blocked", "profile_state_unavailable", "profile_scope_unavailable",
-                                   "profile_device_unavailable", "profile_file_unavailable", "icc_base_unsupported",
-                                   "curve_candidate_invalid", "external_profile_change", "preview_busy", "recovery_required"}
+            assert dry["code"] in preflight_errors
+        inline_plan_id = uuid4()
+        inline_plan = call("calibration", "preview", "--display", display, "--gamma", "2.35", "--red-gain", "0.95",
+                           "--dry-run", "--request-id", str(inline_plan_id), expected=(0, 4))
+        assert not (data / "calibration-sessions" / inline_plan_id.hex).exists()
+        if "code" in inline_plan:
+            assert inline_plan["code"] in preflight_errors
+        else:
+            assert inline_plan["displayId"] == display and inline_plan["changesDisplay"] is False
+            assert inline_plan["calibration"] == dict(colorMode="sdr", gamma=2.35, redGain=.95, greenGain=1, blueGain=1)
+            assert inline_plan["canPreview"] == (inline_plan["reasonCode"] is None)
+            assert inline_plan["reasonCode"] in {None, "sdr_path_blocked", "mhc2_profile_blocked"}
         restore = call("displays", "restore-plan", "--display", display)
         assert restore["canRestore"] is False
         assert restore["displayId"] == display

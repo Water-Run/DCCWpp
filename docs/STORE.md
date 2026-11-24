@@ -32,6 +32,8 @@ python ./scripts/verify_package.py ./artifacts/packages/DccwPlus.App_0.2.0.0_x64
 
 包内的 `ThirdParty/index.json` 记录已解析的 SDK 和运行时版本、许可证来源及随包声明的摘要。验包脚本会核对 GUI 和 CLI 的依赖条目及声明内容。项目自身的许可证在 `LICENSE.txt`。
 
+当前构建基线为 .NET SDK 10.0.404。验包会分别检查 GUI 和 CLI 内实际随附的 .NET 运行时，最低版本为 10.0.15。[微软安全公告](https://github.com/advisories/GHSA-p3jp-9v83-76w9) · [.NET 10.0.15 发布说明](https://github.com/dotnet/core/blob/main/release-notes/10.0/10.0.15/10.0.15.md)
+
 开发包未签名。需在测试设备侧载时，以与开发包 Publisher 匹配的开发签名签包，并在测试设备上信任相应证书。测试签名私钥、密码和正式 Store 关联文件保存在本地。
 
 在支持 Windows Sandbox CLI 的 Windows 11 上，可以验证开发包签名和系统预配。脚本只映射当次的构建输入及报告目录。临时签名证书及信任只存在于沙盒中。[Windows Sandbox CLI](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli) · [MSIX 系统预配](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/sideload-apps-with-dism-s14)
@@ -42,7 +44,7 @@ python ./scripts/verify_package.py ./artifacts/packages/DccwPlus.App_0.2.0.0_x64
 
 加上 `-StandardUser` 可验证沙盒普通用户直接安装、CLI 别名、默认登录启动状态和卸载。可用 DCCW++ 的 `vcgt` 写入器生成临时 ICC，再通过 `-IccProfile` 验证普通用户安装该文件、校验安装后的摘要并移除。GUI 冷启动、登录触发及显示器关联在交互桌面和实机单独验收。
 
-GUI 冷启动验收需要已登录的交互桌面。在普通用户安装后，从开始菜单启动 DCCW++，记录首次出现的窗口、默认页和退出结果。随后在扩展桌面上选中原点偏离主屏的目标屏，核对移屏和全屏图案的位置。[Windows Sandbox CLI 的交互会话要求](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli#exec)
+GUI 冷启动验收需要已登录的交互桌面。用沙盒复测时，先通过 `wsb connect` 建立该次沙盒的交互会话。随后可用 `wsb exec --run-as ExistingLogin` 在同一会话中启动验收。200% 缩放的 x64 沙盒已检查默认页面、紧凑布局、从 CLI 创建的预设、语言切换及全屏图案。首发仍需在普通用户交互桌面重复验收，并在扩展桌面上核对移屏和全屏图案的位置。[Windows Sandbox CLI 的交互会话要求](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli#exec)
 
 ```powershell
 $fixture = dotnet run --file ./scripts/New-IccTestFixture.cs -- ./artifacts/icc-test-fixtures

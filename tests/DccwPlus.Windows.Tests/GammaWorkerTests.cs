@@ -69,6 +69,55 @@ public sealed class GammaWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task InlinePreviewCanBeRetriedAndEditedWithoutExtendingItsDeadline()
+    {
+        var backend = new SimulatedGammaBackend();
+        var store = new GammaCalibrationStore(_root);
+        var client = new GammaPreviewClient(_root, "unused");
+        var id = Guid.NewGuid();
+        string displayId = backend.State.DisplayId;
+        var preset = CalibrationPreset.Create("Inline", new() { Gamma = 2.35 });
+        string requestPath = WriteRequest(store, new(id, displayId, preset, 30, AllowRetries: true, InlineParameters: true));
+        var request = File.ReadAllBytes(requestPath);
+        var worker = Task.Run(() => GammaPreviewHost.Run(_root, id, () => backend));
+
+        try
+        {
+            var preview = await WaitForPreviewAsync(store, id, worker);
+            var retry = CalibrationPreset.Create("Localized name", preset.Calibration);
+            Assert.Equal(preview.Id, (await client.BeginAsync(displayId, retry, requestId: id, inlineParameters: true)).Id);
+            var conflict = await Assert.ThrowsAsync<ProfilePreviewException>(() => client.BeginAsync(displayId,
+                retry with { Calibration = new() { Gamma = 2.25 } }, requestId: id, inlineParameters: true));
+            Assert.Equal("request_id_conflict", conflict.Code);
+
+            var secondClient = new GammaPreviewClient(_root, "unused");
+            await Task.WhenAll(
+                client.EditAsync(id, p => p with { Calibration = p.Calibration with { RedGain = .9 } }, false),
+                secondClient.EditAsync(id, p => p with { Calibration = p.Calibration with { BlueGain = .8 } }, false));
+            var edited = store.Load(id);
+            Assert.Equal(new SdrCalibration { Gamma = 2.35, RedGain = .9, BlueGain = .8 }, edited.Preset.Calibration);
+            var original = await client.EditAsync(id, current => current, true);
+            Assert.True(original.ShowingOriginal);
+            Assert.True(backend.State.Ramp.Matches(GammaRamp.Identity()));
+            var adjusted = await client.EditAsync(id, current => current, false);
+            Assert.False(adjusted.ShowingOriginal);
+            Assert.True(backend.State.Ramp.Matches(edited.Candidate));
+            Assert.All(new[] { edited, original, adjusted }, session => Assert.Equal(preview.ExpiresAt, session.ExpiresAt));
+            Assert.Empty(new PresetStore(_root).List().Presets);
+
+            Assert.Equal("reverted", (await client.CommandAsync(id, "revert")).Status);
+            Assert.Equal(0, await worker.WaitAsync(TimeSpan.FromSeconds(4)));
+            Assert.True(backend.State.Ramp.Matches(GammaRamp.Identity()));
+            Assert.Equal(request, File.ReadAllBytes(requestPath));
+        }
+        finally
+        {
+            if (!worker.IsCompleted && store.Find(id)?.Status == "previewing") await client.CommandAsync(id, "revert");
+            await worker.WaitAsync(TimeSpan.FromSeconds(35));
+        }
+    }
+
+    [Fact]
     public async Task DuplicateProfileWorkerKeepsTheOriginalPreviewAndDeadline()
     {
         var profile = new SimulatedProfileBackend();

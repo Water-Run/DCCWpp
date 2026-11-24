@@ -113,6 +113,16 @@ public static class SandboxIccProfile {
         if ($capabilities.contractVersion -ne 1) { throw 'The installed alias did not report the CLI v1 contract.' }
         $result.cliContractVersion = $capabilities.contractVersion
         $result.cliRequestIdCommands = @($capabilities.commands | Where-Object { $_.supportsRequestId } | ForEach-Object { $_.name })
+        $inlinePreview = $capabilities.commands | Where-Object { $_.name -eq 'calibration preview' }
+        if ($inlinePreview) {
+            $result.step = 'cli_inline_preview'
+            $response = & $alias calibration preview --display 'missing-sandbox-display' --gamma 2.3 --dry-run --json | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 3 -or $response.ok -or $response.error.code -ne 'not_found' -or
+                !$inlinePreview.supportsDryRun -or !$inlinePreview.supportsRequestId) {
+                throw 'The packaged CLI did not report the expected inline preview contract.'
+            }
+            $result.inlinePreviewMissingDisplay = $response.error.code
+        }
         if ($capabilities.commands.name -contains 'calibration compare') {
             $result.step = 'cli_capture_comparison'
             $capture = Invoke-PackagedCli $alias @('calibration', 'capture')

@@ -16,10 +16,13 @@ public sealed partial class MainWindow : Window
     public MainViewModel Model { get; } = new();
     private bool _updating = true;
     private bool _updatingBindings;
+    private bool _updatingLanguage;
+    private string _headingKey = "CalibrationTitle";
     private readonly StartupService _startup = new();
     private readonly CalibrationBindingService _bindings = new(DataPaths.DefaultRoot);
     private CalibrationRestoreReport? _lastRestore;
     private sealed record BindingOption(CalibrationBinding Binding, string Label);
+    private sealed record LanguageOption(string Code, string Label);
     public MainWindow()
     {
         InitializeComponent(); Root.DataContext = Model; Title = "DCCW++";
@@ -29,7 +32,6 @@ public sealed partial class MainWindow : Window
         Workspace.Initialize(Model, this);
         Workspace.PreviewUiUpdated += UpdateBackgroundPreview;
         Navigation.SelectedItem = CalibrationNav;
-        LanguagePicker.SelectedItem = LanguagePicker.Items.Cast<ComboBoxItem>().First(i => (string)i.Tag == Model.Text.Language);
         UpdateLanguage(); _updating = false;
         Root.Loaded += async (_, _) => await RefreshStartupAsync();
     }
@@ -37,6 +39,14 @@ public sealed partial class MainWindow : Window
     {
         if (CalibrationPanel is null || Workspace is null) return;
         string page = args.IsSettingsSelected ? "settings" : (args.SelectedItem as NavigationViewItem)?.Tag as string ?? "calibration";
+        _headingKey = page switch
+        {
+            "presets" => "Presets",
+            "references" => "References",
+            "settings" => "Settings",
+            _ => "CalibrationTitle"
+        };
+        PageHeading.Text = Model.Text[_headingKey];
         CalibrationPanel.Visibility = page == "calibration" ? Visibility.Visible : Visibility.Collapsed;
         PresetsPanel.Visibility = page == "presets" ? Visibility.Visible : Visibility.Collapsed;
         ReferencesPanel.Visibility = page == "references" ? Visibility.Visible : Visibility.Collapsed;
@@ -203,10 +213,10 @@ public sealed partial class MainWindow : Window
     }
     private async void LanguageChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_updating || LanguagePicker.SelectedItem is not ComboBoxItem item) return;
+        if (_updatingLanguage || LanguagePicker.SelectedItem is not LanguageOption item || item.Code == Model.Text.Language) return;
         try
         {
-            Model.Text.Language = (string)item.Tag;
+            Model.Text.Language = item.Code;
             Model.SettingsStore.Save(new() { Language = Model.Text.Language });
             UpdateLanguage();
             RefreshBindings();
@@ -218,7 +228,20 @@ public sealed partial class MainWindow : Window
     private void UpdateLanguage()
     {
         Root.Language = Model.Text.EffectiveLanguage; Microsoft.Windows.Globalization.ApplicationLanguages.PrimaryLanguageOverride = Model.Text.EffectiveLanguage;
+        PageHeading.Text = Model.Text[_headingKey];
         if (Navigation.SettingsItem is NavigationViewItem settings) settings.Content = Model.Text["Settings"];
+        LanguageOption[] languages =
+        [
+            new("system", Model.Text["SystemLanguage"]), new("en-US", "English"),
+            new("zh-Hans", "简体中文"), new("zh-Hant", "繁體中文")
+        ];
+        _updatingLanguage = true;
+        try
+        {
+            LanguagePicker.ItemsSource = languages;
+            LanguagePicker.SelectedItem = languages.First(item => item.Code == Model.Text.Language);
+        }
+        finally { _updatingLanguage = false; }
     }
     private async Task RefreshStartupAsync()
     {

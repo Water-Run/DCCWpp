@@ -19,15 +19,32 @@ public sealed class ReferencePatternTests
     }
 
     [Theory]
-    [InlineData(ReferencePatternKind.Brightness, 0, 28, 0)]
-    [InlineData(ReferencePatternKind.Contrast, 227, 255, 255)]
-    public void HardwarePatternsRetainTheDarkAndLightLevelsAgainstTheirOwnBackground(
-        ReferencePatternKind kind, byte first, byte last, byte background)
+    [InlineData(900, 270, 150, 135, 300, 0)]
+    [InlineData(270, 900, 135, 150, 0, 300)]
+    public void LiveGammaPlacesThreeLargeDotsAcrossTheLongDimension(int width, int height,
+        int x, int y, int horizontalStep, int verticalStep)
     {
-        const int width = 80, height = 40;
+        var image = ReferencePattern.Draw(ReferencePatternKind.Gamma, width, height);
+        for (int index = 0; index < 3; index++)
+            Assert.Equal(186, Pixel(image, width, x + index * horizontalStep, y + index * verticalStep)[0]);
+        Assert.Equal(255, Pixel(image, width, x + 60, y)[0]);
+        Assert.Equal(0, Pixel(image, width, x + 61, y)[0]);
+    }
+
+    [Theory]
+    [InlineData(ReferencePatternKind.Brightness, new byte[] { 1, 2, 4, 8, 12, 16, 24, 32 }, 0)]
+    [InlineData(ReferencePatternKind.Contrast, new byte[] { 223, 231, 239, 243, 247, 251, 253, 254 }, 255)]
+    public void HardwarePatternsSeparateEveryPatchFromTheReferenceBackground(
+        ReferencePatternKind kind, byte[] expected, byte background)
+    {
+        const int width = 160, height = 80;
         var image = ReferencePattern.Draw(kind, width, height);
-        Assert.Equal(first, Pixel(image, width, 5, height / 2)[0]);
-        Assert.Equal(last, Pixel(image, width, 75, height / 2)[0]);
+        for (int index = 0; index < expected.Length; index++)
+        {
+            byte level = expected[index];
+            Assert.Equal(new byte[] { level, level, level, 255 }, Pixel(image, width, index * 20 + 10, height / 2));
+            Assert.Equal(background, Pixel(image, width, index * 20, height / 2)[0]);
+        }
         Assert.Equal(background, Pixel(image, width, 40, 1)[0]);
     }
 

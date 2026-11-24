@@ -22,7 +22,8 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
     public GammaCalibrationSession? FindByRequestId(Guid requestId, string displayId, Guid presetId, int seconds) =>
         FindByRequestId(requestId, seconds, displayId, presetId, undoOf: null);
 
-    private GammaCalibrationSession? FindByRequestId(Guid requestId, int seconds, string? displayId, Guid? presetId, Guid? undoOf)
+    private GammaCalibrationSession? FindByRequestId(Guid requestId, int seconds, string? displayId, Guid? presetId,
+        Guid? undoOf, SdrCalibration? inlineSettings = null)
     {
         var original = ReadRequest(requestId);
         if (original is null)
@@ -30,21 +31,24 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
             if (_store.Find(requestId) is null) return null;
             original = ReadRequest(requestId); // Reservation can appear between the two reads.
         }
-        EnsureSameRequest(original, requestId, seconds, displayId, presetId, undoOf);
+        EnsureSameRequest(original, requestId, seconds, displayId, presetId, undoOf, inlineSettings);
         return _store.Find(requestId);
     }
 
     public Task<GammaCalibrationSession> BeginAsync(string displayId, CalibrationPreset preset, int seconds = 30,
-        bool windowOwned = false, Guid? requestId = null)
+        bool windowOwned = false, Guid? requestId = null, bool inlineParameters = false)
     {
         if (seconds is < 10 or > 60) throw new ArgumentException("Preview timeout must be 10–60 seconds.");
         if (requestId == Guid.Empty || (requestId is not null && windowOwned))
             throw new ArgumentException(new LocalizationService()["PreviewRequestIdOwnership"]);
         PresetCodec.Validate(preset);
+        if (inlineParameters && requestId is Guid replayId
+            && FindByRequestId(replayId, seconds, displayId, presetId: null, undoOf: null, inlineSettings: preset.Calibration) is { } prior)
+            return Task.FromResult(prior);
         using var owner = Process.GetCurrentProcess();
         var request = new GammaPreviewRequest(requestId ?? Guid.NewGuid(), displayId, preset, seconds,
             windowOwned ? owner.Id : null, windowOwned ? owner.StartTime.ToUniversalTime().Ticks : null,
-            AllowRetries: requestId is not null);
+            AllowRetries: requestId is not null, InlineParameters: inlineParameters);
         return ReserveAndLaunch(request);
     }
 
@@ -60,7 +64,8 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
         }
         catch (IOException) when (request.AllowRetries && File.Exists(requestPath))
         {
-            EnsureSameRequest(ReadRequest(request.Id), request.Id, request.Seconds, request.DisplayId, request.Preset?.Id, request.UndoOf);
+            EnsureSameRequest(ReadRequest(request.Id), request.Id, request.Seconds, request.DisplayId, request.Preset?.Id,
+                request.UndoOf, request.InlineParameters ? request.Preset!.Calibration : null);
         }
         var existing = _store.Find(request.Id);
         return existing is null ? LaunchAsync(request.Id, recover: false) : Task.FromResult(existing);
@@ -92,7 +97,14 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
         return session.NeedsRecovery ? LaunchAsync(id, recover: true) : Task.FromResult(session);
     }
 
-    public async Task<GammaCalibrationSession> CommandAsync(Guid id, string action, CalibrationPreset? preset = null, bool showOriginal = false)
+    public Task<GammaCalibrationSession> CommandAsync(Guid id, string action, CalibrationPreset? preset = null, bool showOriginal = false)
+        => SendCommandAsync(id, action, preset, showOriginal);
+
+    public Task<GammaCalibrationSession> EditAsync(Guid id, Func<CalibrationPreset, CalibrationPreset> edit, bool showOriginal)
+        => SendCommandAsync(id, "update", null, showOriginal, edit);
+
+    private async Task<GammaCalibrationSession> SendCommandAsync(Guid id, string action, CalibrationPreset? preset,
+        bool showOriginal, Func<CalibrationPreset, CalibrationPreset>? edit = null)
     {
         var first = _store.Load(id);
         if (!first.NeedsRecovery || first.Status == "recovery-pending") return first;
@@ -107,7 +119,7 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
         }
         var session = _store.Load(id);
         if (session.Status != "previewing") return session;
-        var command = new GammaPreviewCommand(Guid.NewGuid(), action, preset, showOriginal);
+        var command = new GammaPreviewCommand(Guid.NewGuid(), action, edit is null ? preset : edit(session.Preset), showOriginal);
         AtomicFile.Write(commandPath, JsonSerializer.SerializeToUtf8Bytes(command, ProfilePreviewStore.Json));
         return await WaitForCommandAsync(id, command, reportError: true);
     }
@@ -189,11 +201,14 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
         return File.Exists(path) ? ProfilePreviewStore.Read<GammaPreviewRequest>(path) : null;
     }
 
-    private static void EnsureSameRequest(GammaPreviewRequest? original, Guid id, int seconds, string? displayId, Guid? presetId, Guid? undoOf)
+    private static void EnsureSameRequest(GammaPreviewRequest? original, Guid id, int seconds, string? displayId,
+        Guid? presetId, Guid? undoOf, SdrCalibration? inlineSettings = null)
     {
         if (original is not { AllowRetries: true, Recover: false, OwnerPid: null, OwnerStartTicks: null }
-            || original.Id != id || original.Seconds != seconds || original.UndoOf != undoOf || original.Preset?.Id != presetId
-            || (displayId is not null && original.DisplayId != displayId))
+            || original.Id != id || original.Seconds != seconds || original.UndoOf != undoOf
+            || (displayId is not null && original.DisplayId != displayId)
+            || original.InlineParameters != (inlineSettings is not null)
+            || (inlineSettings is null ? original.Preset?.Id != presetId : original.Preset?.Calibration != inlineSettings))
             throw RequestConflict();
     }
 

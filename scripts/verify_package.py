@@ -120,6 +120,14 @@ def verify_msix(package, store_identity):
         assert len(by_id) == len(notices["packages"]), "Duplicate third-party attribution"
         for deps_name in ("DccwPlus.App.deps.json", "Cli/dccwpp.deps.json"):
             deps = json.loads(archive.read(deps_name))
+            runtime_prefix = f"runtimepack.Microsoft.NETCore.App.Runtime.win-{architecture}/"
+            runtime_versions = [name.removeprefix(runtime_prefix) for name in deps["libraries"] if name.startswith(runtime_prefix)]
+            assert len(runtime_versions) == 1 and re.fullmatch(r"[0-9]+(\.[0-9]+){2}", runtime_versions[0]), (
+                f"{deps_name} must carry a single stable .NET runtime for {architecture}."
+            )
+            assert tuple(map(int, runtime_versions[0].split("."))) >= (10, 0, 15), (
+                f"{deps_name} bundles an outdated .NET runtime ({runtime_versions[0]}). Use SDK 10.0.404 or later in the 10.0.4xx band."
+            )
             for dependency, metadata in deps["libraries"].items():
                 if metadata["type"] == "runtimepack":
                     dependency = dependency.removeprefix("runtimepack.")

@@ -13,7 +13,7 @@
 | `display-preview` | 开始或更新限时预览 |
 | `display-change` | 确认、取消或恢复显示状态 |
 
-Agent 从 `displays list` 选择明确的显示器，从 `presets list` 取得预设 UUID，再执行 `apply --dry-run`。实际预览返回会话 ID 与 `expiresAt`。通过 `calibration status` 读回状态，并在得到用户选择后调用 `calibration confirm` 或 `calibration revert`。显示会话来自当前 Windows 用户和桌面。Agent 应读取退出码、`ok`、状态和原因码。`--request-id` 适用于 `apply`、`calibration undo` 和 `profiles preview`，可在客户端超时或响应丢失时查回同一个会话。
+Agent 从 `displays list` 选择明确的显示器，再用 `calibration preview --dry-run` 检查直接输入的参数，或从 `presets list` 取得预设 UUID 后执行 `apply --dry-run`。实际预览返回会话 ID 与 `expiresAt`。通过 `calibration status` 读回状态，并在得到用户选择后调用 `calibration confirm` 或 `calibration revert`。显示会话来自当前 Windows 用户和桌面。Agent 应读取退出码、`ok`、状态和原因码。`--request-id` 适用于 `calibration preview`、`apply`、`calibration undo` 和 `profiles preview`，可在客户端超时或响应丢失时查回同一个会话。
 
 ## 命令参考
 
@@ -95,13 +95,17 @@ dccwpp.exe calibration compare before.json after.json --json
 校准操作：
 
 ```text
+dccwpp calibration preview --display <display-id> --gamma 2.30 --red-gain 0.97 --dry-run --json
+dccwpp calibration preview --display <display-id> --gamma 2.30 --red-gain 0.97 --seconds 60 --request-id <request-uuid> --json
 dccwpp apply <preset-uuid> --display <display-id> --dry-run --json
 dccwpp apply <preset-uuid> --display <display-id> --seconds 30 --json
 dccwpp apply <preset-uuid> --display <display-id> --seconds 30 --request-id <request-uuid> --json
 dccwpp calibration sessions --json
 dccwpp calibration status <session-id> --json
 dccwpp calibration update <session-id> --preset <preset-uuid> --json
-dccwpp calibration update <session-id> --preset <preset-uuid> --original --json
+dccwpp calibration update <session-id> --green-gain 0.96 --json
+dccwpp calibration update <session-id> --original --json
+dccwpp calibration update <session-id> --adjusted --json
 dccwpp calibration confirm <session-id> --json
 dccwpp calibration revert <session-id> --json
 dccwpp calibration recover <session-id> --json
@@ -111,9 +115,15 @@ dccwpp calibration undo <calibration-id> --seconds 30 --request-id <request-uuid
 
 `apply --dry-run` 与向导、CLI 的实际预览共用启动检查。检查未完成的显示事务、SDR 路径、逻辑曲线、默认 ICC 及作用域，并在内存中生成候选 ICC。`canPreview: true` 表示这些检查通过。驱动写入和 Windows 默认关联在实际操作后验证。HDR 或 MHC2 继续返回 `canApply: false` 与原因码。其他阻碍通过错误封装返回，例如 `recovery_required`、`profile_device_unavailable`、`profile_file_unavailable` 和 `icc_base_unsupported`。预演不占用请求 ID，也不生成磁盘 ICC。
 
-**未带 `--dry-run` 的 `apply` 会实际写入所选 SDR 显示器的临时 Gamma 曲线。** 它返回会话 ID 和固定的 `expiresAt`。CLI 时限为 10–60 秒，更新参数或切回原曲线都沿用同一时限。未在到期前进入保存流程的会话会尝试恢复原曲线。`confirm` 保存 ICC 并在 Windows 中选用，`revert` 取消尚未确认的预览，`recover` 尝试恢复中断会话。
+`calibration preview` 使用同一套检查。Gamma 范围为 1–3，默认 2.2。`--red-gain`、`--green-gain` 和 `--blue-gain` 范围为 0.5–1.5，默认 1。预演通过或因色彩模式被阻止时，`data` 含 `displayId`、`calibration`、`canPreview`、`reasonCode`、`timeoutSeconds` 和 `changesDisplay`。直接输入只在事务中暂存，在确认保存后可出现在预设库。
+
+**未带 `--dry-run` 的 `apply` 和 `calibration preview` 会实际写入所选 SDR 显示器的临时 Gamma 曲线。** 命令返回 `sessionId` 和固定的 `expiresAt`。CLI 时限为 10–60 秒，更新参数或切回原曲线都沿用同一时限。未在到期前进入保存流程的会话会尝试恢复原曲线。`confirm` 保存 ICC 并在 Windows 中选用，`revert` 取消尚未确认的预览，`recover` 尝试恢复中断会话。
+
+`calibration update` 可通过数值选项调整当前普通预览，仅替换传入的参数。也可用 `--preset` 切换到已保存的预设。`--original` 查看原始曲线，`--adjusted` 查看当前候选曲线，单独使用只切换视图。会话响应中 `calibration` 是候选预设参数，`showingOriginal` 表示当前视图。确认提交候选曲线。撤回已保存校准使用 `calibration undo`，它的候选曲线来自原校准备份。
 
 Agent 可以在第一次实际预览前生成一个 UUID 并传入 `--request-id`。该 UUID 同时是会话 ID。发生客户端超时或输出丢失时，使用同一个 UUID、预设 ID、显示器 ID 和超时值重试。`apply` 会返回持久日志中的现有会话，包括已超时、已确认或待恢复的会话，以上次保存的状态为准。原显示器断开或原预设已删除时仍可查询已经创建的会话。复用 UUID 提交其他目标、预设或时限会返回 `request_id_conflict`。需要发起新的预览时使用新 UUID。`--dry-run` 不占用请求 ID。
+
+直接预览重试时使用同一 UUID、显示器、时限和最初的有效数值。重试返回该会话的当前状态及当前候选值。直接预览、预设应用与撤回共用校准会话 ID 范围，跨命令复用 UUID 会返回 `request_id_conflict`。
 
 同一会话的命令由 GUI 和 CLI 共同串行发送。遇到 `command_busy`、`worker_start_timeout` 或 `worker_not_responding` 时，先查询会话状态。状态为 `recovery-pending` 时，在目标显示器重新可用后执行 `calibration recover`。恢复会保留最初的请求记录。应用在同一个 Windows 会话内串行执行实际显示写入，忙时返回 `preview_busy`。
 

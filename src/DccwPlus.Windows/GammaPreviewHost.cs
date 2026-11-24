@@ -8,7 +8,8 @@ using DccwPlus.Core.Storage;
 namespace DccwPlus.Windows;
 
 public sealed record GammaPreviewRequest(Guid Id, string DisplayId, CalibrationPreset? Preset, int Seconds,
-    int? OwnerPid = null, long? OwnerStartTicks = null, bool Recover = false, bool AllowRetries = false, Guid? UndoOf = null);
+    int? OwnerPid = null, long? OwnerStartTicks = null, bool Recover = false, bool AllowRetries = false, Guid? UndoOf = null,
+    bool InlineParameters = false);
 public sealed record GammaPreviewCommand(Guid Id, string Action, CalibrationPreset? Preset = null, bool ShowOriginal = false);
 public sealed record GammaPreviewAck(Guid CommandId, string? ErrorCode, string? Message);
 

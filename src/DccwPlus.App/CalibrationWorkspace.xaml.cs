@@ -11,10 +11,12 @@ namespace DccwPlus.App;
 
 public sealed partial class CalibrationWorkspace : UserControl
 {
+    private static readonly string[] StepLabelKeys = ["StepPrepare", "StepGamma", "StepBrightness", "StepContrast", "StepBalance", "StepReview"];
     private MainViewModel? _model;
     private Window? _window;
     private Window? _patternWindow;
     private PatternSurface? _fullScreenPattern;
+    private (Button Exit, Button Compare, Button Cancel, TextBlock Guide, TextBlock Countdown)? _fullScreenControls;
     private GammaPreviewClient? _client;
     private readonly PreviewRecoveryService _recovery = new(DataPaths.DefaultRoot);
     private GammaCalibrationSession? _session;
@@ -41,11 +43,11 @@ public sealed partial class CalibrationWorkspace : UserControl
         GammaHighPattern.SetPattern(ReferencePatternKind.Gamma, GammaExample.TooHigh);
         PresetName.Text = model.Text["DefaultPresetName"];
         if (model.Displays.Count > 0) DisplayPicker.SelectedIndex = 0;
-        StepPicker.SelectedIndex = 0;
+        UpdateStepLabels();
         _timer = DispatcherQueue.CreateTimer(); _timer.Interval = TimeSpan.FromSeconds(1); _timer.Tick += TimerTick;
         _debounce = DispatcherQueue.CreateTimer(); _debounce.Interval = TimeSpan.FromMilliseconds(180); _debounce.IsRepeating = false;
         _debounce.Tick += async (_, _) => await PushAsync();
-        model.Text.LanguageChanged += (_, _) => { UpdateStep(); UpdateUi(); RefreshRecovery(); };
+        model.Text.LanguageChanged += (_, _) => { UpdateStepLabels(); UpdateStep(); UpdateUi(); RefreshRecovery(); };
         window.Closed += (_, _) => ClosePatternWindow();
         window.Activated += (_, e) =>
         {
@@ -277,6 +279,19 @@ public sealed partial class CalibrationWorkspace : UserControl
         Pattern.SetPattern(pattern);
         _fullScreenPattern?.SetPattern(pattern);
     }
+    private void UpdateStepLabels()
+    {
+        if (_model is null) return;
+        int selected = Math.Max(0, StepPicker.SelectedIndex);
+        bool previousSetting = _setting;
+        _setting = true;
+        try
+        {
+            StepPicker.ItemsSource = StepLabelKeys.Select(key => _model.Text[key]).ToArray();
+            StepPicker.SelectedIndex = selected;
+        }
+        finally { _setting = previousSetting; }
+    }
     private void UpdateUi()
     {
         if (_model is null) return;
@@ -314,6 +329,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         StepInstructions.Text = _model.Text[undo ? "UndoPreview" : "StepInstruction" + Math.Max(0, StepPicker.SelectedIndex)];
         ComparisonState.Text = _model.Text[undo ? "ShowingPreviousSavedCurve" : !Active ? "ComparisonRequiresPreview"
             : _session!.ShowingOriginal ? "ShowingOriginal" : "ShowingAdjusted"];
+        UpdateFullScreenControls();
         UpdateDisplaySummary();
         ResetButton.Visibility = StepPicker.SelectedIndex is 1 or 4 ? Visibility.Visible : Visibility.Collapsed;
         PreviewUiUpdated?.Invoke();
@@ -405,26 +421,54 @@ public sealed partial class CalibrationWorkspace : UserControl
         var pattern = new PatternSurface();
         pattern.SetPattern((ReferencePatternKind)Math.Max(0, StepPicker.SelectedIndex));
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(pattern, text["CalibrationPattern"]);
-        var exit = new Button { Content = text["ExitFullScreen"], Margin = new Thickness(16, 10, 16, 10) };
+        var exit = new Button();
+        var compare = new Button();
+        var cancel = new Button();
+        var guide = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        var countdown = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        actions.Children.Add(exit);
+        actions.Children.Add(compare);
+        actions.Children.Add(cancel);
+        var footer = new StackPanel { Padding = new Thickness(16, 10, 16, 10), Spacing = 6 };
+        footer.Children.Add(guide);
+        footer.Children.Add(countdown);
+        footer.Children.Add(new ScrollViewer
+        {
+            Content = actions, HorizontalScrollMode = ScrollMode.Enabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollMode = ScrollMode.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled
+        });
         var root = new Grid();
         root.RowDefinitions.Add(new RowDefinition());
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.Children.Add(pattern);
-        Grid.SetRow(exit, 1);
-        root.Children.Add(exit);
+        Grid.SetRow(footer, 1);
+        root.Children.Add(footer);
         var window = new Window { Title = text["CalibrationPattern"], Content = root };
         _patternWindow = window;
         _fullScreenPattern = pattern;
+        _fullScreenControls = (exit, compare, cancel, guide, countdown);
+        UpdateFullScreenControls();
         window.Closed += (_, _) =>
         {
             if (ReferenceEquals(_patternWindow, window))
             {
                 _patternWindow = null;
                 _fullScreenPattern = null;
+                _fullScreenControls = null;
             }
         };
         exit.Click += (_, _) => ClosePatternWindow();
         exit.Loaded += (_, _) => exit.Focus(FocusState.Programmatic);
+        compare.Click += async (_, _) =>
+        {
+            if (!OriginalToggle.IsEnabled) return;
+            if (!OnPreviewDisplay()) { await CancelAsync(targetMoved: true); return; }
+            OriginalToggle.IsOn = !_session!.ShowingOriginal;
+            _debounce?.Stop();
+            await PushAsync();
+        };
+        cancel.Click += async (_, _) => await CancelAsync();
         root.KeyDown += (_, key) =>
         {
             if (key.Key != global::Windows.System.VirtualKey.Escape) return;
@@ -442,6 +486,22 @@ public sealed partial class CalibrationWorkspace : UserControl
         }
         catch (Exception ex) { ClosePatternWindow(); ShowError(ex); }
     }
+    private void UpdateFullScreenControls()
+    {
+        if (_model is null || _fullScreenControls is not { } controls) return;
+        var text = _model.Text;
+        bool reviewing = StepPicker.SelectedIndex == 5 && Active;
+        controls.Exit.Content = text["ExitFullScreen"];
+        controls.Compare.Content = text[_session?.ShowingOriginal == true ? "ShowAdjustedAction" : "ShowOriginalAction"];
+        controls.Compare.Visibility = reviewing && !UndoActive ? Visibility.Visible : Visibility.Collapsed;
+        controls.Compare.IsEnabled = OriginalToggle.IsEnabled;
+        controls.Cancel.Content = text["CancelCalibration"];
+        controls.Cancel.Visibility = CancelButton.Visibility;
+        controls.Cancel.IsEnabled = CancelButton.IsEnabled;
+        controls.Guide.Text = reviewing ? ComparisonState.Text : StepInstructions.Text;
+        controls.Countdown.Visibility = CountdownText.Visibility;
+        controls.Countdown.Text = CountdownText.Text;
+    }
     private bool OnPreviewDisplay()
     {
         return _session is not null && _window is not null
@@ -453,6 +513,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         var window = _patternWindow;
         _patternWindow = null;
         _fullScreenPattern = null;
+        _fullScreenControls = null;
         window?.Close();
     }
     private void ReloadSession()
