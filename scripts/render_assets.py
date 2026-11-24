@@ -1,7 +1,8 @@
 """Render the editable SVG into Windows package assets. No generated bitmap is traced or embedded."""
 from io import BytesIO
 from pathlib import Path
-import cairosvg
+import shutil
+import subprocess
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,7 +12,13 @@ DEST.mkdir(parents=True, exist_ok=True)
 
 def render(width, height, fill=0.88):
     size = round(min(width, height) * fill)
-    icon = Image.open(BytesIO(cairosvg.svg2png(url=str(SOURCE), output_width=size, output_height=size))).convert("RGBA")
+    if shutil.which("resvg"):
+        png = subprocess.run(["resvg", "--skip-system-fonts", "--width", str(size), "--height", str(size), str(SOURCE), "-c"],
+                             check=True, capture_output=True).stdout
+    else:
+        import cairosvg
+        png = cairosvg.svg2png(url=str(SOURCE), output_width=size, output_height=size)
+    icon = Image.open(BytesIO(png)).convert("RGBA")
     canvas = Image.new("RGBA", (width, height))
     canvas.alpha_composite(icon, ((width-size)//2, (height-size)//2))
     return canvas

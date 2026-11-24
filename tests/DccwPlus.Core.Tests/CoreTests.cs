@@ -19,11 +19,84 @@ public sealed class CoreTests : IDisposable
         var original = CalibrationPreset.Create("夜间 / Night", new() { Gamma = 2.35, RedGain = 0.9 });
         var store = new PresetStore(_root); store.Add(original);
         string exported = Path.Combine(_root, "shared.json"); store.Export(original.Id, exported);
-        var imported = store.Import(exported);
+        var imported = store.Import(exported).Preset;
         Assert.NotEqual(original.Id, imported.Id);
         Assert.Equal(original.Calibration, imported.Calibration);
         Assert.Equal(original.Name, imported.Name);
         Assert.Equal(2, store.List().Presets.Count);
+    }
+    [Fact]
+    public void DuplicateImportPreservesLocalRenameAndExplicitCopyGetsItsOwnId()
+    {
+        var store = new PresetStore(_root);
+        var original = CalibrationPreset.Create("Shared", new() { BlueGain = .9 }) with { Author = "Photo team" };
+        store.Add(original);
+        string source = Path.Combine(_root, "shared.json");
+        store.Export(original.Id, source);
+        var first = store.Import(source);
+        Assert.False(first.AlreadyPresent);
+
+        var renamed = store.Rename(first.Preset.Id, "  My copy  ");
+        var repeated = store.Import(source);
+        Assert.True(repeated.AlreadyPresent);
+        Assert.Equal(renamed, repeated.Preset);
+        Assert.Equal("My copy", repeated.Preset.Name);
+        Assert.Equal(original.Calibration, repeated.Preset.Calibration);
+        Assert.Equal(original.Author, repeated.Preset.Author);
+        Assert.Equal(original.CreatedAt, repeated.Preset.CreatedAt);
+        Assert.NotEqual(renamed.Id, store.Import(source, asCopy: true).Preset.Id);
+    }
+    [Fact]
+    public async Task ConcurrentImportsAndPreviouslyImportedPresetsReuseTheLocalId()
+    {
+        var store = new PresetStore(_root);
+        var original = CalibrationPreset.Create("Shared");
+        store.Add(original);
+        string source = Path.Combine(_root, "shared.json");
+        store.Export(original.Id, source);
+
+        var imports = await Task.WhenAll(Enumerable.Range(0, 6).Select(_ => Task.Run(() => new PresetStore(_root).Import(source))));
+        Assert.Single(imports, i => !i.AlreadyPresent);
+        Assert.Single(imports.Select(i => i.Preset.Id).Distinct());
+
+        store.Delete(imports[0].Preset.Id);
+        var legacy = original with { Id = Guid.NewGuid() };
+        store.Add(legacy);
+        Assert.Equal(legacy.Id, store.Import(source).Preset.Id);
+        Assert.Equal(2, store.List().Presets.Count);
+    }
+    [Fact]
+    public void DisabledBindingStillProtectsThePresetUntilRemoved()
+    {
+        var store = new PresetStore(_root);
+        var preset = CalibrationPreset.Create("Bound");
+        store.Add(preset);
+        var bindings = new CalibrationBindingStore(_root);
+        string key = "path:" + new string('F', 64);
+        bindings.Save(new()
+        {
+            PersistenceKey = key, IdentityKind = "device-path", DisplayName = "Test display",
+            PresetId = preset.Id, ProfileName = "DCCWPlus-test.icc", ProfileSha256 = new string('F', 64),
+            Ramp = GammaRamp.Identity(), RestoreEnabled = false, SavedAt = DateTimeOffset.UtcNow
+        });
+        Assert.Equal("preset_in_use", Assert.Throws<PresetOperationException>(() => store.Delete(preset.Id)).Code);
+        Assert.Equal(preset, store.Get(preset.Id));
+        Assert.Equal(preset.Id, bindings.Remove(key).PresetId);
+        store.Delete(preset.Id);
+        Assert.Empty(store.List().Presets);
+    }
+    [Fact]
+    public void ExportCannotReplaceAnotherManagedPreset()
+    {
+        var store = new PresetStore(_root);
+        var source = CalibrationPreset.Create("Source");
+        var target = CalibrationPreset.Create("Keep");
+        store.Add(source);
+        store.Add(target);
+        string path = Path.Combine(_root, "presets", $"{target.Id:D}.dccw.json");
+        Assert.Equal("preset_library_path",
+            Assert.Throws<PresetOperationException>(() => store.Export(source.Id, path, overwrite: true)).Code);
+        Assert.Equal(target, store.Get(target.Id));
     }
     [Fact]
     public void ExportDoesNotOverwriteExistingFile()
@@ -92,7 +165,7 @@ public sealed class CoreTests : IDisposable
     {
         var service = new CalibrationService(new FakeDisplays()); var preset = CalibrationPreset.Create("Draft");
         var plan = service.Plan(preset, "monitor-1");
-        Assert.False(plan.CanApply); Assert.Equal("calibration_backend_pending", plan.ReasonCode);
+        Assert.False(plan.CanApply); Assert.Equal("sdr_path_blocked", plan.ReasonCode);
         Assert.Throws<KeyNotFoundException>(() => service.Plan(preset, "missing"));
     }
     private sealed class FakeDisplays : IDisplayService

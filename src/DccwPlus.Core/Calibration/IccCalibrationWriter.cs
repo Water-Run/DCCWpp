@@ -1,0 +1,90 @@
+using System.Buffers.Binary;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace DccwPlus.Core.Calibration;
+
+public static class IccCalibrationWriter
+{
+    // Preserve the source characterization. Replace only the calibration and display name.
+    public static byte[] Build(ReadOnlySpan<byte> original, GammaRamp ramp, Guid id)
+    {
+        ramp.Validate();
+        var report = IccProfileInspector.Inspect("source.icc", original);
+        if (report.ReadStatus != "read" || !report.SignatureValid || report.DeviceClass != "mntr"
+            || report.ColorSpace != "RGB" || original[8] is not (2 or 4) || report.TrcPresent is null)
+            throw new InvalidDataException("The base ICC is not a supported RGB display profile.");
+        int count = checked((int)Read(original, 128));
+        int directoryEnd = checked(132 + count * 12);
+        var tags = new List<(string Signature, byte[] Data)>();
+        var signatures = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i < count; i++)
+        {
+            int entry = 132 + 12 * i;
+            string signature = Encoding.ASCII.GetString(original.Slice(entry, 4));
+            int offset = checked((int)Read(original, entry + 4)), length = checked((int)Read(original, entry + 8));
+            if (!signatures.Add(signature) || offset < directoryEnd || length < 8 || offset % 4 != 0
+                || offset > original.Length || length > original.Length - offset)
+                throw new InvalidDataException("Invalid or duplicate ICC tag entry.");
+            if (signature == "MHC2") throw new InvalidDataException("MHC2 profiles require the hardware calibration backend.");
+            if (signature is "vcgt" or "MS00" or "desc") continue;
+            tags.Add((signature, original.Slice(offset, length).ToArray()));
+        }
+        tags.Add(("desc", Description("DCCW++ " + id.ToString("N")[..12], original[8] == 4)));
+        tags.Add(("vcgt", Vcgt(ramp)));
+        int position = Align(132 + tags.Count * 12);
+        var output = new byte[position + tags.Sum(t => Align(t.Data.Length))];
+        original[..128].CopyTo(output);
+        Write(output, 0, (uint)output.Length);
+        output.AsSpan(84, 16).Clear();
+        Write(output, 128, (uint)tags.Count);
+        for (int i = 0; i < tags.Count; i++)
+        {
+            int entry = 132 + i * 12;
+            Encoding.ASCII.GetBytes(tags[i].Signature, output.AsSpan(entry, 4));
+            Write(output, entry + 4, (uint)position);
+            Write(output, entry + 8, (uint)tags[i].Data.Length);
+            tags[i].Data.CopyTo(output, position);
+            position += Align(tags[i].Data.Length);
+        }
+        if (original[8] == 4)
+        {
+            var digestInput = (byte[])output.Clone();
+            digestInput.AsSpan(44, 4).Clear(); digestInput.AsSpan(64, 4).Clear();
+            MD5.HashData(digestInput).CopyTo(output, 84); // ICC v4 profile ID, not a security digest.
+        }
+        return output;
+    }
+    public static byte[] Vcgt(GammaRamp ramp)
+    {
+        ramp.Validate();
+        var data = new byte[18 + 3 * 256 * 2];
+        "vcgt"u8.CopyTo(data);
+        BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(12), 3);
+        BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(14), 256);
+        BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(16), 2);
+        int offset = 18;
+        foreach (var channel in new[] { ramp.Red, ramp.Green, ramp.Blue })
+            foreach (ushort value in channel)
+            { BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(offset), value); offset += 2; }
+        return data;
+    }
+    private static byte[] Description(string name, bool version4)
+    {
+        if (version4)
+        {
+            byte[] text = Encoding.BigEndianUnicode.GetBytes(name);
+            var data = new byte[28 + text.Length];
+            "mluc"u8.CopyTo(data); Write(data, 8, 1); Write(data, 12, 12);
+            "enUS"u8.CopyTo(data.AsSpan(16)); Write(data, 20, (uint)text.Length); Write(data, 24, 28);
+            text.CopyTo(data, 28); return data;
+        }
+        byte[] ascii = Encoding.ASCII.GetBytes(name + "\0");
+        var result = new byte[90 + ascii.Length];
+        "desc"u8.CopyTo(result); Write(result, 8, (uint)ascii.Length); ascii.CopyTo(result, 12);
+        return result;
+    }
+    private static int Align(int value) => checked((value + 3) & ~3);
+    private static uint Read(ReadOnlySpan<byte> bytes, int offset) => BinaryPrimitives.ReadUInt32BigEndian(bytes[offset..]);
+    private static void Write(Span<byte> bytes, int offset, uint value) => BinaryPrimitives.WriteUInt32BigEndian(bytes[offset..], value);
+}

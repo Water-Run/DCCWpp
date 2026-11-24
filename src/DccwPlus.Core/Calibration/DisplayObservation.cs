@@ -99,11 +99,15 @@ public static class DisplayObservationCodec
         Range(display.CloneGroup, 0, 65534, "cloneGroup");
         if (display.ProfileScope is not null && display.ProfileScope is not ("current-user" or "system-wide"))
             throw new InvalidDataException("Unsupported color profile scope.");
-        if (display.ProfileName is not null)
+        if (display.ProfileName is not null) IccProfileInspector.ValidateFileName(display.ProfileName);
+        if (display.ProfileDeviceKey is { } key && (key.Length > 1024 || key.Any(char.IsControl)
+            || !key.StartsWith(@"\Registry\Machine\System\", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidDataException("Invalid profile device key.");
+        if (display.Profile is { } profile)
         {
-            Text(display.ProfileName, 255, "Color profile name");
-            if (display.ProfileName is "." or ".." || display.ProfileName.IndexOfAny(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) >= 0)
-                throw new InvalidDataException("Color profile name must be a file name, not a path or command.");
+            if (!string.Equals(profile.FileName, display.ProfileName, StringComparison.Ordinal))
+                throw new InvalidDataException("Profile inspection must use the associated profile file name.");
+            IccProfileInspector.ValidateReport(profile);
         }
     }
 

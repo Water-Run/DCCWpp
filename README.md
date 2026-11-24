@@ -1,56 +1,66 @@
 # DCCW++
 
-Windows 11 的现代显示颜色校准工具。使用 WinUI 3，目标是让日常校准、多显示器预设管理和登录后恢复更清晰可靠，通过 Microsoft Store 发布。许可证：**GPL-3.0-only**。
+![DCCW++ app icon](design/branding/logo-preview.png)
 
-![DCCW++ icon](design/branding/logo-preview.png)
+DCCW++ is a native WinUI 3 display color calibration app for Windows 11. It aims to be a standalone alternative to Windows Display Color Calibration (`dccw.exe`) for SDR displays, with clearer controls, per-display presets, and a command line for automation. Microsoft Store is the planned distribution channel.
 
-## 当前状态：0.1 基础框架
+## Development status
 
-已经实现：
+**0.2 is a development milestone.** The SDR wizard, timed preview and recovery, and ICC save flow are implemented. Physical display behavior, ICC installation and restoration on supported hardware, and packaged end-to-end behavior still need acceptance testing. The Microsoft Store release is pending.
 
-- WinUI 3 原生窗口、系统主题、NavigationView、校准草稿、预设、参考照片和设置页面。
-- 简体中文、繁体中文、英语；跟随系统、即时文字切换、英语回退和资源一致性测试。
-- 本地预设保存、导入、导出；版本化 JSON、字段校验、大小上限、原子写入。导入不会自动应用。
-- 显示器只读探测：活动拓扑、颜色模式（`sdr` / `wcg` / `hdr` / `advanced-color` / `unknown`）和当前 ICC 配置文件名。探测失败不会标成 SDR。当前 ID 只代表这次拓扑查询，不能作为跨端口持久身份。探测不写入配置文件，也不改变显示设置。
-- 独立 CLI，与界面共用核心服务，支持 JSON 输出、退出码和预演。
-- MSIX 清单、登录启动声明、CLI 执行别名、图标、多语言商店资源和构建脚本。
+- Select a display and step through gamma, brightness, contrast, grayscale color balance, and before/after comparison. View example gamma patterns, inspect a full-screen test pattern on the chosen display, or skip hardware controls. The app can open Windows ClearType tuning after calibration.
+- Preview an SDR curve with a bounded timer and an independent recovery process. Confirm to generate an ICC profile with the new calibration curve and associate it with the selected display. Driver readback can verify the logical curve. Optical results require separate validation.
+- Undo a saved calibration on the selected display. A timed preview shows the previous curve before you confirm the change to the previous Windows profile and its scope.
+- Create, rename, and delete local presets. Import versioned JSON, reuse a previously imported preset, or make a separate copy. Import places presets in the library for review. Display bindings stay local and protect referenced presets from deletion.
+- Inspect displays and profiles, manage presets, and run calibration transactions from `dccwpp.exe`. The CLI provides stable JSON fields, exit codes, and request IDs for retrying a preview safely. It shares calibration logic with the GUI.
+- Use the app in English, Simplified Chinese, or Traditional Chinese. View local PNG, JPEG, or TIFF photos as visual references.
 
-**尚未实现实际校准、前后效果对比、ICC 写入、自动恢复和崩溃回滚。** 颜色模式和当前配置文件名只是 Windows 的只读报告，不是测量或已生效的校准。界面和 CLI 会明确说明；`apply` 返回不可用，`apply --dry-run` 只返回计划。登录启动目前仅写入状态记录。
+The SDR curve backend excludes HDR, Advanced Color, cloned displays, and ambiguous targets. Saving through this backend also excludes base profiles with MHC2 calibration data. In the installed MSIX, enable the Windows sign-in task and opt in for each calibrated display in Settings. The background monitor checks saved bindings at sign-in, on resume, and after a display change. Packaged activation and hardware restoration still need acceptance testing.
 
-## 构建
+## Build from source
 
-需要 Windows 11、.NET SDK 10.0.4xx、PowerShell 7、Visual Studio 的 Windows 应用开发工具和 Windows SDK 26100。Windows App SDK 固定为已验证的稳定版 `1.8.260317003`。
+Use Windows 11, PowerShell 7, the .NET SDK selected by [global.json](global.json), and Visual Studio with Windows application development tools and Windows SDK 26100. The application pins Windows App SDK `1.8.260317003`.
 
 ```powershell
 ./scripts/Build.ps1 -Test
 ./scripts/Build.ps1 -Configuration Release -Package
 ```
 
-第一条构建可直接运行的未打包应用和 CLI，并运行核心测试。第二条生成包含 CLI 的未签名开发 MSIX，输出至 `artifacts/packages/`。详细说明见 [商店发布](docs/STORE.md)。
+The first command builds the unpackaged app and CLI and runs core and simulated worker tests. The second produces an unsigned development MSIX under `artifacts/packages/`. It uses a development identity. See the [Microsoft Store runbook](docs/STORE.md) for the packaging and submission steps.
+
+## Command line
+
+The MSIX declares the `dccwpp.exe` execution alias. For local development, run the built CLI directly or use `dotnet run --project src/DccwPlus.Cli --` followed by the arguments.
 
 ```powershell
-dotnet run --project src/DccwPlus.Cli -- status --json
-dotnet run --project src/DccwPlus.Cli -- presets validate examples/neutral.dccw.json --json
+dccwpp.exe displays list --json
+dccwpp.exe presets validate examples/neutral.dccw.json --json
+dccwpp.exe calibration diagnose --display $displayId --json
+dccwpp.exe apply $presetId --display $displayId --dry-run --json
+dccwpp.exe bindings restore --dry-run --json
+dccwpp.exe startup last-restore --json
 ```
 
-安装包注册 `dccwpp.exe` 别名。未安装时可直接使用构建产物中的 `dccwpp.exe`。[命令行接口](docs/CLI.md)
+For a dry run, set `$presetId` to a saved preset ID and `$displayId` to an ID from `displays list`. Calling `apply` without it starts a real, timed SDR preview on the selected display. See the [CLI reference](docs/CLI.md) for the transaction commands, machine-readable results, and exit codes.
 
-## 结构
+## Project layout
 
-| 项目 | 责任 |
+| Project | Responsibility |
 | --- | --- |
-| `DccwPlus.Core` | 预设、校验、存储、国际化、校准服务边界 |
-| `DccwPlus.Windows` | 显示器查询、Windows 启动接口，后续承载 ICC/WCS |
-| `DccwPlus.App` | WinUI 3 界面、系统文件选择器、MSIX |
-| `DccwPlus.Cli` | 控制台与 Agent 接口 |
-| `DccwPlus.Core.Tests` | 数据边界、文件操作、语言和校准状态测试 |
+| `DccwPlus.Core` | Calibration transactions, presets, storage, and localization |
+| `DccwPlus.Windows` | Display discovery, ICC and gamma backends, recovery hosts, and startup integration |
+| `DccwPlus.App` | WinUI 3 wizard, settings, and MSIX manifest |
+| `DccwPlus.Cli` | Command-line entry point for users, scripts, and agents |
+| `DccwPlus.Core.Tests` | Tests for data validation, calibration state, and recovery |
+| `DccwPlus.Windows.Tests` | Preview-worker and command coordination tests with a simulated display backend |
 
-开发顺序和验收要求见 [开发计划](docs/ROADMAP.md)。摄影素材要求见 [参考照片](docs/PHOTOGRAPHY.md)。
+- [Roadmap and acceptance criteria](docs/ROADMAP.md)
+- [Development status and handoff](docs/STATUS.md)
+- [Reference photography requirements](docs/PHOTOGRAPHY.md)
+- [Privacy notice](docs/PRIVACY.md)
 
-当前交付、验证结果与暂停位置见 [开发交接](docs/STATUS.md)。
+## License and references
 
-## 参考与许可
+DCCW++ is licensed under [GPL-3.0-only](LICENSE). Development MSIX packages include third-party notices. The [Store runbook](docs/STORE.md) describes how to build both architectures from an archived source snapshot and record their checksums. Bundled photographs will have separate attribution and license records.
 
-界面参考 [微软 WinUI Gallery](https://github.com/microsoft/WinUI-Gallery) 的原生控件用法。工程打包参考本机 RunOnce；国际化参考 Clash# 的语言选择、回退和刷新机制，代码为本项目独立实现。项目不引用或运行这些应用，也不调用 `dccw.exe`。
-
-GPL 全文见 [LICENSE](LICENSE)。本项目初始选择 GPL 3.0 only。发布时需同时提供对应版本源码、构建方式和依赖许可信息。摄影素材尚未加入，加入前单独记录作者及许可。
+The UI follows [WinUI Gallery](https://github.com/microsoft/WinUI-Gallery) conventions. [RunOnce](https://github.com/Water-Run/RunOnce) is the reference for Microsoft Store packaging, and Clash# is a reference for language selection and fallback. DCCW++ uses its own implementation and runs independently of these apps and `dccw.exe`.

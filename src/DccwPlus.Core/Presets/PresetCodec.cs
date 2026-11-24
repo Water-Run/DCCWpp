@@ -59,7 +59,7 @@ public static class PresetCodec
 
     public static byte[] ReadBounded(string path)
     {
-        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
         if (file.Length > MaxBytes) throw new InvalidDataException("Preset exceeds 1 MiB.");
         using var buffer = new MemoryStream();
         var block = new byte[8192];

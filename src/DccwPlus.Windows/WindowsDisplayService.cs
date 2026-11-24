@@ -21,6 +21,7 @@ public sealed class WindowsDisplayService : IDisplayService
     }
 
     public IReadOnlyList<DisplayInfo> Enumerate() => Probe().Displays;
+    public string? ReadActivePathStamp() => DisplayConfigurationQuery.ReadActivePathStamp();
 
     private IReadOnlyList<DisplayInfo> EnumerateGdi(string colorState)
     {

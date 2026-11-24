@@ -1,0 +1,186 @@
+namespace DccwPlus.Core.Calibration;
+
+public sealed record AssociatedProfile(string FileName, string? Sha256, bool CanSelect);
+public sealed record ProfileAssociationState(string DisplayId, string TargetKey, uint SourceId,
+    string TopologyFingerprint, string? CurrentProfile, string Scope, bool ExplicitSdr,
+    bool SharedSource, IReadOnlyList<AssociatedProfile> Profiles);
+public sealed record ProfilePreviewPlan(bool CanPreview, string ReasonCode, ProfileAssociationState State,
+    string CandidateProfile, string? CandidateSha256);
+
+public interface IProfileAssociationBackend
+{
+    ProfileAssociationState Read(string displayId);
+    // Implementations must recheck the expected state immediately before writing.
+    void SetDefault(ProfileAssociationState expected, string profile, string sha256);
+}
+
+public sealed class ProfilePreviewException(string code, string message) : Exception(message)
+{
+    public string Code { get; } = code;
+}
+
+public static class ProfilePreviewPolicy
+{
+    public static ProfilePreviewPlan Plan(ProfileAssociationState state, string candidate)
+    {
+        IccProfileInspector.ValidateFileName(candidate);
+        string reason = !state.ExplicitSdr ? "sdr_path_blocked"
+            : state.SharedSource ? "shared_source_blocked"
+            : state.Scope != "current-user" ? "user_scope_required"
+            : string.IsNullOrWhiteSpace(state.TargetKey) || string.IsNullOrWhiteSpace(state.TopologyFingerprint) ? "display_identity_unavailable"
+            : ValidProfile(state, state.CurrentProfile) is null ? "original_profile_unavailable"
+            : ValidProfile(state, candidate) is null ? "candidate_profile_unavailable"
+            : EqualName(state.CurrentProfile, candidate) ? "profile_already_selected" : "ready";
+        return new(reason == "ready", reason, state, candidate, ValidProfile(state, candidate)?.Sha256);
+    }
+
+    public static AssociatedProfile? ValidProfile(ProfileAssociationState state, string? name) =>
+        state.Profiles.FirstOrDefault(p => EqualName(p.FileName, name) && p.CanSelect && IsHash(p.Sha256));
+    public static bool IsHash(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
+    public static bool EqualName(string? left, string? right) => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+    public static bool SameTarget(ProfileAssociationState before, ProfileAssociationState now) =>
+        before.DisplayId == now.DisplayId && before.TargetKey == now.TargetKey && before.SourceId == now.SourceId
+        && before.TopologyFingerprint == now.TopologyFingerprint && now.ExplicitSdr && !now.SharedSource
+        && before.Scope == now.Scope && now.Scope == "current-user";
+}
+
+public sealed record ProfilePreviewSession
+{
+    public int SchemaVersion { get; init; } = 1;
+    public required Guid Id { get; init; }
+    public required ProfileAssociationState Original { get; init; }
+    public required string CandidateProfile { get; init; }
+    public required string CandidateSha256 { get; init; }
+    public required DateTimeOffset ExpiresAt { get; init; }
+    public string Status { get; init; } = "prepared";
+    public string ReasonCode { get; init; } = "prepared";
+    // This checks Windows' default-profile association, never panel color accuracy.
+    public bool AssociationVerified { get; init; }
+    public bool ColorAccuracyVerified => false;
+    public bool NeedsRecovery => Status is "prepared" or "applying" or "previewing" or "recovering" or "recovery-pending";
+}
+
+public interface IProfilePreviewJournal { void Save(ProfilePreviewSession session); }
+
+// Only the independent worker owns this synchronous state machine and its native writes.
+public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend, IProfilePreviewJournal journal,
+    TimeProvider? clock = null)
+{
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private long _started;
+    private TimeSpan _duration;
+    public ProfilePreviewSession? Session { get; private set; }
+
+    public ProfilePreviewSession Begin(Guid id, string displayId, string candidate, int seconds)
+    {
+        if (Session is not null) throw new InvalidOperationException("A transaction can only be started once.");
+        if (id == Guid.Empty || seconds is < 10 or > 60) throw new ArgumentException("Preview timeout must be 10–60 seconds.");
+        var plan = ProfilePreviewPolicy.Plan(backend.Read(displayId), candidate);
+        if (!plan.CanPreview) throw new ProfilePreviewException(plan.ReasonCode, "This profile cannot be previewed with a verified recovery path.");
+        _duration = TimeSpan.FromSeconds(seconds);
+        _started = _clock.GetTimestamp();
+        Session = new() { Id = id, Original = plan.State, CandidateProfile = candidate,
+            CandidateSha256 = plan.CandidateSha256!, ExpiresAt = _clock.GetUtcNow() + _duration };
+        journal.Save(Session); // Durable recovery information must precede every write.
+        try
+        {
+            Persist("applying", "applying");
+            backend.SetDefault(plan.State, candidate, plan.CandidateSha256!);
+            if (!CandidateIsCurrent(backend.Read(displayId)))
+                throw new ProfilePreviewException("association_not_verified", "Windows did not report the requested default association.");
+            Persist("previewing", "previewing", true);
+            // Also covers a slow native call that consumed the entire timeout.
+            return Tick();
+        }
+        catch (Exception) { Revert("apply_failed"); throw; }
+    }
+
+    public ProfilePreviewSession Tick(bool ownerAlive = true)
+    {
+        RequireSession();
+        if (Session!.Status != "previewing") return Session;
+        if (!ownerAlive) return Revert("owner_exited");
+        if (Expired()) return Revert("preview_expired");
+        try
+        {
+            if (!CandidateIsCurrent(backend.Read(Session.Original.DisplayId))) return Revert("display_state_changed");
+        }
+        catch (Exception) { return Revert("display_unavailable"); }
+        return Session;
+    }
+
+    public ProfilePreviewSession Confirm()
+    {
+        RequireSession();
+        if (Session!.Status == "confirmed") return Session;
+        if (Session.Status != "previewing") return Session; // Late/repeated commands never reapply.
+        Tick();
+        if (Session.Status != "previewing") return Session;
+        try { Persist("confirmed", "confirmed", true); }
+        catch (Exception) { Revert("confirmation_not_saved"); throw; }
+        return Session;
+    }
+
+    public ProfilePreviewSession Revert(string reason = "user_reverted")
+    {
+        RequireSession();
+        if (!Session!.NeedsRecovery) return Session;
+        try
+        {
+            // A journal failure must not prevent an already-required rollback.
+            try { Persist("recovering", reason); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            var current = backend.Read(Session.Original.DisplayId);
+            if (!ProfilePreviewPolicy.SameTarget(Session.Original, current))
+                return Pending("recovery_target_changed");
+            var original = ProfilePreviewPolicy.ValidProfile(Session.Original, Session.Original.CurrentProfile)!;
+            var available = ProfilePreviewPolicy.ValidProfile(current, original.FileName);
+            if (available?.Sha256 != original.Sha256) return Pending("original_profile_changed");
+            if (ProfilePreviewPolicy.EqualName(current.CurrentProfile, original.FileName))
+            {
+                Persist("reverted", reason, true);
+                return Session;
+            }
+            if (!ProfilePreviewPolicy.EqualName(current.CurrentProfile, Session.CandidateProfile))
+            {
+                // Do not overwrite a change made by Windows or another color application.
+                Persist("superseded", "external_profile_change");
+                return Session;
+            }
+            backend.SetDefault(current, original.FileName, original.Sha256!);
+            var restored = backend.Read(Session.Original.DisplayId);
+            if (!ProfilePreviewPolicy.SameTarget(Session.Original, restored)
+                || !ProfilePreviewPolicy.EqualName(restored.CurrentProfile, original.FileName)
+                || ProfilePreviewPolicy.ValidProfile(restored, original.FileName)?.Sha256 != original.Sha256)
+                return Pending("restore_not_verified");
+            Persist("reverted", reason, true);
+        }
+        catch (Exception) { return Pending("restore_failed"); }
+        return Session!;
+    }
+
+    public ProfilePreviewSession Recover(ProfilePreviewSession saved)
+    {
+        if (Session is not null) throw new InvalidOperationException("This transaction already has a session.");
+        Session = saved;
+        return saved.NeedsRecovery ? Revert("interrupted_preview") : saved;
+    }
+
+    private bool CandidateIsCurrent(ProfileAssociationState current) =>
+        ProfilePreviewPolicy.SameTarget(Session!.Original, current)
+        && ProfilePreviewPolicy.EqualName(current.CurrentProfile, Session.CandidateProfile)
+        && ProfilePreviewPolicy.ValidProfile(current, Session.CandidateProfile)?.Sha256 == Session.CandidateSha256;
+    private bool Expired() => _clock.GetElapsedTime(_started) >= _duration || _clock.GetUtcNow() >= Session!.ExpiresAt;
+    private ProfilePreviewSession Pending(string reason)
+    {
+        Session = Session! with { Status = "recovery-pending", ReasonCode = reason, AssociationVerified = false };
+        journal.Save(Session);
+        return Session;
+    }
+    private void Persist(string status, string reason, bool verified = false)
+    {
+        var next = Session! with { Status = status, ReasonCode = reason, AssociationVerified = verified };
+        journal.Save(next);
+        Session = next;
+    }
+    private void RequireSession() { if (Session is null) throw new InvalidOperationException("No preview has been started."); }
+}

@@ -34,7 +34,7 @@ public sealed class DisplayObservationTests : IDisposable
         Assert.Equal("hdr", observation.Displays[0].ColorState);
         var plan = new CalibrationService(new FixedDisplays(observation.Displays)).Plan(CalibrationPreset.Create("Draft"), display.Id);
         Assert.False(plan.CanApply);
-        Assert.Equal("calibration_backend_pending", plan.ReasonCode);
+        Assert.Equal("sdr_path_blocked", plan.ReasonCode);
     }
 
     [Fact]

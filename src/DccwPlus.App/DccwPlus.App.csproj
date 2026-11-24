@@ -27,6 +27,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260317003" />
+    <PackageReference Include="Microsoft.Win32.SystemEvents" Version="10.0.0" />
     <ProjectReference Include="..\DccwPlus.Windows\DccwPlus.Windows.csproj" />
     <Manifest Include="$(ApplicationManifest)" />
     <Content Include="Assets\**\*" CopyToOutputDirectory="PreserveNewest" />
@@ -41,7 +42,14 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+  <ItemGroup Condition="'$(ThirdPartyNoticeDirectory)' != ''">
+    <Content Include="$(ThirdPartyNoticeDirectory)\**\*">
+      <Link>ThirdParty\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
   <Target Name="RequireCliForPackage" BeforeTargets="_GenerateAppxPackage" Condition="'$(GenerateAppxPackageOnBuild)' == 'true'">
     <Error Condition="'$(CliPublishDirectory)' == '' or !Exists('$(CliPublishDirectory)\dccwpp.exe')" Text="Use scripts/Build.ps1 -Package to include the console host in MSIX." />
+    <Error Condition="'$(ThirdPartyNoticeDirectory)' == '' or !Exists('$(ThirdPartyNoticeDirectory)\index.json')" Text="Use scripts/Build.ps1 -Package to stage third-party redistribution notices." />
   </Target>
 </Project>

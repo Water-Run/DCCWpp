@@ -22,15 +22,17 @@ public partial class App : Application
         }
         catch (Exception) { System.Diagnostics.Debug.WriteLine(exception); }
     }
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         var activation = AppInstance.GetCurrent().GetActivatedEventArgs();
         if (activation.Kind == ExtendedActivationKind.StartupTask)
         {
-            // Persist an honest result until the recovery/calibration engine is implemented.
-            AtomicFile.Write(Path.Combine(DataPaths.DefaultRoot, "startup-status.json"),
-                System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new { schemaVersion = 1, applied = false, reason = "calibration_backend_pending", time = DateTimeOffset.UtcNow }));
-            Exit();
+            try
+            {
+                await new StartupRestoreMonitor().RunAsync();
+            }
+            catch (Exception ex) { RecordFailure(ex); }
+            finally { Exit(); }
             return;
         }
         _window = new MainWindow();

@@ -1,0 +1,99 @@
+<UserControl x:Class="DccwPlus.App.CalibrationWorkspace"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:local="using:DccwPlus.App">
+  <StackPanel x:Name="WorkspaceRoot" Spacing="20">
+    <StackPanel Spacing="6">
+      <TextBlock Text="{Binding Text[CalibrationTitle]}" Style="{ThemeResource TitleTextBlockStyle}" />
+      <TextBlock Text="{Binding Text[WizardSubtitle]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+    </StackPanel>
+    <Border Style="{StaticResource Card}">
+      <StackPanel Spacing="8">
+        <ComboBox x:Name="DisplayPicker" ItemsSource="{Binding Displays}" Header="{Binding Text[Display]}"
+                  HorizontalAlignment="Stretch" SelectionChanged="DisplayChanged" AutomationProperties.Name="{Binding Text[Display]}">
+          <ComboBox.ItemTemplate><DataTemplate>
+            <StackPanel Spacing="2">
+              <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+              <TextBlock Text="{Binding DeviceName}" Style="{ThemeResource CaptionTextBlockStyle}" />
+            </StackPanel>
+          </DataTemplate></ComboBox.ItemTemplate>
+        </ComboBox>
+        <TextBlock x:Name="DisplaySummary" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Button x:Name="MoveDisplayButton" Content="{Binding Text[MoveToDisplay]}" Click="MoveDisplayClicked" />
+          <Button x:Name="RefreshDisplaysButton" Content="{Binding Text[Refresh]}" Click="RefreshClicked" />
+        </StackPanel>
+        <HyperlinkButton x:Name="DisplaySettingsLink" Content="{Binding Text[OpenDisplaySettings]}"
+                         NavigateUri="ms-settings:display" Visibility="Collapsed" />
+      </StackPanel>
+    </Border>
+    <InfoBar x:Name="RecoveryNotice" IsOpen="False" IsClosable="False" Severity="Warning" Title="{Binding Text[RecoveryTitle]}" Message="{Binding Text[RecoveryMessage]}">
+      <InfoBar.ActionButton><Button Content="{Binding Text[Recover]}" Click="RecoverClicked" /></InfoBar.ActionButton>
+    </InfoBar>
+    <Grid ColumnSpacing="12">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+      <ComboBox x:Name="StepPicker" SelectionChanged="StepChanged" HorizontalAlignment="Stretch" AutomationProperties.Name="{Binding Text[WizardStep]}">
+        <ComboBoxItem Content="{Binding Text[StepPrepare]}" /><ComboBoxItem Content="{Binding Text[StepGamma]}" />
+        <ComboBoxItem Content="{Binding Text[StepBrightness]}" /><ComboBoxItem Content="{Binding Text[StepContrast]}" />
+        <ComboBoxItem Content="{Binding Text[StepBalance]}" /><ComboBoxItem Content="{Binding Text[StepReview]}" />
+      </ComboBox>
+      <Button x:Name="FullScreenButton" Grid.Column="1" Content="{Binding Text[FullScreen]}" Click="FullScreenClicked" />
+    </Grid>
+    <local:PatternSurface x:Name="Pattern" Height="242" AutomationProperties.Name="{Binding Text[CalibrationPattern]}" />
+    <TextBlock x:Name="StepInstructions" TextWrapping="Wrap" />
+    <StackPanel x:Name="GammaControls" Visibility="Collapsed" Spacing="12">
+      <Grid ColumnSpacing="10">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+        <StackPanel Spacing="4">
+          <local:PatternSurface x:Name="GammaLowPattern" Height="72" />
+          <TextBlock Text="{Binding Text[GammaTooLow]}" TextWrapping="Wrap" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Spacing="4">
+          <local:PatternSurface x:Name="GammaTargetPattern" Height="72" />
+          <TextBlock Text="{Binding Text[GammaBalanced]}" TextWrapping="Wrap" />
+        </StackPanel>
+        <StackPanel Grid.Column="2" Spacing="4">
+          <local:PatternSurface x:Name="GammaHighPattern" Height="72" />
+          <TextBlock Text="{Binding Text[GammaTooHigh]}" TextWrapping="Wrap" />
+        </StackPanel>
+      </Grid>
+      <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="120" /></Grid.ColumnDefinitions>
+        <Slider x:Name="GammaSlider" Header="{Binding Text[GammaAdjustment]}" Minimum="1" Maximum="3" StepFrequency="0.02" Value="2.2" ValueChanged="ValuesChanged" AutomationProperties.Name="{Binding Text[GammaAdjustment]}" />
+        <NumberBox Grid.Column="1" Value="{Binding ElementName=GammaSlider, Path=Value, Mode=TwoWay}" Minimum="1" Maximum="3" SmallChange="0.02" SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="{Binding Text[GammaAdjustment]}" />
+      </Grid>
+    </StackPanel>
+    <Button x:Name="SkipHardwareButton" Visibility="Collapsed" Content="{Binding Text[SkipHardwareAdjustments]}" Click="SkipHardwareClicked" />
+    <Grid x:Name="BalanceControls" Visibility="Collapsed" ColumnSpacing="16" RowSpacing="8">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="120" /></Grid.ColumnDefinitions>
+      <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+      <Slider x:Name="RedSlider" Header="{Binding Text[Red]}" Minimum="0.5" Maximum="1.5" StepFrequency="0.01" Value="1" ValueChanged="ValuesChanged" AutomationProperties.Name="{Binding Text[Red]}" />
+      <NumberBox Grid.Column="1" Value="{Binding ElementName=RedSlider, Path=Value, Mode=TwoWay}" Minimum="0.5" Maximum="1.5" SmallChange="0.01" SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="{Binding Text[Red]}" />
+      <Slider x:Name="GreenSlider" Grid.Row="1" Header="{Binding Text[Green]}" Minimum="0.5" Maximum="1.5" StepFrequency="0.01" Value="1" ValueChanged="ValuesChanged" AutomationProperties.Name="{Binding Text[Green]}" />
+      <NumberBox Grid.Row="1" Grid.Column="1" Value="{Binding ElementName=GreenSlider, Path=Value, Mode=TwoWay}" Minimum="0.5" Maximum="1.5" SmallChange="0.01" SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="{Binding Text[Green]}" />
+      <Slider x:Name="BlueSlider" Grid.Row="2" Header="{Binding Text[Blue]}" Minimum="0.5" Maximum="1.5" StepFrequency="0.01" Value="1" ValueChanged="ValuesChanged" AutomationProperties.Name="{Binding Text[Blue]}" />
+      <NumberBox Grid.Row="2" Grid.Column="1" Value="{Binding ElementName=BlueSlider, Path=Value, Mode=TwoWay}" Minimum="0.5" Maximum="1.5" SmallChange="0.01" SpinButtonPlacementMode="Compact" VerticalAlignment="Bottom" AutomationProperties.Name="{Binding Text[Blue]}" />
+    </Grid>
+    <StackPanel x:Name="ReviewControls" Visibility="Collapsed" Spacing="12">
+      <ToggleSwitch x:Name="OriginalToggle" Header="{Binding Text[CompareOriginal]}" OnContent="{Binding Text[PreviousCalibration]}" OffContent="{Binding Text[CurrentCalibration]}" Toggled="CompareChanged" />
+      <TextBlock x:Name="ComparisonState" AutomationProperties.LiveSetting="Polite" TextWrapping="Wrap" />
+      <TextBox x:Name="PresetName" Header="{Binding Text[PresetName]}" MaxLength="100" TextChanged="NameChanged" AutomationProperties.Name="{Binding Text[PresetName]}" />
+      <CheckBox x:Name="ClearTypeOption" Content="{Binding Text[OpenClearType]}" />
+      <TextBlock x:Name="CountdownText" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+    </StackPanel>
+    <InfoBar x:Name="Outcome" IsOpen="False" IsClosable="True" Severity="Informational" />
+    <StackPanel Spacing="8">
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button x:Name="PreviousButton" Content="{Binding Text[Previous]}" Click="PreviousClicked" />
+        <Button x:Name="NextButton" Content="{Binding Text[Next]}" Click="NextClicked" />
+        <Button x:Name="ResetButton" Content="{Binding Text[ResetStep]}" Click="ResetClicked" />
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button x:Name="StartButton" Content="{Binding Text[StartCalibration]}" Style="{ThemeResource AccentButtonStyle}" Click="StartClicked" />
+        <Button x:Name="CancelButton" Content="{Binding Text[CancelCalibration]}" Click="CancelClicked" Visibility="Collapsed" />
+        <Button x:Name="FinishButton" Content="{Binding Text[FinishCalibration]}" Style="{ThemeResource AccentButtonStyle}" Click="FinishClicked" Visibility="Collapsed" />
+        <Button x:Name="SaveDraftButton" Content="{Binding Text[SaveDraft]}" Click="SaveDraftClicked" />
+      </StackPanel>
+      <Button x:Name="UndoCalibrationButton" Content="{Binding Text[UndoCalibration]}" Click="UndoCalibrationClicked" />
+    </StackPanel>
+  </StackPanel>
+</UserControl>

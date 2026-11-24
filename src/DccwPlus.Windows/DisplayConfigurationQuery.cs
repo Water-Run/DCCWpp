@@ -12,6 +12,18 @@ internal static class DisplayConfigurationQuery
     private const uint DatabaseCurrent = 0x00000004;
     private const int ErrorInsufficientBuffer = 122;
 
+    public static string? ReadActivePathStamp()
+    {
+        if (GetDisplayConfigBufferSizes(ActiveVirtualFlags, out uint pathCount, out uint modeCount) != 0) return null;
+        if (pathCount == 0) return "";
+        var paths = new PathInfo[pathCount];
+        var modes = new ModeInfo[Math.Max(modeCount, 1)];
+        if (QueryDisplayConfig(ActiveVirtualFlags, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero) != 0) return null;
+        return string.Join('\n', paths.Take((int)pathCount).Where(p => (p.Flags & 1) != 0).Select(p =>
+            FormattableString.Invariant($"{p.SourceAdapterHigh:X8}{p.SourceAdapterLow:X8}:{p.SourceId}|{p.TargetAdapterHigh:X8}{p.TargetAdapterLow:X8}:{p.TargetId}|{ReadTarget(p.TargetAdapterLow, p.TargetAdapterHigh, p.TargetId).MonitorPath}"))
+            .Order(StringComparer.Ordinal));
+    }
+
     public static DisplayProbe? TryQuery()
     {
         if (Marshal.SizeOf<PathInfo>() != 72 || Marshal.SizeOf<ModeInfo>() != 64) return null;
@@ -67,10 +79,13 @@ internal static class DisplayConfigurationQuery
         int? reportedWidth = width is > 0 and <= 16384 ? width : null;
         int? reportedHeight = height is > 0 and <= 16384 ? height : null;
         string? profileName = SafeProfile(profile.Name);
+        var persistence = WindowsMonitorIdentity.Read(target.MonitorPath);
         return new(id, name, string.IsNullOrWhiteSpace(gdiName) ? "DISPLAY" : gdiName, primary, color.State, "topology-query", topology, targetKey,
             OutputName(path.OutputTechnology), reportedWidth, reportedHeight, x, y,
             Millihertz(path.RefreshNumerator, path.RefreshDenominator), cloneGroup == 0xFFFF ? null : cloneGroup,
-            profileName, profileName is null ? null : profile.Scope, color.HdrActive, color.AdvancedColorActive);
+            profileName, profileName is null ? null : profile.Scope, color.HdrActive, color.AdvancedColorActive,
+            InstalledProfileReader.Read(profileName), path.SourceId,
+            MatchMonitorKey(target.MonitorPath, gdi.Monitors ?? []), persistence?.Key, persistence?.Kind);
     }
 
     private static string ReadTopology()
@@ -113,10 +128,9 @@ internal static class DisplayConfigurationQuery
     private static ProfileProbe ReadProfile(uint low, int high, uint sourceId)
     {
         var adapter = new Luid { LowPart = low, HighPart = high };
-        int scope = 1;
-        if (ColorProfileGetDisplayUserScope(adapter, sourceId, out int reported) >= 0 && reported is 0 or 1) scope = reported;
+        if (ColorProfileGetDisplayUserScope(adapter, sourceId, out int scope) < 0 || scope is not (0 or 1))
+            return new(null, null);
         string? name = ProfileName(adapter, sourceId, scope);
-        if (name is null && scope != 1) name = ProfileName(adapter, sourceId, scope = 1);
         if (name is null && scope != 0) name = ProfileName(adapter, sourceId, scope = 0);
         return new(name, name is null ? null : scope == 0 ? "system-wide" : "current-user");
     }
@@ -149,7 +163,7 @@ internal static class DisplayConfigurationQuery
                 if ((monitor.StateFlags & 1) == 0) continue;
                 string? monitorName = Clean(monitor.DeviceString);
                 if (monitorName is null || string.Equals(monitorName, Clean(adapter.DeviceString), StringComparison.OrdinalIgnoreCase)) continue;
-                monitors.Add(new(monitor.DeviceId, monitorName));
+                monitors.Add(new(monitor.DeviceId, monitorName, monitor.DeviceKey));
             }
             result[adapter.DeviceName] = new((adapter.StateFlags & 4) != 0, monitors);
         }
@@ -165,6 +179,13 @@ internal static class DisplayConfigurationQuery
             if (matches.Count == 1) return matches[0].Name;
         }
         return monitors.Count == 1 ? monitors[0].Name : null;
+    }
+
+    private static string? MatchMonitorKey(string? path, IReadOnlyList<GdiMonitor> monitors)
+    {
+        var matches = monitors.Where(m => string.Equals(m.DeviceId, path, StringComparison.OrdinalIgnoreCase)).ToArray();
+        string? key = matches.Length == 1 ? matches[0].DeviceKey : monitors.Count == 1 ? monitors[0].DeviceKey : null;
+        return key?.StartsWith(@"\Registry\Machine\System\", StringComparison.OrdinalIgnoreCase) == true ? key : null;
     }
 
     private static DeviceInfo Header(int type, int size, uint low, int high, uint id) => new()
@@ -274,7 +295,7 @@ internal static class DisplayConfigurationQuery
         public static Device Create() => new() { Size = Marshal.SizeOf<Device>(), DeviceName = "", DeviceString = "", DeviceId = "", DeviceKey = "" };
     }
 
-    private readonly record struct GdiMonitor(string DeviceId, string Name);
+    private readonly record struct GdiMonitor(string DeviceId, string Name, string DeviceKey);
     private readonly record struct GdiDevice(bool Primary, IReadOnlyList<GdiMonitor> Monitors);
     private readonly record struct TargetDetails(string? FriendlyName, string? MonitorPath);
     private readonly record struct ColorProbe(string State, bool? HdrActive, bool? AdvancedColorActive);

@@ -7,5 +7,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/DccwPlus.Core.Tests/DccwPlus.Core.Tests.csproj" />
+    <Project Path="tests/DccwPlus.Windows.Tests/DccwPlus.Windows.Tests.csproj" />
   </Folder>
 </Solution>

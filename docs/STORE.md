@@ -1,49 +1,68 @@
-# Microsoft Store 发布基础
+# Microsoft Store 发布手册
 
-## 已有工程结构
+当前基线为 0.2。x64 和 ARM64 开发 MSIX 已构建并通过包内容检查。正式提交依赖 DCCW++ 自己的 Partner Center 关联及首发验收。[开发路线图](ROADMAP.md)
 
-- 单项目 MSIX，Windows.Desktop，最低 Windows 11 build 22000。
-- GUI 和控制台分别声明 Application；CLI 使用 `dccwpp.exe` 执行别名和 console 子系统。
-- StartupTask 默认关闭，使用 Windows API 启用/禁用并读取用户或策略禁用状态。
-- 界面在普通用户权限下运行；manifest 仅声明桌面应用所需的 `runFullTrust`，没有管理员启动要求。
-- 自包含 .NET 和 Windows App SDK；源码固定版本，构建不依赖机器上的应用运行时预装状态。
-- 英语、简中、繁中描述资源；多尺度 PNG、任务栏 targetsize 和 ICO；未签名包由脚本生成。
+## 工程和身份
 
-## 本地开发包
+DCCW++ 采用 RunOnce 使用的 WinUI 3 单项目 MSIX 方式。应用面向 Windows Desktop，清单最低版本为 Windows 11 build 22000。包内包含自包含的 GUI 和 CLI、三语言资源、图标、默认关闭的 StartupTask，以及 `dccwpp.exe` 执行别名。清单声明桌面应用所需的 `runFullTrust`，应用入口以普通用户运行。[RunOnce](https://github.com/Water-Run/RunOnce) · [单项目 MSIX](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/single-project-msix)
 
-```powershell
-./scripts/Build.ps1 -Configuration Release -Package -Test
-```
+仓库中的 `DCCWPlus.Development` 和 `CN=DCCWPlus-Development` 用于本地构建。使用 Partner Center 为 DCCW++ 预留名称，从 Visual Studio 的 **Publish → Associate App with the Store** 关联本产品，并核对清单中的 Package Identity Name、Publisher 和 PublisherDisplayName。商店关联文件保存在本地。使用 DCCW++ 的身份、Store ID 和清单扩展。
 
-输出目录：`artifacts/packages/`。CLI 先发布为独立自包含目录，再打入同一 MSIX 的 `Cli/`。包内必须包含 `Cli/dccwpp.exe` 和完整依赖。
-
-这是未签名开发包，不能直接当作已发布产品安装。开发时可在 Visual Studio 的部署流程中注册 loose package；需要侧载时使用你自己的开发签名流程。仓库不存储证书私钥或密码。
-
-## 专属商店身份
-
-清单中的 `DCCWPlus.Development`、`CN=DCCWPlus-Development` 是开发占位值。DCCW++ 需要在 Partner Center 预留名称并取得自己的 Package Identity Name、Publisher、PublisherDisplayName。使用 Visual Studio 的 Associate App with the Store，或将核实后的值填入清单。
-
-参考 RunOnce 的工程方式，但不得复用它的 Identity Name、产品 ID、StoreAssociation、证书或 Shell Extension 注册项。
-
-关联后：
+## 构建与检查开发包
 
 ```powershell
-./scripts/Build.ps1 -Configuration Release -Package -Store -Test
+./scripts/Build.ps1 -Configuration Release -Architecture x64 -Package -Test
+./scripts/Build.ps1 -Configuration Release -Architecture ARM64 -Package
 ```
 
-`-Store` 会阻止使用开发占位身份生成提交包。Windows App SDK 的依赖版本固定；若更换工具链，应重新验证包布局与首次启动。
+包输出在 `artifacts/packages/`，两个架构各有一个 MSIX。脚本先发布各自的自包含 CLI，再把相应工具和依赖放入 `Cli/`。Python 3 可用于检查包结构和当前架构的 CLI。
 
-## 发布前验收
+如果上一次构建的包仍在使用，可指定新的输出子目录，保留原包供验收对照。
 
-- 完成真正的校准和自动恢复功能，商店文案与已验证能力一致。
-- 分别验证 x64 和 ARM64：安装、冷启动、CLI 别名、标准用户、升级保留数据、卸载。
-- 使用 Windows App Certification Kit 检查最终提交包。
-- 在安装包中验证用户关闭/启用 StartupTask，任务管理器禁用和组织策略的反馈。
-- 包内 GUI/CLI 的预设互通；输出、退出码、空格/中文路径正常。
-- 登录恢复不会弹出向导，不会在显示器不匹配时误套用预设；恢复失败有可查询状态。
-- 准备真实截图、产品描述、支持网址和隐私政策。当前实现本地存储，没有遥测、账号或联网功能；后续有变化需要更新说明。
-- 提供该版本完整对应源码与构建说明、GPL 文本、依赖许可清单。摄影素材许可与代码许可分开记录。
+```powershell
+./scripts/Build.ps1 -Configuration Release -Package -PackageRun review-01
+```
 
-截至本轮：开发身份、未签名打包路径已建立。真实商店身份、提交、WACK 和最终发布验证仍待进行。
+此命令会将结果写入 `artifacts/packages/review-01/`。
 
-参考：[MSIX 单项目](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/single-project-msix)、[商店分发](https://learn.microsoft.com/en-us/windows/apps/distribute-through-store/how-to-distribute-your-win32-app-through-microsoft-store)、[执行别名 schema](https://learn.microsoft.com/en-us/uwp/schemas/appxpackage/uapmanifestschema/element-uap5-appexecutionalias)。
+```powershell
+python ./scripts/smoke_cli.py ./artifacts/cli/win-x64/dccwpp.exe
+python ./scripts/verify_package.py ./artifacts/packages/DccwPlus.App_0.2.0.0_x64_Test/DccwPlus.App_0.2.0.0_x64.msix
+```
+
+包内的 `ThirdParty/index.json` 记录已解析的 SDK 和运行时版本、许可证来源及随包声明的摘要。验包脚本会核对 GUI 和 CLI 的依赖条目及声明内容。项目自身的许可证在 `LICENSE.txt`。
+
+开发包未签名。需在测试设备侧载时，以与开发包 Publisher 匹配的开发签名签包，并在测试设备上信任相应证书。测试签名私钥、密码和正式 Store 关联文件保存在本地。
+
+在支持 Windows Sandbox CLI 的 Windows 11 上，可以验证开发包签名和系统预配。脚本只映射当次的构建输入及报告目录。临时签名证书及信任只存在于沙盒中。预配检查使用沙盒系统会话，普通用户安装、别名和 GUI 激活需要登录桌面后单独验收。[Windows Sandbox CLI](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli) · [MSIX 系统预配](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/sideload-apps-with-dism-s14)
+
+```powershell
+./scripts/Test-PackageInSandbox.ps1 -Package $x64DevelopmentMsix
+```
+
+在同一份源码上重建双架构开发包和对应源码压缩包。
+
+```powershell
+python ./scripts/build_release_evidence.py review-01
+```
+
+结果位于 `artifacts/release-evidence/review-01/`。脚本先归档 Git 跟踪文件及源码目录中未忽略的新文件，再使用同一快照构建。校验通过才写入 `evidence.json`，其中记录源码、MSIX 和依赖声明的 SHA-256。该命令使用开发身份，可用 `--architecture x64` 只重验 x64。
+
+## 生成提交包
+
+在已关联并核对 DCCW++ 身份的本地工作区中生成提交候选包。
+
+```powershell
+./scripts/Build.ps1 -Configuration Release -Architecture x64 -Package -Store -Test
+./scripts/Build.ps1 -Configuration Release -Architecture ARM64 -Package -Store
+```
+
+`-Store` 拒绝开发占位身份，切换为 `StoreUpload` 构建模式。归档 x64 产物后再构建 ARM64，核对两者的归档文件名、版本、身份与架构，并检查包中的两个入口和对应运行时。使用 Visual Studio 生成的 Store 上传文件，或上传已核对的两份独立 MSIX。Partner Center 支持独立 MSIX 并推荐 `.msixupload` 或 `.appxupload`。Store 在发布流程中签署 MSIX。[上传 MSIX](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/upload-app-packages) · [商店分发与签名](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/choose-distribution-path)
+
+## 验收与提交
+
+- 在干净的 Windows 11 x64 和原生 ARM64 设备上用普通用户验证安装、启动、别名、升级数据迁移和卸载，并核对 Windows 颜色设置能找到或移除已保存的 ICC。
+- 验证登录任务启用、用户或组织禁用、登录后后台恢复及无匹配显示器的处理。关闭可见窗口后检查睡眠唤醒和热插拔。用 `dccwpp startup last-restore --json` 核对触发原因和逐屏结果，并验证关闭启动任务后后台退出。用装包版本检查 GUI/CLI 数据互通及进程返回值。
+- 准备三种语言的商店描述、真实界面截图和产品支持地址。按提交时的产品能力核对隐私说明，并为认证人员记录选屏、预览、取消恢复和命令行测试步骤。说明 `runFullTrust` 用于桌面显示、文件选择和预览工作进程。[隐私说明](PRIVACY.md)
+- 归档候选版对应的源码、构建说明、GPL 文本及第三方许可。保存照片作者和许可。GitHub 源码版本与商店包版本保持可追溯。
+- 在 Partner Center 核对包身份、架构、版本、上架范围和认证反馈。WACK 可作为本地辅助检查。首次发布可用 Private audience 让选定测试人员获得 Store 签名包，完成实际安装和升级验证后再公开可见性。[MSIX 本地检查](https://learn.microsoft.com/en-us/windows/msix/package/packaging-uwp-apps#validate-your-app-package-locally) · [首次发布的可见性选项](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/visibility-options)
