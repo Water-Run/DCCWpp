@@ -45,6 +45,81 @@ public sealed class ProfilePreviewTests
     }
 
     [Theory]
+    [InlineData("prepared")]
+    [InlineData("applying")]
+    [InlineData("backend-validation")]
+    [InlineData("external-candidate")]
+    public void StartupExpirationBeforeTheIccWriteDoesNotChangeTheDisplay(string stage)
+    {
+        var setup = new Fixture();
+        if (stage is "prepared" or "applying")
+            setup.Journal.AfterSave = session =>
+            {
+                if (session.Status == stage) setup.Clock.Advance(TimeSpan.FromSeconds(30));
+            };
+        else
+            setup.Backend.BeforeWrite = () =>
+            {
+                if (stage == "external-candidate") setup.Backend.State = setup.Backend.State with { CurrentProfile = "candidate.icc" };
+                setup.Clock.Advance(TimeSpan.FromSeconds(30));
+                setup.Backend.BeforeWrite = null;
+            };
+
+        var expired = setup.Start();
+
+        Assert.Empty(setup.Backend.Writes);
+        Assert.Equal(stage == "external-candidate" ? "candidate.icc" : "original.icc", setup.Backend.State.CurrentProfile);
+        Assert.Equal("reverted", expired.Status);
+        Assert.Equal("preview_expired", expired.ReasonCode);
+        Assert.False(expired.AssociationVerified);
+        Assert.Equal(expired, setup.Journal.Last);
+    }
+
+    [Theory]
+    [InlineData("native-write")]
+    [InlineData("readback")]
+    public void StartupExpirationAfterTheIccWriteRollsBackWithoutPublishingAReadyPreview(string stage)
+    {
+        var setup = new Fixture();
+        if (stage == "native-write") setup.Backend.AfterWrite = () => setup.Clock.Advance(TimeSpan.FromSeconds(30));
+        else setup.Backend.BeforeRead = () =>
+        {
+            if (setup.Backend.Writes.Count != 1) return;
+            setup.Clock.Advance(TimeSpan.FromSeconds(30));
+            setup.Backend.BeforeRead = null;
+        };
+        bool publishedReady = false;
+        setup.Journal.AfterSave = session => publishedReady |= session.Status == "previewing";
+
+        var expired = setup.Start();
+
+        Assert.False(publishedReady);
+        Assert.Equal("reverted", expired.Status);
+        Assert.Equal("preview_expired", expired.ReasonCode);
+        Assert.True(expired.AssociationVerified);
+        Assert.Equal(new[] { "candidate.icc", "original.icc" }, setup.Backend.Writes);
+        Assert.Equal("original.icc", setup.Backend.State.CurrentProfile);
+    }
+
+    [Fact]
+    public void FailureToRecordAnUnstartedExpirationDoesNotRestoreOverAnExternalSelection()
+    {
+        var setup = new Fixture();
+        setup.Journal.FailStatus = "reverted";
+        setup.Backend.BeforeWrite = () =>
+        {
+            setup.Backend.State = setup.Backend.State with { CurrentProfile = "candidate.icc" };
+            setup.Clock.Advance(TimeSpan.FromSeconds(30));
+        };
+
+        Assert.Throws<IOException>(() => setup.Start());
+
+        Assert.Empty(setup.Backend.Writes);
+        Assert.Equal("candidate.icc", setup.Backend.State.CurrentProfile);
+        Assert.False(setup.Transaction.Session!.NeedsRecovery);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void CandidateReadCrossingTheDeadlineRestoresOriginal(bool confirm)
@@ -69,6 +144,24 @@ public sealed class ProfilePreviewTests
     {
         var setup = new Fixture(); setup.Start();
         Assert.Equal("owner_exited", setup.Transaction.Tick(ownerAlive: false).ReasonCode);
+        Assert.Equal("original.icc", setup.Backend.State.CurrentProfile);
+    }
+
+    [Fact] public void WindowExitDuringAssociationWriteRollsBackBeforeAdvertisingThePreview()
+    {
+        bool ownerAlive = true;
+        var setup = new Fixture(() => ownerAlive);
+        setup.Backend.AfterWrite = () => ownerAlive = false;
+        bool published = false;
+        setup.Journal.AfterSave = state => published |= state.Status == "previewing";
+
+        var result = setup.Start();
+
+        Assert.False(published);
+        Assert.Equal("reverted", result.Status);
+        Assert.Equal("owner_exited", result.ReasonCode);
+        Assert.True(result.AssociationVerified);
+        Assert.Equal(new[] { "candidate.icc", "original.icc" }, setup.Backend.Writes);
         Assert.Equal("original.icc", setup.Backend.State.CurrentProfile);
     }
 
@@ -273,6 +366,55 @@ public sealed class ProfilePreviewTests
         Assert.Empty(setup.Backend.Writes);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PreparedOnlyRecoveryDoesNotReadOrReplaceTheCurrentProfile(bool disconnected)
+    {
+        var setup = new Fixture();
+        setup.Journal.AfterSave = session =>
+        {
+            if (session.Status == "prepared") throw new IOException("Simulated interruption after journaling.");
+        };
+        Assert.Throws<IOException>(() => setup.Start());
+        var prepared = Assert.IsType<ProfilePreviewSession>(setup.Journal.Last);
+        setup.Backend.State = setup.Backend.State with { CurrentProfile = "candidate.icc" };
+        setup.Backend.Disconnected = disconnected;
+        int reads = 0;
+        setup.Backend.BeforeRead = () => reads++;
+
+        var resolved = new ProfilePreviewTransaction(setup.Backend, setup.Journal).Recover(prepared);
+
+        Assert.Empty(setup.Backend.Writes);
+        Assert.Equal(0, reads);
+        Assert.Equal("reverted", resolved.Status);
+        Assert.Equal("preview_not_applied", resolved.ReasonCode);
+        Assert.False(resolved.AssociationVerified);
+        Assert.Equal("candidate.icc", setup.Backend.State.CurrentProfile);
+        Assert.Equal(resolved, setup.Journal.Last);
+    }
+
+    [Fact]
+    public void FailedPreWriteValidationPreservesACandidateSelectedByAnExternalApplication()
+    {
+        var setup = new Fixture();
+        setup.Backend.BeforeWrite = () =>
+        {
+            setup.Backend.BeforeWrite = null;
+            setup.Backend.State = setup.Backend.State with { CurrentProfile = "candidate.icc" };
+            throw new ProfilePreviewException("display_state_changed", "Simulated pre-write validation failure.");
+        };
+
+        var error = Assert.Throws<ProfilePreviewException>(() => setup.Start());
+
+        Assert.Equal("display_state_changed", error.Code);
+        Assert.Empty(setup.Backend.Writes);
+        Assert.Equal("reverted", setup.Journal.Last!.Status);
+        Assert.Equal(error.Code, setup.Journal.Last.ReasonCode);
+        Assert.False(setup.Journal.Last.AssociationVerified);
+        Assert.Equal("candidate.icc", setup.Backend.State.CurrentProfile);
+    }
+
     [Fact] public void ConfirmationJournalFailureForcesRollback()
     {
         var setup = new Fixture(); setup.Start(); setup.Journal.FailStatus = "confirmed";
@@ -360,7 +502,7 @@ public sealed class ProfilePreviewTests
     {
         public FakeBackend Backend { get; } = new(); public FakeJournal Journal { get; } = new();
         public FakeClock Clock { get; } = new(); public ProfilePreviewTransaction Transaction { get; }
-        public Fixture() => Transaction = new(Backend, Journal, Clock);
+        public Fixture(Func<bool>? isOwnerAlive = null) => Transaction = new(Backend, Journal, Clock, isOwnerAlive);
         public ProfilePreviewSession Start() => Transaction.Begin(Guid.NewGuid(), Backend.State.DisplayId, "candidate.icc", 30);
     }
     private sealed class FakeBackend : IProfileAssociationBackend
@@ -369,6 +511,7 @@ public sealed class ProfilePreviewTests
             new string('A', 64), "original.icc", "current-user", true, false,
             [new("original.icc", new string('B', 64), true), new("candidate.icc", new string('C', 64), true)]);
         public List<string> Writes { get; } = []; public Action? BeforeWrite { get; set; }
+        public Action? AfterWrite { get; set; }
         public bool FailFirstAfterWrite { get; set; }
         public bool Disconnected { get; set; }
         public bool Remapped { get; set; }
@@ -381,17 +524,26 @@ public sealed class ProfilePreviewTests
             return State;
         }
         public ProfileAssociationState ReadRecoveryTarget(ProfileAssociationState original) => Read(Remapped ? State.DisplayId : original.DisplayId);
-        public void SetDefault(ProfileAssociationState expected, string profile, string hash)
+        public bool TrySetDefault(ProfileAssociationState expected, string profile, string hash, Func<bool>? canWrite = null)
         {
-            BeforeWrite?.Invoke(); Writes.Add(profile); State = State with { CurrentProfile = profile };
+            BeforeWrite?.Invoke();
+            if (canWrite?.Invoke() == false) return false;
+            Writes.Add(profile); State = State with { CurrentProfile = profile };
+            AfterWrite?.Invoke();
             if (FailFirstAfterWrite && Writes.Count == 1) throw new IOException("Injected native failure.");
+            return true;
         }
     }
     private sealed class FakeJournal : IProfilePreviewJournal
     {
         public ProfilePreviewSession? Last { get; private set; } public string? FailStatus { get; set; }
+        public Action<ProfilePreviewSession>? AfterSave { get; set; }
         public void Save(ProfilePreviewSession session)
-        { if (session.Status == FailStatus) throw new IOException("Injected journal failure."); Last = session; }
+        {
+            if (session.Status == FailStatus) throw new IOException("Injected journal failure.");
+            Last = session;
+            AfterSave?.Invoke(session);
+        }
     }
     private sealed class FakeClock : TimeProvider
     {

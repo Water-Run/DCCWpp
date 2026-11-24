@@ -39,24 +39,29 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 
 - 核对系统是否加载 `vcgt`、何时会重载，以及设备上校准加载器的状态。记录彩色管理应用与普通 SDR 应用的差异，验证标准用户可用的 API 及安装路径。发现标准用户权限阻断时，先解决发布后端路径，再启用对应的保存入口。
 - 用同一条只读检查评估向导和 CLI 的新预览。验证无法解析的基准 ICC、缺失的设备标识及未恢复的事务能在写入曲线前报出原因。预演通过后仍需单独验收实际曲线写入和关联。
+- 在显示操作锁已占用、Gamma 和 ICC 分别有待恢复日志的情况下，核对 Gamma 调整、ICC 切换和撤回的预演。记录原因码，并核对预演未占用会话 ID。
 - 审查安装、关联、提交记录、预设及绑定持久化之间的失败窗口。验证进程在每一步中断后的恢复，以及用户或其他程序在预览时切换 profile 或作用域的处理。记录系统选用的作用域、实际 ICC 关联来源和查询状态。读取过期日志时以原物理目标、当前模式和状态所有权重新校验。
-- 模拟缓慢的显示读取和日志写入跨过 Gamma 预览期限。核对开始、更新和进入比较均在当次操作中尝试回退，外部选择的 ICC 继续保留。
-- 使用非线性的起始曲线核对 ICC 切换及回退。记录同一显示路径上的切换前后曲线，分别覆盖线性重置、外部曲线写入和回滚写入中断。核对重试后原 ICC、作用域和逻辑曲线的读回结果。[Windows Gamma Ramp 限制](https://learn.microsoft.com/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp)
+- 保存、撤回和登录恢复均需在确认前验证最终读回的两个作用域。分别保留同名 ICC 并切换每用户与系统作用域，覆盖回退到系统 ICC 及无默认 ICC 的情况，核对向导和 CLI 的确认结果。[Windows ICC 默认关联查询](https://learn.microsoft.com/windows/win32/api/icm/nf-icm-colorprofilegetdisplaydefault)
+- 模拟缓慢的显示读取、日志写入和驱动调用前的校验跨过 Gamma 预览期限。核对开始、更新、进入比较和确认的结果。验证未获准的候选曲线不会在超时后写入，外部选用的 ICC 和外部写入的曲线继续保留。
+- 使用非线性的起始曲线核对 ICC 切换及回退。分别在保存切换 ICC 后和回滚切回 ICC 时检查线性重置。覆盖外部曲线、拓扑变化和回滚写入中断。核对重试后原 ICC、作用域和逻辑曲线的读回结果。[Windows Gamma Ramp 限制](https://learn.microsoft.com/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp)
 - 对已确认但本地记录仍待保存的事务，检查持久意图和当前 ICC，尝试补齐预设与绑定。验收应覆盖写入绑定后进程退出、用户随后删除记录、断开重连、较新的绑定以及撤回后的旧绑定清理。
 - 确认保存或撤回后中断本地写入，重启或等 Windows 重新分配显示路径，再运行登录恢复或 `calibration recover`。核对匹配设备且 ICC 摘要一致时补齐记录，配置状态暂不可用时保留待处理状态，文件变化时保留用户当前设置。
 - 拔出显示器时记录待恢复状态，目标重新出现且身份匹配后再恢复。克隆、远程会话、HDR/Advanced Color、目标不明确或驱动拒绝时，返回可操作的提示和稳定原因码。
 - 在 Gamma 预览、ICC 预览和 ICC 保存或撤回中断后，重建活动显示路径并运行恢复。分别验证同一配置设备匹配、旧路径被另一屏复用、设备身份重复、原设备已变及恢复过程中路径再次改变。原 ICC、作用域和曲线按照读回结果分别验收。
 - 预览期间在所选屏及另一屏分别只改变刷新率。核对 Gamma 和 ICC 预览均停止接受确认，并按原显示器身份和路径决定回滚或保留待恢复状态。用采样摘要核对刷新率变化已被记录。
+- 模拟 ICC 预览的日志写入和 Windows 写入前的核对跨过期限，验证原 ICC 及外部选用的配置均保留。模拟写入或读回跨过期限，验证回滚和 CLI 的启动超时反馈。
+- 验证只留下 `prepared` 日志的 Gamma 和 ICC 预览可在断开或远程环境中结束。ICC 写入前的核对失败时，验证外部选用的候选配置继续保留。已记录 `applying` 的会话仍需核对显示状态。
+- 模拟窗口进程分别在驱动或 ICC 写入前、写入过程中、以及 Gamma 确认日志落盘时退出。核对窗口拥有的预览终止、已开始的预览回滚，以及 CLI 发起的预览在原期限下继续由工作进程处理。
 - 对独立的 ICC 关联预览，验证布局改变后可在同一源与目标路径恢复。覆盖同名 ICC 文件替换、不同屏或作用域、克隆和 HDR。当前或候选 ICC 包含 MHC2 时验证预演与实际预览都给出相同原因码。旧会话仍需验证回滚。没有持久身份的旧会话沿用原拓扑校验。验证确认读取跨过截止时间时回退，以及观察和命令能识别工作进程中断。
 - 确认 `SetDeviceGammaRamp` 仅在受控 SDR 兼容路径使用。确定回读容差、驱动拒写后的处理，以及休眠、分辨率变化和外部工具覆盖后的预期行为。使用 ICC 和 Windows 关联作为持久化路线。微软记录了 Gamma Ramp 静默拒写、系统覆盖和 HDR 行为未定义等限制。[Gamma Ramp 文档](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp) · [默认 ICC 关联](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-colorprofilesetdisplaydefaultassociation)
 
 验收以独立的 SDR 显示器完成整轮校准、退出后恢复、确认后重新加载和恢复原关联为准。单独中断预览工作进程，确认向导保留恢复入口，CLI 返回 `recovery_required`，恢复后核对原曲线和 ICC。验证撤回已确认校准时，取消和超时可回到撤回前状态，确认可还原前一个 ICC、作用域和曲线。扩展桌面至少验证两台屏幕，确认另一屏的 ICC 和曲线保持原状。模拟测试覆盖失败分支，真实写入仅在人工实机验收中进行。
 
-每个步骤前后都可用 `dccwpp calibration capture --json` 保存全屏幕的只读报告。用 `dccwpp calibration compare <before.json> <after.json> --json` 核对拓扑、ICC 摘要、作用域及逻辑曲线，同时检查未选屏。记录不可读或不支持的目标、会话原因码、Windows 设置所示配置及视觉观察。[采样与比对命令](CLI.md)
+每个步骤前后都可用 `dccwpp calibration capture --json` 保存全桌面的只读报告。用 `dccwpp calibration compare <before.json> <after.json> --json` 核对拓扑、ICC 摘要、作用域及逻辑曲线。检查未选屏时要求 `fullDesktopCoverage: true`，并检查该屏的结果。记录不可读或不支持的目标、会话原因码、Windows 设置所示配置及视觉观察。[采样与比对命令](CLI.md)
 
 开始实机验收前核对 `isRemoteSession: false`。远程采样可核对 Windows 读回的 ICC 关联和文件摘要。物理屏幕的曲线读回、显示效果和重新登录后加载使用本地交互会话验收。[Windows Gamma Ramp 读取条件](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getdevicegammaramp)
 
-确认后及重新登录后可对同一会话运行 `dccwpp calibration verify <calibration-id> --json`。分别检查当前 ICC 选择、文件摘要和逻辑曲线，并记录 Windows 加载器设置。多屏验收继续用全桌面采样核对其他目标。[实时核对命令](CLI.md)
+确认后及重新登录后可对同一会话运行 `dccwpp calibration verify <calibration-id> --json`。分别检查当前 ICC 选择、文件摘要和逻辑曲线，并记录 Windows 加载器设置。中断另一场可能已写入的预览，核对命令是否报告 `recovery_required`，再在回滚后重新检查同一会话。多屏验收继续用全桌面采样核对其他目标。[实时核对命令](CLI.md)
 
 重启后先核对当前默认 ICC 和曲线，再对重启前的校准运行 `calibration undo <calibration-id> --dry-run --json`。Windows 可为同一适配器分配新的 LUID。核对撤回计划采用当前路径，且只有匹配原显示器与配置设备时才允许预览。然后分别核对取消、确认恢复和其他屏幕的状态。[Windows 显示适配器 ID](https://learn.microsoft.com/en-us/uwp/api/windows.devices.display.core.displayadapter.id)
 

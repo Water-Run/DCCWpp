@@ -5,7 +5,7 @@ public sealed record DisplayCaptureDifference(string DisplayId, string Status, s
 
 public sealed record CaptureComparisonResult(int SchemaVersion, string Status, string TopologyStatus,
     bool SameOsBuildAndArchitecture, DateTimeOffset BeforeCapturedAt, DateTimeOffset AfterCapturedAt,
-    IReadOnlyList<DisplayCaptureDifference> Displays, bool? SameSessionType = null)
+    IReadOnlyList<DisplayCaptureDifference> Displays, bool? SameSessionType = null, bool? FullDesktopCoverage = null)
 {
     public bool ColorAccuracyVerified => false;
 }
@@ -32,8 +32,13 @@ public static class CalibrationCaptureComparison
         string status = topologyStatus == Changed || displays.Any(display => display.Status is Changed or "identity-changed") ? Changed
             : topologyStatus == Matched && sameOs && displays.Length > 0 && displays.All(display => display.Status == Matched)
                 ? Matched : Inconclusive;
-        return new(1, status, topologyStatus, sameOs, before.CapturedAt, after.CapturedAt, displays, sameSessionType);
+        bool? fullDesktopCoverage = CoversDesktop(before) & CoversDesktop(after);
+        return new(1, status, topologyStatus, sameOs, before.CapturedAt, after.CapturedAt, displays, sameSessionType,
+            fullDesktopCoverage);
     }
+
+    private static bool? CoversDesktop(CalibrationCaptureReport report) => report.ActiveDisplayCount is int count
+        ? count > 0 && count == report.Displays.Count : null;
 
     private static DisplayCaptureDifference CompareDisplay(string id, DisplayCalibrationCapture? before, DisplayCalibrationCapture? after,
         bool canCompareSessionTypes)

@@ -89,6 +89,24 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     comparison = call(*compare_args)
     assert comparison["status"] == "matched" and comparison["colorAccuracyVerified"] is False
     assert comparison["sameSessionType"] is None
+    assert comparison["fullDesktopCoverage"] is None
+    for active_count, full_coverage in ((1, True), (2, False)):
+        scoped_capture = dict(capture, activeDisplayCount=active_count)
+        for path in (before_file, after_file):
+            path.write_text(json.dumps(scoped_capture), encoding="utf-8")
+        comparison = call(*compare_args)
+        assert comparison["status"] == "matched" and comparison["fullDesktopCoverage"] is full_coverage
+    secondary_sample = dict(sample, displayId="fedcba9876543210", isPrimary=False)
+    full_capture = dict(capture, activeDisplayCount=2, displays=[sample, secondary_sample])
+    before_file.write_text(json.dumps(full_capture), encoding="utf-8")
+    comparison = call(*compare_args)
+    assert comparison["status"] == "inconclusive" and comparison["fullDesktopCoverage"] is False
+    empty_capture = dict(capture, activeDisplayCount=0, displays=[], topologySha256=None)
+    for path in (before_file, after_file):
+        path.write_text(json.dumps(empty_capture), encoding="utf-8")
+    comparison = call(*compare_args)
+    assert comparison["status"] == "inconclusive" and comparison["fullDesktopCoverage"] is False
+    before_file.write_text(json.dumps(wrapped), encoding="utf-8-sig")
     after_file.write_text(json.dumps(dict(capture, displays=[dict(sample, logicalRampSha256="C" * 64)])), encoding="utf-8")
     comparison = call(*compare_args)
     assert comparison["status"] == "changed" and comparison["topologyStatus"] == "matched"
@@ -96,6 +114,7 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     after_file.write_text(json.dumps(dict(capture, topologySha256=None)), encoding="utf-8")
     assert call(*compare_args)["status"] == "inconclusive"
     for malformed in (dict(capture, schemaVersion=2), dict(capture, displays=[sample, sample]),
+                      dict(capture, activeDisplayCount=0),
                       dict(schemaVersion=1, ok=False, data=capture)):
         after_file.write_text(json.dumps(malformed), encoding="utf-8")
         assert call(*compare_args, expected=2)["code"] == "invalid_capture"
@@ -265,7 +284,24 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert pending == [dict(sessionId=str(saved_id), kind="binding", status="pending",
                             reasonCode="binding_pending", needsRecovery=True)]
     assert call("bindings", "restore", "--dry-run")["reason"] == "no_bindings_enabled"
+    verification = call("calibration", "verify", str(saved_id))
+    assert verification["reasonCode"] in {"display_disconnected", "remote_session_blocked"}
+    assert verification["capturedAt"] is not None
     interrupted.write_text(json.dumps(dict(calibration_state, id=str(interrupted_id), status="previewing")), encoding="utf-8")
+    gamma_before = interrupted.read_bytes()
+    saved_before = saved_state.read_bytes()
+    verification = call("calibration", "verify", str(saved_id))
+    assert verification["savedStatus"] == "confirmed" and verification["status"] == "inconclusive"
+    assert verification["reasonCode"] == "recovery_required" and verification["capturedAt"] is None
+    assert verification["profileSelectionMatches"] is None and verification["logicalCurveMatches"] is None
+    assert interrupted.read_bytes() == gamma_before and saved_state.read_bytes() == saved_before
+    undo_probe_id, profile_probe_id = uuid4(), uuid4()
+    undo_plan = call("calibration", "undo", str(saved_id), "--dry-run", "--request-id", str(undo_probe_id))
+    assert undo_plan["canPreview"] is False and undo_plan["reasonCode"] == "recovery_required"
+    assert call("profiles", "preview", "fixture.icc", "--display", "0123456789abcdef", "--dry-run",
+                "--request-id", str(profile_probe_id), expected=4)["code"] == "recovery_required"
+    assert not (data / "calibration-sessions" / undo_probe_id.hex).exists()
+    assert not (data / "profile-previews" / profile_probe_id.hex).exists()
     assert call("calibration", "recover", str(saved_id), expected=4)["code"] == "recovery_required"
     blocked_report = call("recovery", "run")
     assert blocked_report["reason"] == "recovery_required" and pending[0] in blocked_report["sessions"]
@@ -334,6 +370,13 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
                                                   dict(original["profiles"][1], mhc2Present=True)])
     interrupted_profile = json.dumps(dict(profile_journal, status="previewing", original=inspected_original)).encode()
     profile_state.write_bytes(interrupted_profile)
+    verification = call("calibration", "verify", str(saved_id))
+    assert verification["reasonCode"] == "recovery_required" and verification["capturedAt"] is None
+    assert profile_state.read_bytes() == interrupted_profile
+    assert call("profiles", "preview", "fixture.icc", "--display", "0123456789abcdef", "--dry-run",
+                expected=4)["code"] == "recovery_required"
+    undo_plan = call("calibration", "undo", str(saved_id), "--dry-run")
+    assert undo_plan["canPreview"] is False and undo_plan["reasonCode"] == "recovery_required"
     observed = call("profiles", "observe", str(profile_id))
     assert observed["outcome"] == "recovery_required" and observed["session"]["status"] == "previewing"
     assert [item["mhc2Present"] for item in observed["session"]["original"]["profiles"]] == [False, True]
@@ -350,6 +393,28 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert failure in {"display_disconnected", "remote_session_blocked"}
     pending = call("profiles", "status", str(profile_id))
     assert pending["status"] == "recovery-pending" and pending["reasonCode"] == failure
+
+    prepared_gamma = dict(calibration_state, status="prepared", reasonCode="prepared")
+    prepared_profile = dict(profile_journal, status="prepared", reasonCode="prepared")
+    interrupted.write_text(json.dumps(prepared_gamma), encoding="utf-8")
+    profile_state.write_text(json.dumps(prepared_profile), encoding="utf-8")
+    verification = call("calibration", "verify", str(saved_id))
+    assert verification["reasonCode"] in {"display_disconnected", "remote_session_blocked"}
+    assert verification["capturedAt"] is not None
+    recovered_gamma = call("calibration", "recover", str(interrupted_id))
+    recovered_profile = call("profiles", "recover", str(profile_id))
+    for recovered, verified_field in ((recovered_gamma, "curveReadbackVerified"), (recovered_profile, "associationVerified")):
+        assert recovered["status"] == "reverted" and recovered["reasonCode"] == "preview_not_applied"
+        assert recovered[verified_field] is False and recovered["needsRecovery"] is False
+    interrupted.write_text(json.dumps(prepared_gamma), encoding="utf-8")
+    profile_state.write_text(json.dumps(prepared_profile), encoding="utf-8")
+    report = call("recovery", "run")
+    assert report["reason"] == "recovery_finished" and len(report["sessions"]) == 2
+    assert {session["kind"] for session in report["sessions"]} == {"calibration", "profile"}
+    assert all(session["status"] == "reverted" and session["reasonCode"] == "preview_not_applied"
+               and not session["needsRecovery"] for session in report["sessions"])
+    assert call("recovery", "status")["sessions"] == []
+    assert request.read_bytes() == reservation and profile_request.read_bytes() == profile_reservation
 
     committed_profile = dict(profile_journal, status="confirmed", reasonCode="confirmed", associationVerified=True)
     profile_state.write_text(json.dumps(committed_profile), encoding="utf-8")
@@ -418,6 +483,7 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         if "displays" in capture:
             assert capture["windowsBuild"] > 0
             assert isinstance(capture["isRemoteSession"], bool)
+            assert capture["activeDisplayCount"] >= 1
             assert len(capture["displays"]) == 1 and capture["displays"][0]["displayId"] == display
             sample = capture["displays"][0]
             for key in ("profileSha256", "logicalRampSha256"):

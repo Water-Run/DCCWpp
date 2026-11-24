@@ -24,6 +24,7 @@ public sealed record SdrCalibrationDiagnostics(string DisplayId, string ColorSta
 public sealed partial class WindowsGammaCalibrationBackend(string root) : IGammaCalibrationBackend
 {
     private readonly GammaCalibrationStore _store = new(root);
+    private readonly PreviewRecoveryService _recovery = new(root);
     public GammaDeviceState Read(string displayId)
     {
         WindowsDisplaySession.RequireLocal();
@@ -148,7 +149,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         return display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1
             ? "shared_source_blocked" : null;
     }
-    public void Write(GammaDeviceState expected, GammaRamp ramp)
+    public bool TryWrite(GammaDeviceState expected, GammaRamp ramp, Func<bool>? canWrite = null)
     {
         ramp.Validate();
         var now = Read(expected.DisplayId);
@@ -159,10 +160,12 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             throw new ProfilePreviewException("display_state_changed", "The display changed before its calibration curve could be written.");
         using var dc = DisplayDc.Create(now.DeviceName);
         var native = NativeRamp.From(ramp);
+        if (canWrite?.Invoke() == false) return false;
         if (!SetDeviceGammaRamp(dc.Handle, ref native))
             throw new ProfilePreviewException("curve_write_failed", "The display driver rejected the calibration curve.");
+        return true;
     }
-    public string? Commit(GammaCalibrationSession session)
+    public GammaProfileSelection Commit(GammaCalibrationSession session)
     {
         WindowsDisplaySession.RequireLocal();
         if (session.UndoOf is Guid calibrationId) return CommitUndo(session, calibrationId);
@@ -178,6 +181,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         var (backup, profile) = PrepareIcc(device, now, session.Candidate, session.Id, InstalledProfileReader.ReadBytes,
             scope => ReadDefault(adapter, source, scope), () => ReadScope(adapter, source));
         string candidate = backup.CandidateName;
+        var selection = new GammaProfileSelection(candidate, "current-user", "current-user");
         string directory = _store.DirectoryFor(session.Id);
         string backupPath = Path.Combine(directory, "association.json");
         AtomicFile.Write(backupPath, JsonSerializer.SerializeToUtf8Bytes(backup, ProfilePreviewStore.Json), overwrite: false);
@@ -198,12 +202,11 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         if (backup.Scope != CurrentUser) SetUserScope(backup.DeviceKey, true);
         Check(ColorProfileAddDisplayAssociation(1, candidate, adapter, source, true, false));
         var associated = Read(device.Id);
-        if (!GammaCalibrationTransaction.SameTarget(session.Original, associated)
-            || associated.ProfileScope != "current-user" || !ProfilePreviewPolicy.EqualName(associated.ProfileName, candidate))
+        if (!GammaCalibrationTransaction.SameTarget(session.Original, associated) || !selection.Matches(associated))
             throw new ProfilePreviewException("association_not_verified", "Windows did not report the saved calibration profile as default.");
         VerifyProfileFingerprint(candidate, backup.CandidateHash, InstalledProfileReader.ReadSha256);
-        if (NeedsCurveWriteAfterAssociation(session, associated.Ramp, "external_curve_change")) Write(associated, session.Candidate);
-        return candidate;
+        if (NeedsCurveWriteAfterAssociation(session, associated.Ramp, "external_curve_change")) TryWrite(associated, session.Candidate);
+        return selection;
     }
 
     internal static bool NeedsCurveWriteAfterAssociation(GammaCalibrationSession session, GammaRamp ramp, string conflictCode)

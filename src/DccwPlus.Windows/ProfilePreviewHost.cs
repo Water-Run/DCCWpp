@@ -14,7 +14,8 @@ public sealed record ProfileWorkerError(string Code, string Message);
 
 public static class ProfilePreviewHost
 {
-    public static int Run(string root, Guid id, Guid? attemptId = null, Func<IProfileAssociationBackend>? backendFactory = null)
+    public static int Run(string root, Guid id, Guid? attemptId = null, Func<IProfileAssociationBackend>? backendFactory = null,
+        TimeProvider? clock = null)
     {
         var store = new ProfilePreviewStore(root);
         string directory = store.DirectoryFor(id);
@@ -28,22 +29,26 @@ public static class ProfilePreviewHost
             if (worker is null) return PreviewWorkerFiles.JoinedExistingWorker;
             var request = ProfilePreviewStore.Read<ProfilePreviewRequest>(Path.Combine(directory, "request.json"));
             if (request.Id != id) throw new InvalidDataException("Invalid preview request identity.");
+            bool OwnerAlive() => PreviewWorkerFiles.IsOwnerAlive(request.OwnerProcessId, request.OwnerStartTicks);
             if (!request.Recover && store.Find(id) is not null) return 0;
             gate = DisplayMutationLock.Acquire();
-            transaction = new(backendFactory?.Invoke() ?? new WindowsProfileAssociationBackend(), store);
+            transaction = new(backendFactory?.Invoke() ?? new WindowsProfileAssociationBackend(), store, clock, OwnerAlive);
             if (request.Recover)
             {
                 var recovered = transaction.Recover(store.Load(id));
                 return recovered.NeedsRecovery ? 4 : 0;
             }
             // A lost worker must be resolved before another transaction can hide its outstanding recovery.
-            if (store.Incomplete().Any(s => s.Id != id) || new GammaCalibrationStore(root).Sessions().Any(s => s.NeedsRecovery))
-                throw new ProfilePreviewException("recovery_required", "An earlier profile preview needs recovery.");
-            if (!OwnerAlive(request)) throw new ProfilePreviewException("owner_exited", "The requesting window has closed.");
-            transaction.Begin(id, request.DisplayId, request.CandidateProfile, request.Seconds);
+            new PreviewRecoveryService(root).RequireNoInterruptedPreview();
+            if (!OwnerAlive()) throw new ProfilePreviewException("owner_exited", new LocalizationService()["PreviewOwnerExited"]);
+            var opened = transaction.Begin(id, request.DisplayId, request.CandidateProfile, request.Seconds);
+            if (opened is { Status: "reverted", ReasonCode: "preview_expired" })
+                throw new ProfilePreviewException("preview_expired", new LocalizationService()["ProfilePreviewExpiredBeforeReady"]);
+            if (opened is { Status: "reverted", ReasonCode: "owner_exited" })
+                throw new ProfilePreviewException("owner_exited", new LocalizationService()["PreviewOwnerExited"]);
             while (transaction.Session?.Status == "previewing")
             {
-                if (transaction.Tick(OwnerAlive(request)).Status != "previewing") break;
+                if (transaction.Tick().Status != "previewing") break;
                 if (store.Requested(id, "revert")) transaction.Revert();
                 else if (store.Requested(id, "confirm")) transaction.Confirm();
                 if (transaction.Session?.Status == "previewing") Thread.Sleep(150);
@@ -66,24 +71,20 @@ public static class ProfilePreviewHost
             worker?.Dispose();
         }
     }
-
-    private static bool OwnerAlive(ProfilePreviewRequest request)
-    {
-        if (request.OwnerProcessId is null) return true; // CLI request survives its caller until the bounded deadline.
-        if (request.OwnerStartTicks is null) return false;
-        try
-        {
-            using var owner = Process.GetProcessById(request.OwnerProcessId.Value);
-            return !owner.HasExited && owner.StartTime.ToUniversalTime().Ticks == request.OwnerStartTicks.Value;
-        }
-        catch (ArgumentException) { return false; }
-        catch (InvalidOperationException) { return false; }
-    }
 }
 
 public sealed class ProfilePreviewClient(string root, string workerExecutable)
 {
     private readonly ProfilePreviewStore _store = new(root);
+
+    public ProfilePreviewPlan PlanPreview(string displayId, string candidate)
+    {
+        IccProfileInspector.ValidateFileName(candidate);
+        using var gate = DisplayMutationLock.Acquire();
+        new PreviewRecoveryService(root).RequireNoInterruptedPreview();
+        return ProfilePreviewPolicy.Plan(new WindowsProfileAssociationBackend().Read(displayId), candidate);
+    }
+
     public Task<ProfilePreviewSession> BeginAsync(string displayId, string candidate, int seconds = 30, bool tieToCurrentProcess = false,
         Guid? requestId = null)
     {
@@ -111,7 +112,7 @@ public sealed class ProfilePreviewClient(string root, string workerExecutable)
             VerifyRequest(requestPath, request);
         }
         var existing = _store.Find(request.Id);
-        return existing is null ? LaunchAsync(request.Id) : Task.FromResult(existing);
+        return existing is null ? LaunchAsync(request) : Task.FromResult(existing);
     }
     public ProfilePreviewSession Status(Guid id) => _store.Load(id);
     public async Task<ProfilePreviewSession> CommandAsync(Guid id, string action)
@@ -140,9 +141,10 @@ public sealed class ProfilePreviewClient(string root, string workerExecutable)
     }
     public Task<ProfilePreviewSession> RecoverAsync(Guid id) => Task.Run(() => new PreviewRecoveryService(root).RecoverProfile(id));
 
-    private async Task<ProfilePreviewSession> LaunchAsync(Guid id)
+    private async Task<ProfilePreviewSession> LaunchAsync(ProfilePreviewRequest request)
     {
         if (!File.Exists(workerExecutable)) throw new FileNotFoundException("The independent preview worker is missing. Rebuild or reinstall DCCW++.", workerExecutable);
+        Guid id = request.Id;
         Guid attemptId = Guid.NewGuid();
         string directory = _store.DirectoryFor(id);
         string errorPath = PreviewWorkerFiles.ErrorPath(directory, attemptId);
@@ -152,17 +154,22 @@ public sealed class ProfilePreviewClient(string root, string workerExecutable)
             Path.GetFullPath(root), "--attempt", attemptId.ToString("D") }) start.ArgumentList.Add(arg);
         using var worker = Process.Start(start) ?? throw new IOException("Cannot start profile preview worker.");
         var timer = Stopwatch.StartNew();
-        do
+        TimeSpan waitLimit = TimeSpan.FromSeconds(10);
+        TimeSpan completionLimit = waitLimit + TimeSpan.FromSeconds(request.Seconds + 5);
+        ProfilePreviewSession? latest = null;
+        while (true)
         {
             int? exitCode = PreviewWorkerFiles.ReadLaunchExitCode(worker, errorPath);
-            var session = PreviewWorkerFiles.ReadReadySession(directory, () => _store.Find(id),
+            var session = PreviewWorkerFiles.ReadReadySession(directory, () => latest = _store.Find(id),
                 state => state.NeedsRecovery && state.Status != "recovery-pending",
                 state => state.Status == "previewing" ? state.ExpiresAt : null,
                 launchExited: exitCode is not null);
             if (session is not null) return session;
-            if (exitCode is not (null or PreviewWorkerFiles.JoinedExistingWorker)) break;
+            // A journaled startup can span the preview deadline and its rollback.
+            if (latest is not null) waitLimit = completionLimit;
+            if (exitCode is not (null or PreviewWorkerFiles.JoinedExistingWorker) || timer.Elapsed >= waitLimit) break;
             await Task.Delay(75);
-        } while (timer.Elapsed < TimeSpan.FromSeconds(10));
+        }
         // Never kill a worker that might be restoring an association. Its timeout remains authoritative.
         throw new ProfilePreviewException("worker_start_timeout", $"The preview worker did not become ready. Session: {id:D}.");
     }

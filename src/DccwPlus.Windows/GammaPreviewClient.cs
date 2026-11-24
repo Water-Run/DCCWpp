@@ -15,7 +15,7 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
     public void CheckCanPreview(string displayId, CalibrationPreset preset)
     {
         using var gate = DisplayMutationLock.Acquire();
-        GammaPreviewHost.RequireNoInterruptedPreview(root);
+        new PreviewRecoveryService(root).RequireNoInterruptedPreview();
         _ = new WindowsGammaCalibrationBackend(root).CheckPreviewStart(displayId, preset);
     }
 
@@ -235,6 +235,21 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
 
 internal static class PreviewWorkerFiles
 {
+    internal static bool IsOwnerAlive(int? ownerPid, long? startTicks)
+    {
+        if (ownerPid is null) return true;
+        if (startTicks is null) return false;
+        try
+        {
+            using var owner = Process.GetProcessById(ownerPid.Value);
+            return owner.StartTime.ToUniversalTime().Ticks == startTicks.Value && !owner.HasExited;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+
     // A redundant worker exits without publishing an error to the active worker's client.
     public const int JoinedExistingWorker = 10;
 

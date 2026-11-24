@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 using DccwPlus.Core.Calibration;
 using DccwPlus.Core.Localization;
@@ -34,16 +33,17 @@ public static class GammaPreviewHost
             }
             var request = recover ? null : ProfilePreviewStore.Read<GammaPreviewRequest>(Path.Combine(directory, "request.json"));
             if (request is not null && request.Id != id) throw new InvalidDataException("Invalid calibration request.");
+            bool OwnerAlive() => PreviewWorkerFiles.IsOwnerAlive(request?.OwnerPid, request?.OwnerStartTicks);
             bool recovering = recover || request?.Recover == true;
             // A journal is created before the first display write. An existing journal can only be inspected or recovered.
             if (!recovering && store.Find(id) is not null) return 0;
             gate = DisplayMutationLock.Acquire();
             var backend = backendFactory?.Invoke() ?? new WindowsGammaCalibrationBackend(root);
-            transaction = new(backend, store);
+            transaction = new(backend, store, isOwnerAlive: OwnerAlive);
             if (recovering) return transaction.Recover(store.Load(id)).NeedsRecovery ? 4 : 0;
             if (request is null) throw new InvalidDataException("A calibration request is required.");
-            RequireNoInterruptedPreview(root);
-            if (!OwnerAlive(request)) throw new ProfilePreviewException("owner_exited", "The calibration window has closed.");
+            new PreviewRecoveryService(root).RequireNoInterruptedPreview();
+            if (!OwnerAlive()) throw new ProfilePreviewException("owner_exited", new LocalizationService()["PreviewOwnerExited"]);
             if (request.UndoOf is Guid calibrationId)
             {
                 var saved = store.Load(calibrationId);
@@ -61,10 +61,12 @@ public static class GammaPreviewHost
                 transaction.Begin(id, preset, request.DisplayId, request.Seconds, expected: expected,
                     windowOwned: request.OwnerPid is not null);
             }
+            if (transaction.Session is { Status: "reverted", ReasonCode: "owner_exited" })
+                throw new ProfilePreviewException("owner_exited", new LocalizationService()["PreviewOwnerExited"]);
             Guid lastCommand = Guid.Empty;
             while (transaction.Session?.Status == "previewing")
             {
-                transaction.Tick(OwnerAlive(request));
+                transaction.Tick();
                 string commandPath = Path.Combine(directory, "command.json");
                 if (transaction.Session?.Status == "previewing" && File.Exists(commandPath))
                 {
@@ -112,21 +114,5 @@ public static class GammaPreviewHost
         }
     }
 
-    internal static void RequireNoInterruptedPreview(string root)
-    {
-        if (new PreviewRecoveryService(root).List().Any(item => item.Kind != "binding" && item.NeedsRecovery))
-            throw new ProfilePreviewException("recovery_required", new LocalizationService()["RecoveryMessage"]);
-    }
-
     private static void Ack(string directory, GammaPreviewAck ack) => AtomicFile.Write(Path.Combine(directory, "ack.json"), JsonSerializer.SerializeToUtf8Bytes(ack, ProfilePreviewStore.Json));
-    private static bool OwnerAlive(GammaPreviewRequest request)
-    {
-        if (request.OwnerPid is null) return true;
-        try
-        {
-            using var owner = Process.GetProcessById(request.OwnerPid.Value);
-            return !owner.HasExited && request.OwnerStartTicks == owner.StartTime.ToUniversalTime().Ticks;
-        }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
-    }
 }

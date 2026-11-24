@@ -76,6 +76,25 @@ public sealed class BindingRestoreTests
         Assert.Empty(test.Journal.Sessions);
     }
 
+    [Fact]
+    public void RestoreCannotReportSuccessIfTheSameProfileMovesToSystemScope()
+    {
+        var test = new Fixture();
+        test.ReadHash = () =>
+        {
+            if (test.Journal.Sessions.LastOrDefault()?.Status == "committing")
+                test.Backend.State = test.Backend.State with { ProfileScope = "system-wide", SelectedProfileScope = "system-wide" };
+            return test.ProfileHash;
+        };
+
+        var result = test.Restorer.Restore(test.Binding, dryRun: false);
+
+        Assert.Equal("skipped", result.Status);
+        Assert.Equal("profile_selection_changed", result.ReasonCode);
+        Assert.Equal("superseded", test.Journal.Sessions[^1].Status);
+        Assert.Equal("system-wide", test.Backend.State.SelectedProfileScope);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -147,7 +166,7 @@ public sealed class BindingRestoreTests
                 TargetKey: target, HdrActive: false, AdvancedColorActive: false,
                 SourceId: 1, PersistenceKey: key, PersistenceKind: "device-path")];
             Backend = new(new(id, device, target, new string('D', 64), true, false,
-                original, name, "current-user", SourceId: 1, PersistenceKey: key));
+                original, name, "current-user", SourceId: 1, PersistenceKey: key, SelectedProfileScope: "current-user"));
             Restorer = new(Displays, Backend, Journal, _ => ReadHash?.Invoke() ?? ProfileHash, _ => ReadPreset?.Invoke() ?? preset);
         }
     }
@@ -165,12 +184,14 @@ public sealed class BindingRestoreTests
         public GammaDeviceState State { get; set; } = initial;
         public Func<int, GammaDeviceState>? OnRead { get; set; }
         public GammaDeviceState Read(string displayId) => OnRead?.Invoke(++_reads) ?? State;
-        public void Write(GammaDeviceState expected, GammaRamp ramp)
+        public bool TryWrite(GammaDeviceState expected, GammaRamp ramp, Func<bool>? canWrite = null)
         {
+            if (canWrite?.Invoke() == false) return false;
             Writes++;
             State = State with { Ramp = ramp.Copy() };
+            return true;
         }
-        public string Commit(GammaCalibrationSession session) => throw new InvalidOperationException("The restore must reuse the selected profile.");
+        public GammaProfileSelection Commit(GammaCalibrationSession session) => throw new InvalidOperationException("The restore must reuse the selected profile.");
         public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected) =>
             throw new InvalidOperationException("The restore must not change the profile.");
     }

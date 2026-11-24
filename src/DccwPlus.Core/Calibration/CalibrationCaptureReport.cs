@@ -10,7 +10,8 @@ public sealed record DisplayCalibrationCapture(string DisplayId, string Name, bo
 
 public sealed record CalibrationCaptureReport(int SchemaVersion, DateTimeOffset CapturedAt, int WindowsBuild,
     string OsArchitecture, string Topology, IReadOnlyList<DisplayCalibrationCapture> Displays, string? TopologySha256 = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? IsRemoteSession = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? IsRemoteSession = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ActiveDisplayCount = null);
 
 public static class CalibrationCaptureCodec
 {
@@ -65,7 +66,8 @@ public static class CalibrationCaptureCodec
         if (report.SchemaVersion != 1 || report.CapturedAt == default || report.WindowsBuild <= 0
             || !IsToken(report.OsArchitecture) || !DisplayObservationCodec.Topologies.Contains(report.Topology)
             || (report.TopologySha256 is not null && !ProfilePreviewPolicy.IsHash(report.TopologySha256))
-            || report.Displays is null || report.Displays.Count > 64)
+            || report.Displays is null || report.Displays.Count > 64
+            || report.ActiveDisplayCount < report.Displays.Count)
             throw InvalidCapture();
         var ids = new HashSet<string>(StringComparer.Ordinal);
         foreach (var display in report.Displays)

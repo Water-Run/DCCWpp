@@ -239,7 +239,7 @@ internal static class Cli
                 int seconds = duration is null ? 30 : int.TryParse(duration, System.Globalization.NumberStyles.None,
                     System.Globalization.CultureInfo.InvariantCulture, out int value) ? value : 0;
                 if (seconds is < 10 or > 60) throw new ArgumentException("Preview timeout must be 10–60 seconds.");
-                if (dryRun) return Success(ProfilePreviewPolicy.Plan(new WindowsProfileAssociationBackend().Read(displayId), candidate), json);
+                if (dryRun) return Success(client.PlanPreview(displayId, candidate), json);
                 return Success(await client.BeginAsync(displayId, candidate, seconds, requestId: requestId), json);
             }
 

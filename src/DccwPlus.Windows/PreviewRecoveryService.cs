@@ -1,4 +1,5 @@
 using DccwPlus.Core.Calibration;
+using DccwPlus.Core.Localization;
 using DccwPlus.Core.Storage;
 
 namespace DccwPlus.Windows;
@@ -17,6 +18,12 @@ public sealed class PreviewRecoveryService(string root)
         return sessions.Where(session => session.NeedsRecovery).Select(Summarize)
             .Concat(_profiles.Incomplete().Select(Summarize))
             .Concat(sessions.Where(session => session.NeedsBindingCompletion).Select(SummarizeBinding)).ToArray();
+    }
+
+    internal void RequireNoInterruptedPreview()
+    {
+        if (_gamma.Sessions().Any(session => session.NeedsRecovery) || _profiles.Incomplete().Count > 0)
+            throw new ProfilePreviewException("recovery_required", new LocalizationService()["RecoveryMessage"]);
     }
 
     public PreviewRecoveryReport Recover()

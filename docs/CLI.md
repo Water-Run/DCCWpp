@@ -95,6 +95,8 @@ dccwpp bindings restore --dry-run --json
 
 Windows 提供足够的活动路径和桌面几何信息时，采样还会记录 `topologySha256`。摘要涵盖全桌面的目标和源、分辨率、位置、刷新率及色彩模式，即使只返回某一屏的采样。旧采样没有该字段时仍可比较逐屏证据。
 
+`activeDisplayCount` 是此次探测到的活动显示器总数。使用 `--display` 时，`displays` 只包含指定目标，`activeDisplayCount` 仍记录总数。请用新版比较命令读取含此字段的采样。新版也支持缺少此字段的旧采样。
+
 采样的 `isRemoteSession` 记录 Windows 是否将当前会话识别为远程桌面。远程采样保留可读取的 ICC 关联、作用域及文件摘要，曲线状态为 `remote_session_blocked`，曲线摘要为 `null`。如果采样期间会话类型改变，命令返回 `capture_state_changed`。
 
 `calibration compare` 只读取两份采样文件。它支持 `--json` 输出的成功封装和未封装的采样，单个文件上限为 256 KiB，接受 UTF-8 和带 BOM 的 UTF-16 LE。无效采样返回退出码 2 和 `invalid_capture`。可按以下方式保存样本并比对。
@@ -108,9 +110,13 @@ dccwpp.exe calibration compare before.json after.json --json
 
 比对按 `displayId` 配对，逐屏返回 `profileStatus`、`logicalRampStatus` 和前后原始条目。只有一侧有条目时报告 `before-only` 或 `after-only`。检测到持久显示身份变化时报告 `identity-changed`。色彩模式或身份变化时不比较该屏的 ICC 和曲线。两次都明确无默认关联且作用域一致时，ICC 状态可以匹配。仅缺少摘要或无法查询时返回 `inconclusive`。
 
-退出码 0 表示成功生成比较报告。`status: matched` 需要拓扑摘要、Windows build 与架构一致，并且两侧采样的显示器均有匹配的 ICC 和曲线证据。`changed` 表示采样发现明确变化，其余情况为 `inconclusive`。若一份报告来自远程桌面而另一份来自本地，`sameSessionType` 为 `false`，整体比较为 `inconclusive`。旧报告缺少会话字段时，`sameSessionType` 为 `null`，其余字段沿用原比较规则。用同一 Windows 用户和桌面采样。检查未选中屏幕时保存两份全屏幕报告。`colorAccuracyVerified` 固定为 false。
+退出码 0 表示成功生成比较报告。`status: matched` 需要拓扑摘要、Windows build 与架构一致，并且两侧采样的显示器均有匹配的 ICC 和曲线证据。`changed` 表示采样发现明确变化，其余情况为 `inconclusive`。若一份报告来自远程桌面而另一份来自本地，`sameSessionType` 为 `false`，整体比较为 `inconclusive`。旧报告缺少会话字段时，`sameSessionType` 为 `null`，其余字段沿用原比较规则。`colorAccuracyVerified` 固定为 false。
+
+验收未选中屏幕时，请用同一 Windows 用户和桌面采集全桌面，核对 `status: matched` 和 `fullDesktopCoverage: true`。只有两份采样都包含本次探测到的每台活动显示器且至少有一台时，覆盖字段才为 `true`。任一份只采集部分显示器或未探测到显示器时为 `false`。缺少旧报告的总数时，无法确定覆盖范围的情况返回 `null`。覆盖字段只表示采样范围，逐屏证据仍以对应的比较结果为准。
 
 `calibration verify <calibration-id>` 只读核对已确认的 SDR 校准。`calibration-id` 是已确认会话的 `sessionId`。命令将历史 `savedStatus` 与实时 `status` 分开报告。保存记录含持久显示身份时，命令用唯一匹配的当前路径进行核对。没有持久身份的旧记录继续要求原显示路径。
+
+如果本机正在执行其他显示操作，已确认校准的核对返回退出码 4 和 `preview_busy`。显示操作结束后，若还有可能已经写入的 Gamma 或 ICC 预览等待回滚，核对返回 `inconclusive` 和 `recovery_required`，`capturedAt` 为空。用 `recovery status` 查找未结束的会话。只留下 `prepared` 日志或只待补写本地绑定时，仍可核对当前显示状态。
 
 实时报告分别给出 `profileSelectionMatches`、`profileFileMatches` 和 `logicalCurveMatches`。`null` 表示该项缺少证据或不可比较。`matched` 需要三项均为 `true`，其中逻辑曲线使用与保存验证相同的读回容差。在本地独立 SDR 路径发现差异时报告 `changed`。证据不足时报告 `inconclusive`，通过 `reasonCode` 指明远程会话、显示器断开、身份不唯一或缺失的证据。远程匹配的 ICC 关联和文件摘要仍可单独报告。`windowsCalibrationLoaderEnabled` 是当前 Windows 加载器设置，`colorAccuracyVerified` 固定为 `false`。退出码 0 表示已生成实时报告，仍需读取 `status`。
 
@@ -120,11 +126,13 @@ dccwpp.exe calibration compare before.json after.json --json
 
 确认回执错误或超时后，`calibration confirm` 会核对会话日志。日志已记录 `confirmed` 时，返回该结果及当前 `bindingStatus`。需要再次检查本地记录时，使用同一会话 ID 查询或恢复。
 
+保存和撤回都在记录 `confirmed` 前核对 ICC 文件名、实际生效的作用域、Windows 选用的作用域及逻辑曲线。即使文件名和曲线相同，只要最终读回时作用域不匹配，也会尝试回滚并返回退出码 4。回滚完成时可报告 `profile_selection_changed`，用 `calibration status` 查看是否恢复完成或需要进一步恢复。[Windows 的作用域查询](https://learn.microsoft.com/windows/win32/api/icm/nf-icm-colorprofilegetdisplayuserscope)
+
 Windows 重新分配活动路径后，本地记录恢复按唯一的持久显示身份查找设备，并核对 Windows 配置设备、有效 ICC、选用作用域及文件摘要。撤回后的补写同样会核对恢复到的 ICC，再移除旧绑定。该步骤用已有确认记录中的曲线保存或清理本地数据。实际重新应用曲线由独立的显示恢复步骤执行并读回验证。登录时若遇到正在加载的显示配置或 ICC，后台最多追加两次短间隔检查。
 
 `startup status` 从当前 MSIX 包查询登录任务。未安装版返回 `unpackaged`，Windows 未报告任务时返回 `unavailable`。[Windows 包范围的 StartupTask 查询](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptask.getforcurrentpackageasync)
 
-`bindings restore --dry-run` 生成恢复报告。去掉 `--dry-run` 会先尝试恢复中断预览，再为已启用且符合条件的绑定写回已确认的绝对曲线。只有原目标可唯一识别、当前为独立 SDR 路径、已确认的用户 ICC 仍被选用且摘要一致、当前曲线匹配已知基线时才写入。报告通过 `reason` 和每屏 `status` 表示结果，退出码 0 表示已生成报告。Windows 登录任务使用同一路径。`startup last-restore` 返回后台最近一次报告及触发原因，尚无报告时为 `null`。
+`bindings restore --dry-run` 生成恢复报告。去掉 `--dry-run` 会先尝试恢复中断预览，再为已启用且符合条件的绑定写回已确认的绝对曲线。只有原目标可唯一识别、当前为独立 SDR 路径、已确认的用户 ICC 仍被选用且摘要一致、当前曲线匹配已知基线时才写入。最后一次读回若发现 ICC 或作用域变化，所选显示器报告 `skipped` 和 `profile_selection_changed`。报告通过 `reason` 和每屏 `status` 表示结果，退出码 0 表示已生成报告。Windows 登录任务使用同一路径。`startup last-restore` 返回后台最近一次报告及触发原因，尚无报告时为 `null`。
 
 后台定期只读检查活动路径、分辨率、桌面位置、刷新率和色彩模式。即使系统未发通知，检测到变化也会触发 `display_changed` 并重新核对绑定。路径查询短暂不可用后重新可读时，原布局也会重新检查。SDR 路径检测到 MHC2 时，预演和实际恢复都会报告 `mhc2_profile_blocked`。[Windows 显示路径与模式](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/relationship-of-mode-information-to-path-information)
 
@@ -156,11 +164,13 @@ dccwpp calibration undo <calibration-id> --seconds 30 --request-id <request-uuid
 
 `apply --dry-run` 与向导、CLI 的实际预览共用启动检查。检查未完成的显示事务、SDR 路径、逻辑曲线、默认 ICC 及作用域，并在内存中生成候选 ICC。`canPreview: true` 表示这些检查通过。驱动写入和 Windows 默认关联在实际操作后验证。HDR 或 MHC2 继续返回 `canApply: false` 与原因码。其他阻碍通过错误封装返回，例如 `recovery_required`、`profile_device_unavailable`、`profile_file_unavailable` 和 `icc_base_unsupported`。预演不占用请求 ID，也不生成磁盘 ICC。
 
+Gamma、ICC 和撤回预演都先检查显示操作是否忙碌，以及是否有待处理的预览日志。忙碌时原因码为 `preview_busy`，有未结束的预览时为 `recovery_required`。撤回预演通过 `canPreview: false` 和 `reasonCode` 报告，Gamma 和 ICC 预演通过退出码 4 和 `error.code` 报告。实际预览会重新检查。
+
 `calibration preview` 使用同一套检查。Gamma 范围为 1–3，默认 2.2。`--red-gain`、`--green-gain` 和 `--blue-gain` 范围为 0.5–1.5，默认 1。预演通过或因色彩模式被阻止时，`data` 含 `displayId`、`calibration`、`canPreview`、`reasonCode`、`timeoutSeconds` 和 `changesDisplay`。直接输入只在事务中暂存，在确认保存后可出现在预设库。
 
 **未带 `--dry-run` 的 `apply` 和 `calibration preview` 会实际写入所选 SDR 显示器的临时 Gamma 曲线。** 命令返回 `sessionId` 和固定的 `expiresAt`。CLI 时限为 10–60 秒，更新参数或切回原曲线都沿用同一时限。未在到期前进入保存流程的会话会尝试恢复原曲线。`confirm` 保存 ICC 并在 Windows 中选用，`revert` 取消尚未确认的预览，`recover` 尝试恢复中断会话。
 
-Gamma 工作进程会在读取显示状态和写入预览日志后再次核对期限。如果操作期间到期，随即尝试回退，并在回退成功时记录 `preview_expired`。若读回发现其他应用已替换配置，仍保留外部配置。
+Gamma 工作进程会在读取显示状态、写入预览日志后以及调用驱动前复核期限。首次预览若在任何写入获准前到期，日志以 `reverted` 和 `preview_expired` 结束，`curveReadbackVerified` 为 `false`。更新或确认跨过期限时，工作进程只按已获准的曲线写入判断能否回退。若其他应用写入了恰好与未获准更新相同的曲线，会保留外部曲线。如果驱动写入已开始，则在返回后到期时尝试回退。[Windows Gamma Ramp 文档](https://learn.microsoft.com/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp)
 
 `calibration update` 可通过数值选项调整当前普通预览，仅替换传入的参数。也可用 `--preset` 切换到已保存的预设。`--original` 查看原始曲线，`--adjusted` 查看当前候选曲线，单独使用只切换视图。成功响应中 `calibration` 是候选预设参数，`showingOriginal` 表示当前视图。若预览已经结束或在更新时进入回退，命令返回退出码 4，`error.code` 记录原因，例如 `preview_expired`。确认提交候选曲线。撤回已保存校准使用 `calibration undo`，它的候选曲线来自原校准备份。
 
@@ -176,9 +186,11 @@ Agent 可以在第一次实际预览前生成一个 UUID 并传入 `--request-id
 
 `recovery status` 列出尚未结束的曲线及 ICC 预览和待处理的本地绑定记录，`kind` 分别为 `calibration`、`profile` 和 `binding`。`recovery run` 尝试处理这些会话，也可在向导里点击恢复。处理 `binding` 记录只更新本机状态。`bindings restore` 和登录任务也会先处理这些记录，再按已启用的绑定恢复显示。命令返回完整报告，调用方可用 `reason` 判断是否为忙碌 `preview_busy`、仍需恢复 `recovery_required`、处理完毕 `recovery_finished` 或无待处理会话 `no_recovery_needed`。`recovery_finished` 表示检查结束，各条目的 `status` 和 `reasonCode` 记录结果。仍在运行的预览由原工作进程处理。
 
+中断时只留下 `prepared` 日志的预览尚未开始写入。恢复会结案为 `reverted`，原因是 `preview_not_applied`，并将 `curveReadbackVerified` 或 `associationVerified` 保持为 `false`。这一步只写入会话结果，显示器断开或处于远程桌面也可以完成。若最后的日志已记录 `applying`，则继续按可能发生过写入的事务检查和恢复。
+
 批量恢复和单会话恢复会持有被处理会话的工作锁，包括补写已确认的绑定。`observe` 可以等待正在进行的回退或补写结果。已有工作进程持有该会话时，恢复保留日志和当前显示状态并报告 `preview_busy`。对正在回退的 ICC 会话执行确认或取消时，命令等待该次回退的结果。
 
-GUI 在校准页编辑时使用心跳维持预览，单次会话最多 30 分钟。切到其他页面会暂停心跳，可使用该页面的取消入口。进入比较页后，原始与调整后视图共用最多 30 秒的确认倒计时，且受单次会话总时限约束。`showingOriginal` 记录比较视图选择。窗口进程退出会触发独立工作进程恢复。工作进程自身中断后，需要读取持久日志并恢复。显示器不匹配或不可用时保留待恢复状态。
+GUI 在校准页编辑时使用心跳维持预览，单次会话最多 30 分钟。切到其他页面会暂停心跳，可使用该页面的取消入口。进入比较页后，原始与调整后视图共用最多 30 秒的确认倒计时，且受单次会话总时限约束。`showingOriginal` 记录比较视图选择。对于由窗口拥有的 Gamma 或 ICC 预览，工作进程会在写入前核对进程 ID 与启动时间。窗口进程已退出时会结束预览并记录 `owner_exited`。已经开始写入时仍尝试回滚。CLI 发起的预览继续由工作进程按原期限处理，调用方退出后仍可用会话 ID 查询。工作进程自身中断后，需要读取持久日志并恢复。显示器不匹配或不可用时保留待恢复状态。
 
 向导切换到比较时，工作进程先在当前预览期限内应用尚未提交的控件值，成功读回后才进入比较倒计时。如果原预览先到期，则恢复原曲线。切换原始与调整后视图沿用当前比较期限。CLI 发起的预览继续使用最初设定的截止时间。
 
@@ -196,7 +208,7 @@ Windows 提供完整活动路径与桌面几何信息时，Gamma 和 ICC 预览�
 
 保存时会在设置默认关联前后比对新 ICC 的安装摘要。回滚会检查事务已记录的 ICC 摘要和将要恢复的系统默认关联。`profile_file_changed` 表示同名文件的内容有变化，`profile_file_unavailable` 表示无法读取，`previous_system_profile_changed` 表示原来的系统默认关联已更改。无法核对的回滚保留为 `recovery-pending`，可通过 `recovery status` 查看。旧中断日志仍使用其中已有的证据恢复。
 
-切换 ICC 后，保存或撤回只会从已记录的原曲线或线性曲线重新写入候选曲线。发现未知曲线会返回 `external_curve_change` 或 `undo_curve_changed`。回滚恢复原 ICC 与作用域时，如果切换前的曲线仍匹配事务、显示路径未变，而且切换后读到此前未记录的线性曲线，会先把它记为回滚起点，再恢复原曲线。发现无法确认归属的曲线时会停止曲线写入，并在日志记录 `superseded`。恢复完成仍以读回为准。
+切换 ICC 后，保存或撤回只会从已记录的原曲线或线性曲线重新写入候选曲线。发现未知曲线会返回 `external_curve_change` 或 `undo_curve_changed`。回滚时，如果验证了事务的 ICC 关联回退且原显示路径与拓扑始终一致，也可恢复在回滚开始前已重置为线性的曲线。如果曲线在 ICC 回退时才变为线性，则切换前必须能确认曲线归属，且切换过程中显示路径与拓扑要保持一致。写回前，日志会记录此前未登记的线性回滚起点。发现无法确认归属的曲线时会停止曲线写入，并在日志记录 `superseded`。恢复完成仍以读回为准。
 
 Gamma 参数的中性位置为 2.2，曲线按 `x^(2.2/gamma)` 和通道增益调整后，再与开始时捕获的曲线组合。这是视觉调整参数，不是对面板物理 Gamma 的测量。确认的绝对曲线保存在 ICC `vcgt` 中；再次恢复已确认曲线不能重复叠加预设。
 
@@ -220,6 +232,10 @@ dccwpp profiles recover <session-id> --json
 `profiles list` 中的 `profiles[].mhc2Present` 表示是否检测到 MHC2 标签。读不到标签目录或记录来自旧版本时可能缺少该字段。`canSelect` 表示文件满足结构检查，实际预览还会检查显示器、作用域和 MHC2。当前或候选 ICC 含 MHC2 时，`--dry-run` 给出 `canPreview: false` 和 `mhc2_profile_blocked`，实际预览在建立日志和写入默认关联前返回退出码 4。旧会话仍可核对原配置、候选文件摘要和目标后回滚。[Windows 硬件色彩校准加载器](https://learn.microsoft.com/en-us/windows/win32/wcs/display-calibration-mhc#enhanced-windows-display-calibration-loader)
 
 确认前会再次核对关联。若核对跨过截止时间，工作进程会尝试恢复原 ICC。回退成功时记录 `preview_expired`。`profiles confirm` 和 `profiles revert` 分别在日志为 `confirmed` 或 `reverted` 时返回成功，重复提交同一操作可读取同一结果。其他状态返回退出码 4 和记录的 `error.code`。若工作进程已经退出且日志仍处于进行状态，原因是 `recovery_required`。用 `profiles status` 或 `profiles observe` 查看完整会话。
+
+首次启动 ICC 预览时，工作进程在写入日志后和调用 Windows 切换配置前检查期限。写入前到期时保留当前 ICC，日志记录 `reverted` 和 `preview_expired`，且 `associationVerified` 为 `false`。如果写入已经开始，则在返回或读回后发现到期时尝试回滚。预览尚未就绪且事务以 `preview_expired` 结束时，首次调用返回退出码 4 和该原因码。已有会话日志时，CLI 的启动等待上限为启动阶段 10 秒、所请求的预览秒数以及回滚宽限 5 秒。尚无日志时仍以 10 秒为上限。
+
+Windows 写入前的状态核对失败时，ICC 预览会保留当前选用的配置，即使该配置恰好与预览候选相同。会话记录核对失败的原因，`associationVerified` 保持为 `false`。
 
 桌面布局改变会结束正在进行的 ICC 预览。新会话记录了可唯一识别的显示器时，恢复可在同一显示器、同一目标和源路径上继续，条件是当前仍为独立 SDR 且作用域一致。缺少该身份的旧日志仍要求原拓扑。回滚前核对当前候选 ICC 与将恢复的原 ICC 摘要。任务仍需处理时，`profiles recover` 返回退出码 4，`error.code` 提供原因，例如 `display_disconnected`、`recovery_target_changed` 或 `profile_file_changed`。状态查询仍提供 `recovery-pending` 及完整日志。检测到其他配置已被选中时，恢复以 `superseded` 结束。
 

@@ -49,7 +49,7 @@ public sealed class CalibrationCapture
 
         var report = new CalibrationCaptureReport(1, DateTimeOffset.UtcNow, Environment.OSVersion.Version.Build,
             RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant(), before.Topology, samples,
-            WindowsDisplayService.ComputeTopologyHash(before.Topology, displays), remote);
+            WindowsDisplayService.ComputeTopologyHash(before.Topology, displays), remote, displays.Length);
         return new(report, evidence);
     }
 

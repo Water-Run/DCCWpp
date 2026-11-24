@@ -60,12 +60,14 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
     private sealed class SelectedProfileBackend(IGammaCalibrationBackend backend, CalibrationBinding binding,
         Func<string, string> hashInstalledProfile) : IGammaCalibrationBackend
     {
+        private readonly GammaProfileSelection _selection = new(binding.ProfileName, "current-user", "current-user");
+
         public GammaDeviceState Read(string displayId) => backend.Read(displayId);
 
         public void VerifyProfile(GammaDeviceState state)
         {
-            if (state.ProfileScope != "current-user" || !ProfilePreviewPolicy.EqualName(state.ProfileName, binding.ProfileName))
-                throw new ProfilePreviewException("profile_selection_changed", "The confirmed profile is no longer selected for this user.");
+            if (!_selection.Matches(state))
+                throw new ProfilePreviewException("profile_selection_changed", new LocalizationService()["RestoreProfileChanged"]);
             string hash;
             try { hash = hashInstalledProfile(binding.ProfileName); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
@@ -76,17 +78,17 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
                 throw new ProfilePreviewException("profile_file_changed", "The confirmed profile file has changed.");
         }
 
-        public void Write(GammaDeviceState expected, GammaRamp ramp)
+        public bool TryWrite(GammaDeviceState expected, GammaRamp ramp, Func<bool>? canWrite = null)
         {
             // Rollback must remain possible if the selected file disappeared after the write.
             if (ramp.Matches(binding.Ramp)) VerifyProfile(expected);
-            backend.Write(expected, ramp);
+            return backend.TryWrite(expected, ramp, canWrite);
         }
 
-        public string Commit(GammaCalibrationSession session)
+        public GammaProfileSelection Commit(GammaCalibrationSession session)
         {
             VerifyProfile(backend.Read(session.Original.DisplayId));
-            return binding.ProfileName;
+            return _selection;
         }
 
         public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected) => false;

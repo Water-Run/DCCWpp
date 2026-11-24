@@ -1,5 +1,6 @@
 using System.Security.Principal;
 using DccwPlus.Core.Calibration;
+using DccwPlus.Core.Localization;
 
 namespace DccwPlus.Windows;
 
@@ -8,7 +9,7 @@ namespace DccwPlus.Windows;
 internal sealed class DisplayMutationLock(Mutex mutex) : IDisposable
 {
     public static DisplayMutationLock Acquire() => TryAcquire()
-        ?? throw new ProfilePreviewException("preview_busy", "Another display operation is running.");
+        ?? throw new ProfilePreviewException("preview_busy", new LocalizationService()["DisplayOperationBusy"]);
 
     public static DisplayMutationLock? TryAcquire()
     {

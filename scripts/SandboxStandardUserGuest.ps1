@@ -174,6 +174,14 @@ public static class SandboxIccProfile {
             }
             $result.captureComparisonStatus = $comparison.status
             $result.captureComparisonDisplays = $comparison.displays.Count
+            if ($capture.PSObject.Properties['activeDisplayCount']) {
+                if ($capture.activeDisplayCount -ne $capture.displays.Count -or
+                    $comparison.fullDesktopCoverage -ne ($capture.activeDisplayCount -gt 0)) {
+                    throw 'The packaged CLI did not report coverage for the full desktop capture.'
+                }
+                $result.captureActiveDisplayCount = $capture.activeDisplayCount
+                $result.captureFullDesktopCoverage = $comparison.fullDesktopCoverage
+            }
         }
 
         $result.step = 'startup_status'

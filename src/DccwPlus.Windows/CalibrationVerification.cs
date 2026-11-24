@@ -22,6 +22,7 @@ public sealed record CalibrationVerificationReport(Guid CalibrationId, string Sa
 public sealed class CalibrationVerification
 {
     private readonly GammaCalibrationStore _sessions;
+    private readonly PreviewRecoveryService _recovery;
     private readonly Func<CalibrationCaptureEvidence> _capture;
     private readonly Func<GammaCalibrationSession, string?> _readSavedHash;
     private readonly Func<bool?> _readLoader;
@@ -33,6 +34,7 @@ public sealed class CalibrationVerification
         Func<GammaCalibrationSession, string?> readSavedHash, Func<bool?> readLoader)
     {
         _sessions = new(root);
+        _recovery = new(root);
         _capture = capture;
         _readSavedHash = readSavedHash;
         _readLoader = readLoader;
@@ -40,22 +42,26 @@ public sealed class CalibrationVerification
 
     public CalibrationVerificationReport Read(Guid id)
     {
+        var session = _sessions.Load(id);
+        if (session.Status != "confirmed" || session.IsBindingRestore || session.UndoOf is not null || session.InstalledProfile is null)
+            return Inconclusive(session, "calibration_not_confirmed");
+
         using var gate = DisplayMutationLock.Acquire();
-        return Evaluate(_sessions.Load(id));
+        // A stopped worker can leave a temporary curve or ICC selected after its lock is released.
+        if (_recovery.List().Any(item => item.Kind != "binding" && item.Status != "prepared"))
+            return Inconclusive(session, "recovery_required");
+        return Evaluate(session);
     }
 
     internal CalibrationVerificationReport Evaluate(GammaCalibrationSession session)
     {
-        var report = new CalibrationVerificationReport(session.Id, session.Status, "inconclusive", "calibration_not_confirmed")
-        {
-            SavedProfile = session.InstalledProfile
-        };
-        if (session.Status != "confirmed" || session.IsBindingRestore || session.UndoOf is not null || session.InstalledProfile is null)
-            return report;
-
         var capture = _capture();
-        report = report with { CapturedAt = capture.Report.CapturedAt, IsRemoteSession = capture.Report.IsRemoteSession,
-            WindowsCalibrationLoaderEnabled = _readLoader() };
+        var report = Inconclusive(session, "display_disconnected") with
+        {
+            CapturedAt = capture.Report.CapturedAt,
+            IsRemoteSession = capture.Report.IsRemoteSession,
+            WindowsCalibrationLoaderEnabled = _readLoader()
+        };
 
         var matches = capture.Displays.Where(item => MonitorIdentity.MatchesSavedDisplay(session.Original, item.Display)).ToArray();
         if (matches.Length != 1)
@@ -90,6 +96,9 @@ public sealed class CalibrationVerification
         return report.LogicalCurveMatches == true ? report with { Status = "matched", ReasonCode = "calibration_matches" }
             : report with { ReasonCode = sample.CurveStatus };
     }
+
+    private static CalibrationVerificationReport Inconclusive(GammaCalibrationSession session, string reason) =>
+        new(session.Id, session.Status, "inconclusive", reason) { SavedProfile = session.InstalledProfile };
 
     private string? ReadSavedHash(GammaCalibrationSession session)
     {

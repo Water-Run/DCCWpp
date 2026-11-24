@@ -275,7 +275,12 @@ public sealed partial class CalibrationWorkspace : UserControl
             var plan = backend.PlanUndo(saved.Id);
             if (!plan.CanPreview || plan.DisplayId != display.Id)
             {
-                Show("UndoUnavailable", InfoBarSeverity.Warning);
+                Show(plan.ReasonCode switch
+                {
+                    "preview_busy" => "DisplayOperationBusy",
+                    "recovery_required" => "RecoveryMessage",
+                    _ => "UndoUnavailable"
+                }, InfoBarSeverity.Warning);
                 return;
             }
             if (!DisplayWindowPlacement.MoveToDisplay(_window, current.DeviceName))
@@ -751,12 +756,17 @@ public sealed partial class CalibrationWorkspace : UserControl
         }
         string key = HasPendingPreviewRecovery ? "RecoveryMessage" : _session.Status switch
         {
-            "reverted" when _session.ReasonCode == "preview_expired" => "PreviewExpiredRestored",
+            "reverted" when _session.ReasonCode == "preview_expired" => _session.CurveReadbackVerified
+                ? "PreviewExpiredRestored" : "PreviewExpiredBeforeWrite",
+            "reverted" when _session.ReasonCode == "preview_not_applied" => "PreviewEndedBeforeWrite",
+            "reverted" when _session.ReasonCode == "owner_exited" && !_session.CurveReadbackVerified => "PreviewEndedBeforeWrite",
+            "reverted" when _session.ReasonCode == "profile_selection_changed" => "ProfileChangedBeforeSave",
             "reverted" => "CalibrationReverted",
             "superseded" => "CalibrationSuperseded",
             _ => "PreviewActive"
         };
-        Show(key, _session.NeedsRecovery && !Active ? InfoBarSeverity.Warning : InfoBarSeverity.Informational);
+        Show(key, (_session.NeedsRecovery && !Active) || key == "ProfileChangedBeforeSave"
+            ? InfoBarSeverity.Warning : InfoBarSeverity.Informational);
     }
     private void ShowConfirmedOutcome(GammaCalibrationSession session)
     {
@@ -799,7 +809,9 @@ public sealed partial class CalibrationWorkspace : UserControl
                 "icc_base_unsupported" => "IccBaseUnsupported",
                 "curve_read_failed" => "CurveReadUnavailable",
                 "curve_candidate_invalid" => "CurveCandidateInvalid",
-                "external_profile_change" => "ProfileChangedBeforeSave",
+                "owner_exited" => "PreviewOwnerExited",
+                "preview_busy" => "DisplayOperationBusy",
+                "external_profile_change" or "profile_selection_changed" => "ProfileChangedBeforeSave",
                 "recovery_required" => "RecoveryMessage",
                 _ => null
             };

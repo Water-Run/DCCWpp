@@ -92,8 +92,13 @@ public sealed class CalibrationCaptureTests
 
         var first = capture.Read(display.Id);
         Assert.Matches("^[0-9A-F]{64}$", first.TopologySha256!);
+        Assert.Equal(2, first.ActiveDisplayCount);
+        Assert.Single(first.Displays);
         probe = new("extend", [display, secondary with { ProfileName = "other.icc" }]);
-        Assert.Equal(first.TopologySha256, capture.Read().TopologySha256);
+        var wholeDesktop = capture.Read();
+        Assert.Equal(first.TopologySha256, wholeDesktop.TopologySha256);
+        Assert.Equal(2, wholeDesktop.ActiveDisplayCount);
+        Assert.Equal(2, wholeDesktop.Displays.Count);
         probe = new("extend", [display, secondary with { PositionX = 1920 }]);
         Assert.NotEqual(first.TopologySha256, capture.Read(display.Id).TopologySha256);
         probe = new("extend", [display, secondary with { RefreshMillihertz = 120_000 }]);

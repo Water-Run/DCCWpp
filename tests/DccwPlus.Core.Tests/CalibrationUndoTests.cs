@@ -31,19 +31,42 @@ public sealed class CalibrationUndoTests
     }
 
     [Theory]
-    [InlineData("factory.icc")]
-    [InlineData(null)]
-    public void ConfirmVerifiesThePreviousProfileAndCanRestoreNoExplicitDefault(string? previous)
+    [InlineData("factory.icc", "system-wide")]
+    [InlineData("factory.icc", "current-user")]
+    [InlineData(null, "system-wide")]
+    [InlineData(null, "current-user")]
+    public void ConfirmVerifiesThePreviousProfileAndCanRestoreNoExplicitDefault(string? previous, string selectedScope)
     {
-        var fixture = new Fixture(previous);
+        var fixture = new Fixture(previous, selectedScope: selectedScope);
         fixture.Begin();
         var result = fixture.Engine.Confirm();
         Assert.Equal("confirmed", result.Status);
         Assert.Equal(fixture.Saved.Id, result.UndoOf);
         Assert.Equal(previous, result.InstalledProfile);
         Assert.Equal(previous, fixture.Backend.Current.ProfileName);
+        Assert.Equal(previous is null ? null : "system-wide", fixture.Backend.Current.ProfileScope);
+        Assert.Equal(selectedScope, fixture.Backend.Current.SelectedProfileScope);
         Assert.True(fixture.Backend.Current.Ramp.Matches(fixture.Saved.Original.Ramp));
         Assert.Equal(1, fixture.Backend.ProfileWrites);
+    }
+
+    [Theory]
+    [InlineData("factory.icc")]
+    [InlineData(null)]
+    public void UndoCannotConfirmAfterTheSelectedScopeChanges(string? previous)
+    {
+        var fixture = new Fixture(previous);
+        fixture.Begin();
+        fixture.Backend.AfterCommit = () => fixture.Backend.Current = fixture.Backend.Current with { SelectedProfileScope = "current-user" };
+
+        var error = Assert.Throws<ProfilePreviewException>(() => fixture.Engine.Confirm());
+
+        Assert.Equal("profile_selection_changed", error.Code);
+        Assert.Equal("reverted", fixture.Engine.Session!.Status);
+        Assert.Equal(error.Code, fixture.Engine.Session.ReasonCode);
+        Assert.False(fixture.Engine.Session.NeedsBindingCompletion);
+        Assert.Equal(fixture.Saved.InstalledProfile, fixture.Backend.Current.ProfileName);
+        Assert.True(fixture.Backend.Current.Ramp.Matches(fixture.Saved.Candidate));
     }
 
     [Fact]
@@ -122,10 +145,11 @@ public sealed class CalibrationUndoTests
         public GammaCalibrationSession Saved { get; }
         public Backend Backend { get; }
         public GammaCalibrationTransaction Engine { get; }
-        public Fixture(string? previous = "factory.icc", string? identity = null)
+        public Fixture(string? previous = "factory.icc", string? identity = null, string selectedScope = "system-wide")
         {
             var state = new GammaDeviceState("0123456789abcdef", "display", "target", new string('A', 64), true, false,
-                GammaRampMath.Compose(GammaRamp.Identity(), new() { Gamma = 2.1 }), previous, previous is null ? null : "system-wide", 1, identity);
+                GammaRampMath.Compose(GammaRamp.Identity(), new() { Gamma = 2.1 }), previous, previous is null ? null : "system-wide",
+                1, identity, SelectedProfileScope: selectedScope);
             var preset = CalibrationPreset.Create("Saved", new() { RedGain = .8 });
             var adjusted = GammaRampMath.Compose(state.Ramp, preset.Calibration);
             Saved = new()
@@ -160,23 +184,32 @@ public sealed class CalibrationUndoTests
     {
         public GammaDeviceState Current { get; set; } = saved.Original with
         {
-            ProfileName = saved.InstalledProfile, ProfileScope = "current-user", Ramp = saved.Candidate.Copy()
+            ProfileName = saved.InstalledProfile, ProfileScope = "current-user", SelectedProfileScope = "current-user", Ramp = saved.Candidate.Copy()
         };
         public int ProfileWrites { get; private set; }
         public bool FailAfterChangingProfile { get; set; }
+        public Action? AfterCommit { get; set; }
         public GammaDeviceState Read(string displayId) => Current with { Ramp = Current.Ramp.Copy() };
-        public void Write(GammaDeviceState expected, GammaRamp ramp) => Current = Current with { Ramp = ramp.Copy() };
-        public string? Commit(GammaCalibrationSession session)
+        public bool TryWrite(GammaDeviceState expected, GammaRamp ramp, Func<bool>? canWrite = null)
         {
-            Current = Current with { ProfileName = saved.Original.ProfileName, ProfileScope = saved.Original.ProfileScope };
+            if (canWrite?.Invoke() == false) return false;
+            Current = Current with { Ramp = ramp.Copy() };
+            return true;
+        }
+        public GammaProfileSelection Commit(GammaCalibrationSession session)
+        {
+            Current = Current with { ProfileName = saved.Original.ProfileName, ProfileScope = saved.Original.ProfileScope,
+                SelectedProfileScope = saved.Original.SelectedProfileScope };
             ProfileWrites++;
             if (FailAfterChangingProfile) throw new IOException("Simulated fault after the ICC switch.");
-            return Current.ProfileName;
+            AfterCommit?.Invoke();
+            return new(saved.Original.ProfileName, saved.Original.ProfileScope, saved.Original.SelectedProfileScope);
         }
         public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected)
         {
             bool changed = !GammaCalibrationTransaction.SameProfile(session.Original, Current);
-            Current = Current with { ProfileName = session.Original.ProfileName, ProfileScope = session.Original.ProfileScope };
+            Current = Current with { ProfileName = session.Original.ProfileName, ProfileScope = session.Original.ProfileScope,
+                SelectedProfileScope = session.Original.SelectedProfileScope };
             ProfileWrites++;
             return changed;
         }

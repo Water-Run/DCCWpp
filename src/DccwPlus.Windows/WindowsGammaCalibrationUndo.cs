@@ -14,6 +14,9 @@ public sealed partial class WindowsGammaCalibrationBackend
         string reason;
         try
         {
+            CalibrationUndoPolicy.VerifySource(saved);
+            using var gate = DisplayMutationLock.Acquire();
+            _recovery.RequireNoInterruptedPreview();
             displayId = CheckUndo(saved, saved.Candidate).Current.DisplayId;
             reason = "undo_ready";
         }
@@ -69,7 +72,7 @@ public sealed partial class WindowsGammaCalibrationBackend
         return (target, backup with { TargetKey = target.TargetKey, SourceId = target.SourceId.Value });
     }
 
-    private string? CommitUndo(GammaCalibrationSession undo, Guid calibrationId)
+    private GammaProfileSelection CommitUndo(GammaCalibrationSession undo, Guid calibrationId)
     {
         var saved = _store.Load(calibrationId);
         if (!undo.Candidate.Matches(saved.Original.Ramp))
@@ -80,12 +83,12 @@ public sealed partial class WindowsGammaCalibrationBackend
             throw new ProfilePreviewException("display_state_changed", "The display changed during the undo preview.");
         RestoreSavedAssociation(undo.Original, backup, current, saved.Original.ProfileName, undo.Id);
 
+        var selection = new GammaProfileSelection(saved.Original.ProfileName, saved.Original.ProfileScope, ScopeName(backup.Scope));
         var restored = Read(undo.Original.DisplayId);
-        if (!GammaCalibrationTransaction.SameTarget(undo.Original, restored)
-            || !GammaCalibrationTransaction.SameProfile(saved.Original, restored))
+        if (!GammaCalibrationTransaction.SameTarget(undo.Original, restored) || !selection.Matches(restored))
             throw new ProfilePreviewException("undo_profile_not_verified", "Windows did not report the previous profile and scope.");
-        if (NeedsCurveWriteAfterAssociation(undo, restored.Ramp, "undo_curve_changed")) Write(restored, undo.Candidate);
-        return restored.ProfileName;
+        if (NeedsCurveWriteAfterAssociation(undo, restored.Ramp, "undo_curve_changed")) TryWrite(restored, undo.Candidate);
+        return selection;
     }
 
     private bool RestoreUndoProfile(GammaCalibrationSession undo, Guid calibrationId, GammaDeviceState expected, GammaDeviceState current)

@@ -7,7 +7,7 @@ using Luid = DccwPlus.Windows.WindowsColorProfileQuery.Luid;
 
 namespace DccwPlus.Windows;
 
-// Deliberately separate from the read-only display probe. Only the preview worker calls SetDefault.
+// Deliberately separate from the read-only display probe. Writes are owned by the preview and recovery workflows.
 public sealed class WindowsProfileAssociationBackend : IProfileAssociationBackend
 {
     public ProfileAssociationState Read(string displayId)
@@ -48,7 +48,7 @@ public sealed class WindowsProfileAssociationBackend : IProfileAssociationBacken
             ProfileDeviceSha256: WindowsDisplayService.HashProfileDeviceKey(display.ProfileDeviceKey));
     }
 
-    public void SetDefault(ProfileAssociationState expected, string profile, string sha256)
+    public bool TrySetDefault(ProfileAssociationState expected, string profile, string sha256, Func<bool>? canWrite = null)
     {
         WindowsDisplaySession.RequireLocal();
         IccProfileInspector.ValidateFileName(profile);
@@ -60,8 +60,10 @@ public sealed class WindowsProfileAssociationBackend : IProfileAssociationBacken
         if (current is null || ProfilePreviewPolicy.ValidProfile(now, now.CurrentProfile)?.Sha256 != current.Sha256
             || ProfilePreviewPolicy.ValidProfile(now, profile)?.Sha256 != sha256)
             throw new ProfilePreviewException("profile_file_changed", "The associated profile is missing, invalid, or has changed.");
-        Check(ColorProfileSetDisplayDefaultAssociation(CurrentUser, profile, Icc, StandardDisplay,
-            Adapter(now.TargetKey), now.SourceId), "profile_write_failed");
+        var adapter = Adapter(now.TargetKey);
+        if (canWrite?.Invoke() == false) return false;
+        Check(ColorProfileSetDisplayDefaultAssociation(CurrentUser, profile, Icc, StandardDisplay, adapter, now.SourceId), "profile_write_failed");
+        return true;
     }
 
     private static AssociatedProfile Inspect(string fileName)

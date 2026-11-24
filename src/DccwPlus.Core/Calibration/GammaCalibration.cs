@@ -1,3 +1,4 @@
+using DccwPlus.Core.Localization;
 using DccwPlus.Core.Presets;
 using System.Text.Json.Serialization;
 
@@ -9,6 +10,12 @@ public sealed record GammaDeviceState(string DisplayId, string DeviceName, strin
     bool? ProfileMhc2Present = null, string? SelectedProfileScope = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ActiveTopologySha256 = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProfileDeviceSha256 = null);
+
+public sealed record GammaProfileSelection(string? ProfileName, string? ProfileScope, string? SelectedProfileScope)
+{
+    public bool Matches(GammaDeviceState state) => ProfilePreviewPolicy.EqualName(ProfileName, state.ProfileName)
+        && ProfileScope == state.ProfileScope && SelectedProfileScope == state.SelectedProfileScope;
+}
 
 public sealed record BindingSaveIntent(string? PreviousProfileName);
 public sealed record GammaCalibrationSession
@@ -46,15 +53,17 @@ public interface IGammaCalibrationBackend
     GammaDeviceState Read(string displayId);
     // Interrupted recovery may resolve a unique current path for the original display and profile device.
     GammaDeviceState ReadRecoveryTarget(GammaDeviceState original) => Read(original.DisplayId);
-    void Write(GammaDeviceState expected, GammaRamp ramp);
-    string? Commit(GammaCalibrationSession session);
-    // Returns true when the effective selection needed restoring and the pre-restore state still matched expected.
+    // Evaluate canWrite after validation, immediately before the native write. False means no write was attempted.
+    bool TryWrite(GammaDeviceState expected, GammaRamp ramp, Func<bool>? canWrite = null);
+    // Return the intended ICC selection for the transaction's final readback.
+    GammaProfileSelection Commit(GammaCalibrationSession session);
+    // Returns true for a verified reversal of the session's ICC selection from the expected pre-restore state.
     bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected);
 }
 public interface IGammaCalibrationJournal { void Save(GammaCalibrationSession session); }
 
 public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend, IGammaCalibrationJournal journal,
-    TimeProvider? timeProvider = null)
+    TimeProvider? timeProvider = null, Func<bool>? isOwnerAlive = null)
 {
     public const int ReadbackTolerance = 257;
     public static TimeSpan WindowPreviewLimit { get; } = TimeSpan.FromMinutes(30);
@@ -107,7 +116,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         if (Session is null) throw new InvalidOperationException("No calibration preview exists.");
         if (Session.Status != "previewing") return Session;
         if (!ownerAlive) return Revert("owner_exited");
-        if (RevertIfExpired()) return Session;
+        if (RevertIfStopped()) return Session;
         try
         {
             var now = backend.Read(Session.Original.DisplayId);
@@ -116,7 +125,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
             if (!now.Ramp.Matches(Session.LastWritten, ReadbackTolerance)) return Revert("external_curve_change");
         }
         catch { return Revert("display_unavailable"); }
-        RevertIfExpired();
+        RevertIfStopped();
         return Session;
     }
     public void Renew()
@@ -126,9 +135,11 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
     }
     private void RestartDeadline(TimeSpan duration, bool? reviewing = null)
     {
-        long now = _time.GetTimestamp();
-        DateTimeOffset utcNow = _time.GetUtcNow();
-        if (RevertIfExpired(now, utcNow)) return;
+        if (StopReason(out long now, out DateTimeOffset utcNow) is { } reason)
+        {
+            Revert(reason);
+            return;
+        }
         TimeSpan remaining = WindowPreviewLimit - _time.GetElapsedTime(_sessionStart, now);
         TimeSpan effectiveDuration = duration < remaining ? duration : remaining;
         DateTimeOffset expiresAt = utcNow + effectiveDuration;
@@ -138,7 +149,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         _deadlineStart = now;
         _deadlineDuration = effectiveDuration;
         Session = next;
-        RevertIfExpired();
+        RevertIfStopped();
     }
     public void SetReviewMode(bool reviewing, CalibrationPreset? edits = null)
     {
@@ -158,19 +169,25 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         try
         {
             Apply(Session.Candidate);
-            if (Session.Status != "previewing" || RevertIfExpired()) return Session;
+            if (Session.Status != "previewing" || RevertIfStopped()) return Session;
             Session = Session! with { ProfileCommitStarted = true, ShowingOriginal = false, BindingIntent = bindingIntent };
             Persist("committing", "saving_profile");
-            if (RevertIfExpired()) return Session;
-            string? installed = backend.Commit(Session!);
-            Session = Session! with { InstalledProfile = installed };
+            if (StopReason() is { } stopped)
+            {
+                Session = Session with { ProfileCommitStarted = false, BindingIntent = null };
+                return Revert(stopped);
+            }
+            var selection = backend.Commit(Session!);
+            Session = Session! with { InstalledProfile = selection.ProfileName };
             var current = backend.Read(Session.Original.DisplayId);
-            if (!SameTarget(Session.Original, current) || !ProfilePreviewPolicy.EqualName(current.ProfileName, installed)
-                || !current.Ramp.Matches(Session.Candidate, ReadbackTolerance))
+            if (!SameTarget(Session.Original, current) || !current.Ramp.Matches(Session.Candidate, ReadbackTolerance))
                 throw new IOException("Calibration curve changed while saving the profile.");
+            if (!selection.Matches(current))
+                throw new ProfilePreviewException("profile_selection_changed", new LocalizationService()["ProfileChangedBeforeSave"]);
             if (!Session.IsBindingRestore) Session = Session with { BindingStatus = "pending" };
             Persist("confirmed", "confirmed", true);
         }
+        catch (ProfilePreviewException ex) when (ex.Code == "profile_selection_changed") { Revert(ex.Code); throw; }
         catch { Revert("commit_failed"); throw; }
         return Session!;
     }
@@ -180,6 +197,12 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
     {
         if (Session is null) throw new InvalidOperationException("No calibration preview exists.");
         if (!Session.NeedsRecovery) return Session;
+        // The applying journal must exist before any curve write can begin.
+        if (Session.Status == "prepared")
+        {
+            Persist("reverted", reason is "preview_expired" or "owner_exited" ? reason : "preview_not_applied");
+            return Session;
+        }
         try
         {
             try { Persist("recovering", reason); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
@@ -204,11 +227,14 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
             if (!SameProfile(Session.Original, current)) return Pending("profile_restore_not_verified");
             if (!current.Ramp.Matches(Session.Original.Ramp, ReadbackTolerance))
             {
-                if (!ownsCurve) return Superseded("external_curve_change");
+                var linear = selectionRestored && SameTarget(beforeProfileRestore, current) ? GammaRamp.Identity() : null;
+                // The original ICC switch may already have reset the curve before rollback began.
+                bool resetBeforeRestore = linear?.Matches(beforeProfileRestore.Ramp, ReadbackTolerance) == true
+                    && SameTarget(original, beforeProfileRestore);
+                if (!ownsCurve && !resetBeforeRestore) return Superseded("external_curve_change");
                 if (!IsKnownCurve(Session, current.Ramp))
                 {
-                    if (!selectionRestored || !SameTarget(beforeProfileRestore, current)
-                        || !current.Ramp.Matches(GammaRamp.Identity(), ReadbackTolerance))
+                    if (linear?.Matches(current.Ramp, ReadbackTolerance) != true)
                         return Superseded("external_curve_change");
 
                     // Keep the observed reset as a known starting point if the rollback write is interrupted.
@@ -216,7 +242,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
                     journal.Save(intent);
                     Session = intent;
                 }
-                backend.Write(current, Session.Original.Ramp);
+                backend.TryWrite(current, Session.Original.Ramp);
             }
             var restored = backend.Read(target.DisplayId);
             if (!SameRecoveryTarget(target, restored) || !SameProfile(Session.Original, restored)
@@ -237,31 +263,67 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         if (Session is not null) throw new InvalidOperationException("This transaction already has a session.");
         Session = saved; return saved.NeedsRecovery ? Revert("interrupted_preview", interrupted: true) : saved;
     }
-    private bool RevertIfExpired() => RevertIfExpired(_time.GetTimestamp(), _time.GetUtcNow());
-    private bool RevertIfExpired(long now, DateTimeOffset utcNow)
+    private bool RevertIfStopped()
     {
-        if (_time.GetElapsedTime(_deadlineStart, now) < _deadlineDuration && utcNow < Session!.ExpiresAt) return false;
-        Revert("preview_expired");
+        if (StopReason() is not { } reason) return false;
+        Revert(reason);
         return true;
+    }
+    private string? StopReason() => StopReason(out _, out _);
+    private string? StopReason(out long now, out DateTimeOffset utcNow)
+    {
+        bool ownerExited = isOwnerAlive?.Invoke() == false;
+        now = _time.GetTimestamp();
+        utcNow = _time.GetUtcNow();
+        if (ownerExited) return "owner_exited";
+        return _time.GetElapsedTime(_deadlineStart, now) >= _deadlineDuration || utcNow >= Session!.ExpiresAt ? "preview_expired" : null;
     }
     private void Apply(GammaRamp ramp)
     {
-        var current = backend.Read(Session!.Original.DisplayId);
+        var previous = Session!;
+        var current = backend.Read(previous.Original.DisplayId);
         EnsureSupported(current);
-        if (!SameTarget(Session.Original, current) || !SameProfile(Session.Original, current) || !current.Ramp.Matches(Session.LastWritten, ReadbackTolerance))
+        if (!SameTarget(previous.Original, current) || !SameProfile(previous.Original, current) || !current.Ramp.Matches(previous.LastWritten, ReadbackTolerance))
             throw new ProfilePreviewException("display_state_changed", "Display state changed during calibration.");
+        if (RevertIfStopped()) return;
         // Persist the intended write before issuing it, including on partial native failure.
-        Session = Session with { BeforeWrite = current.Ramp.Copy(), LastWritten = ramp.Copy() };
-        Persist("applying", "applying");
-        if (RevertIfExpired()) return;
-        backend.Write(current, ramp);
+        bool writeAuthorized = false;
+        string? refusal = null;
+        bool written;
+        try
+        {
+            Session = previous with { BeforeWrite = current.Ramp.Copy(), LastWritten = ramp.Copy() };
+            Persist("applying", "applying");
+            refusal = StopReason();
+            written = refusal is null && backend.TryWrite(current, ramp, AuthorizeWrite);
+        }
+        catch
+        {
+            if (!writeAuthorized) Session = previous;
+            throw;
+        }
+        if (!written)
+        {
+            // The current process knows the request did not reach the driver. Only the previous preview can need rollback.
+            Session = previous;
+            Revert(refusal ?? "preview_not_applied");
+            return;
+        }
+        if (RevertIfStopped()) return;
         var applied = backend.Read(current.DisplayId);
         if (!SameTarget(Session.Original, applied) || !SameProfile(Session.Original, applied) || !applied.Ramp.Matches(ramp, ReadbackTolerance))
             throw new ProfilePreviewException("curve_not_verified", "The display driver did not report the requested curve.");
-        if (RevertIfExpired()) return;
+        if (RevertIfStopped()) return;
         Session = Session with { BeforeWrite = null };
         Persist("previewing", "previewing", true);
-        RevertIfExpired();
+        RevertIfStopped();
+
+        bool AuthorizeWrite()
+        {
+            refusal = StopReason();
+            writeAuthorized = refusal is null;
+            return writeAuthorized;
+        }
     }
     public static bool SameTarget(GammaDeviceState before, GammaDeviceState now) =>
         SamePath(before, now)

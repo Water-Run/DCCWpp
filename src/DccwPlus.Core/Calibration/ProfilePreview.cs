@@ -20,8 +20,9 @@ public interface IProfileAssociationBackend
     ProfileAssociationState Read(string displayId);
     // Interrupted recovery may resolve a unique current path for the original display and profile device.
     ProfileAssociationState ReadRecoveryTarget(ProfileAssociationState original) => Read(original.DisplayId);
-    // Implementations must recheck the expected state immediately before writing.
-    void SetDefault(ProfileAssociationState expected, string profile, string sha256);
+    // Recheck the expected state, then evaluate canWrite immediately before the native call.
+    // A false return guarantees no write was attempted. Recovery does not supply this guard.
+    bool TrySetDefault(ProfileAssociationState expected, string profile, string sha256, Func<bool>? canWrite = null);
 }
 
 public sealed class ProfilePreviewException(string code, string message) : Exception(message)
@@ -102,7 +103,7 @@ public interface IProfilePreviewJournal { void Save(ProfilePreviewSession sessio
 
 // Only the independent worker owns this synchronous state machine and its native writes.
 public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend, IProfilePreviewJournal journal,
-    TimeProvider? clock = null)
+    TimeProvider? clock = null, Func<bool>? isOwnerAlive = null)
 {
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private long _started;
@@ -122,17 +123,43 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
         Session = new() { Id = id, Original = plan.State, CandidateProfile = candidate,
             CandidateSha256 = plan.CandidateSha256!, ExpiresAt = _clock.GetUtcNow() + _duration };
         journal.Save(Session); // Durable recovery information must precede every write.
+        bool writeAuthorized = false;
+        string? refusal = null;
         try
         {
+            if (StopReason() is { } notStarted) return FinishWithoutWrite(notStarted);
             Persist("applying", "applying");
-            backend.SetDefault(plan.State, candidate, plan.CandidateSha256!);
+            refusal = StopReason();
+            if (refusal is not null || !backend.TrySetDefault(plan.State, candidate, plan.CandidateSha256!, AuthorizeWrite))
+                return FinishWithoutWrite(refusal ?? "preview_not_applied");
+            if (StopReason() is { } afterWrite) return Revert(afterWrite);
             if (!CandidateIsCurrent(backend.Read(displayId)))
                 throw new ProfilePreviewException("association_not_verified", "Windows did not report the requested default association.");
+            if (StopReason() is { } afterRead) return Revert(afterRead);
             Persist("previewing", "previewing", true);
-            // Also covers a slow native call that consumed the entire timeout.
             return Tick();
         }
-        catch (Exception) { Revert("apply_failed"); throw; }
+        catch (Exception ex)
+        {
+            if (writeAuthorized) Revert("apply_failed");
+            else if (Session.NeedsRecovery) FinishWithoutWrite(ex is ProfilePreviewException failure ? failure.Code : "apply_failed");
+            throw;
+        }
+
+        bool AuthorizeWrite()
+        {
+            refusal = StopReason();
+            writeAuthorized = refusal is null;
+            return writeAuthorized;
+        }
+    }
+
+    private ProfilePreviewSession FinishWithoutWrite(string reason)
+    {
+        // No association write was attempted. A journal failure must not trigger a rollback.
+        Session = Session! with { Status = "reverted", ReasonCode = reason, AssociationVerified = false };
+        journal.Save(Session);
+        return Session;
     }
 
     public ProfilePreviewSession Tick(bool ownerAlive = true)
@@ -140,13 +167,13 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
         RequireSession();
         if (Session!.Status != "previewing") return Session;
         if (!ownerAlive) return Revert("owner_exited");
-        if (Expired()) return Revert("preview_expired");
+        if (StopReason() is { } stopped) return Revert(stopped);
         try
         {
             if (!CandidateIsCurrent(backend.Read(Session.Original.DisplayId))) return Revert("display_state_changed");
         }
         catch (Exception) { return Revert("display_unavailable"); }
-        return Expired() ? Revert("preview_expired") : Session;
+        return StopReason() is { } afterRead ? Revert(afterRead) : Session;
     }
 
     public ProfilePreviewSession Confirm()
@@ -156,7 +183,7 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
         if (Session.Status != "previewing") return Session; // Late/repeated commands never reapply.
         Tick();
         if (Session.Status != "previewing") return Session;
-        if (Expired()) return Revert("preview_expired");
+        if (StopReason() is { } stopped) return Revert(stopped);
         try { Persist("confirmed", "confirmed", true); }
         catch (Exception) { Revert("confirmation_not_saved"); throw; }
         return Session;
@@ -168,6 +195,8 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
     {
         RequireSession();
         if (!Session!.NeedsRecovery) return Session;
+        // The applying journal must exist before any association write can begin.
+        if (Session.Status == "prepared") return FinishWithoutWrite("preview_not_applied");
         try
         {
             // A journal failure must not prevent an already-required rollback.
@@ -194,7 +223,7 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
             }
             if (ProfilePreviewPolicy.ValidProfile(current, Session.CandidateProfile)?.Sha256 != Session.CandidateSha256)
                 return Pending("profile_file_changed");
-            backend.SetDefault(current, original.FileName, original.Sha256!);
+            backend.TrySetDefault(current, original.FileName, original.Sha256!);
             var restored = backend.Read(current.DisplayId);
             if (!ProfilePreviewPolicy.SameTarget(current, restored)
                 || !ProfilePreviewPolicy.EqualName(restored.CurrentProfile, original.FileName)
@@ -220,7 +249,11 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
         ProfilePreviewPolicy.SameTarget(Session!.Original, current)
         && ProfilePreviewPolicy.EqualName(current.CurrentProfile, Session.CandidateProfile)
         && ProfilePreviewPolicy.ValidProfile(current, Session.CandidateProfile)?.Sha256 == Session.CandidateSha256;
-    private bool Expired() => _clock.GetElapsedTime(_started) >= _duration || _clock.GetUtcNow() >= Session!.ExpiresAt;
+    private string? StopReason()
+    {
+        if (isOwnerAlive?.Invoke() == false) return "owner_exited";
+        return _clock.GetElapsedTime(_started) >= _duration || _clock.GetUtcNow() >= Session!.ExpiresAt ? "preview_expired" : null;
+    }
     private ProfilePreviewSession Pending(string reason)
     {
         Session = Session! with { Status = "recovery-pending", ReasonCode = reason, AssociationVerified = false };

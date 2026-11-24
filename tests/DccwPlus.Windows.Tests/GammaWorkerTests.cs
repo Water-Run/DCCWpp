@@ -12,6 +12,80 @@ public sealed class GammaWorkerTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "dccwpp-worker-tests", Guid.NewGuid().ToString("N"));
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void GammaWorkerChecksTheOwnerAtTheDriverWrite(bool windowOwned)
+    {
+        using var owner = StartDisposableOwner();
+        var backend = new SimulatedGammaBackend();
+        var store = new GammaCalibrationStore(_root);
+        var id = Guid.NewGuid();
+        var receipt = Guid.NewGuid();
+        var preset = CalibrationPreset.Create("Owner fixture", new() { RedGain = .9 });
+        WriteRequest(store, new(id, backend.State.DisplayId, preset, 30, windowOwned ? owner.Id : null,
+            windowOwned ? owner.StartTime.ToUniversalTime().Ticks : null));
+        backend.BeforeWrite = () =>
+        {
+            backend.BeforeWrite = null;
+            StopDisposableOwner(owner);
+            if (!windowOwned) AtomicFile.Write(Path.Combine(store.DirectoryFor(id), "command.json"),
+                JsonSerializer.SerializeToUtf8Bytes(new GammaPreviewCommand(Guid.NewGuid(), "revert"), ProfilePreviewStore.Json));
+        };
+
+        try
+        {
+            int exitCode = GammaPreviewHost.Run(_root, id, () => backend, receipt);
+            Assert.Equal(windowOwned ? 0 : 2, backend.Writes);
+            Assert.Equal(windowOwned ? 4 : 0, exitCode);
+            var resolved = store.Load(id);
+            Assert.Equal("reverted", resolved.Status);
+            Assert.Equal(windowOwned ? "owner_exited" : "user_reverted", resolved.ReasonCode);
+            Assert.Equal(!windowOwned, resolved.CurveReadbackVerified);
+            Assert.True(backend.State.Ramp.Matches(GammaRamp.Identity()));
+            if (windowOwned) Assert.Equal("owner_exited", ProfilePreviewStore.Read<ProfileWorkerError>(
+                PreviewWorkerFiles.ErrorPath(store.DirectoryFor(id), receipt)).Code);
+        }
+        finally { StopDisposableOwner(owner); }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ProfileWorkerChecksTheOwnerAtTheAssociationWrite(bool windowOwned)
+    {
+        using var owner = StartDisposableOwner();
+        var backend = new SimulatedProfileBackend();
+        var store = new ProfilePreviewStore(_root);
+        var id = Guid.NewGuid();
+        var receipt = Guid.NewGuid();
+        string directory = store.DirectoryFor(id);
+        AtomicFile.Write(Path.Combine(directory, "request.json"), JsonSerializer.SerializeToUtf8Bytes(
+            new ProfilePreviewRequest(id, backend.State.DisplayId, "candidate.icc", 30, windowOwned ? owner.Id : null,
+                windowOwned ? owner.StartTime.ToUniversalTime().Ticks : null), ProfilePreviewStore.Json));
+        backend.BeforeWrite = () =>
+        {
+            backend.BeforeWrite = null;
+            StopDisposableOwner(owner);
+            if (!windowOwned) store.Request(id, "revert");
+        };
+
+        try
+        {
+            int exitCode = ProfilePreviewHost.Run(_root, id, receipt, () => backend);
+            Assert.Equal(windowOwned ? 0 : 2, backend.Writes);
+            Assert.Equal(windowOwned ? 4 : 0, exitCode);
+            var resolved = store.Load(id);
+            Assert.Equal("reverted", resolved.Status);
+            Assert.Equal(windowOwned ? "owner_exited" : "user_reverted", resolved.ReasonCode);
+            Assert.Equal(!windowOwned, resolved.AssociationVerified);
+            Assert.Equal("original.icc", backend.State.CurrentProfile);
+            if (windowOwned) Assert.Equal("owner_exited", ProfilePreviewStore.Read<ProfileWorkerError>(
+                PreviewWorkerFiles.ErrorPath(directory, receipt)).Code);
+        }
+        finally { StopDisposableOwner(owner); }
+    }
+
     [Fact]
     public void LaunchWaitsForAnOwnedExpiredPreviewAndRejectsAnAbandonedJournal()
     {
@@ -242,6 +316,31 @@ public sealed class GammaWorkerTests : IDisposable
             if (!worker.IsCompleted && store.Find(id)?.Status == "previewing") store.Request(id, "revert");
             await worker.WaitAsync(TimeSpan.FromSeconds(35));
         }
+    }
+
+    [Fact]
+    public async Task ProfileWorkerReportsStartupExpirationAndKeepsTheRequestReplayable()
+    {
+        var clock = new ProfileWorkerClock();
+        var backend = new SimulatedProfileBackend { BeforeWrite = () => clock.Elapsed = TimeSpan.FromSeconds(30) };
+        var store = new ProfilePreviewStore(_root);
+        var id = Guid.NewGuid();
+        var attempt = Guid.NewGuid();
+        string directory = store.DirectoryFor(id);
+        AtomicFile.Write(Path.Combine(directory, "request.json"), JsonSerializer.SerializeToUtf8Bytes(
+            new ProfilePreviewRequest(id, backend.State.DisplayId, "candidate.icc", 30, AllowRetries: true), ProfilePreviewStore.Json));
+
+        Assert.Equal(4, ProfilePreviewHost.Run(_root, id, attempt, () => backend, clock));
+
+        string errorPath = PreviewWorkerFiles.ErrorPath(directory, attempt);
+        Assert.Equal("preview_expired", ProfilePreviewStore.Read<ProfileWorkerError>(errorPath).Code);
+        Assert.Equal("original.icc", backend.State.CurrentProfile);
+        var client = new ProfilePreviewClient(_root, "unused");
+        var replay = await client.BeginAsync(backend.State.DisplayId, "candidate.icc", requestId: id);
+        Assert.Equal("reverted", replay.Status);
+        Assert.Equal("preview_expired", replay.ReasonCode);
+        Assert.False(replay.AssociationVerified);
+        Assert.Empty(store.Incomplete());
     }
 
     [Fact]
@@ -625,6 +724,26 @@ public sealed class GammaWorkerTests : IDisposable
         return path;
     }
 
+    private static Process StartDisposableOwner()
+    {
+        var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"))
+        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true };
+        foreach (string argument in new[] { "-NoProfile", "-NonInteractive", "-Command", "[void][Console]::ReadLine()" })
+            start.ArgumentList.Add(argument);
+        return Process.Start(start) ?? throw new InvalidOperationException("Could not open the disposable owner process.");
+    }
+
+    private static void StopDisposableOwner(Process owner)
+    {
+        if (owner.HasExited) return;
+        owner.StandardInput.Close();
+        if (!owner.WaitForExit(5000))
+        {
+            owner.Kill();
+            Assert.True(owner.WaitForExit(5000));
+        }
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
@@ -639,6 +758,8 @@ public sealed class GammaWorkerTests : IDisposable
 
         public bool Disconnected { get; set; }
         public Action? BeforeRead { get; set; }
+        public Action? BeforeWrite { get; set; }
+        public int Writes { get; private set; }
         public void ChangeLayout() => State = State with { TopologyFingerprint = new string('E', 64) };
         public ProfileAssociationState Read(string displayId)
         {
@@ -646,8 +767,22 @@ public sealed class GammaWorkerTests : IDisposable
             if (Disconnected) throw new ProfilePreviewException("display_disconnected", "Simulated disconnected display.");
             return State;
         }
-        public void SetDefault(ProfileAssociationState expected, string profile, string sha256) =>
+        public bool TrySetDefault(ProfileAssociationState expected, string profile, string sha256, Func<bool>? canWrite = null)
+        {
+            BeforeWrite?.Invoke();
+            if (canWrite?.Invoke() == false) return false;
+            Writes++;
             State = State with { CurrentProfile = profile };
+            return true;
+        }
+    }
+
+    private sealed class ProfileWorkerClock : TimeProvider
+    {
+        public TimeSpan Elapsed { get; set; }
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => Elapsed.Ticks;
+        public override DateTimeOffset GetUtcNow() => new DateTimeOffset(2026, 11, 25, 0, 0, 0, TimeSpan.Zero) + Elapsed;
     }
 
     private sealed class SimulatedGammaBackend : IGammaCalibrationBackend
@@ -655,14 +790,18 @@ public sealed class GammaWorkerTests : IDisposable
         public GammaDeviceState State { get; private set; } = new("abcd1234abcd1234", "simulated", "simulated-target",
             new string('A', 64), true, false, GammaRamp.Identity());
         public int Writes { get; private set; }
+        public Action? BeforeWrite { get; set; }
 
         public GammaDeviceState Read(string displayId) => State with { Ramp = State.Ramp.Copy() };
-        public void Write(GammaDeviceState expected, GammaRamp ramp)
+        public bool TryWrite(GammaDeviceState expected, GammaRamp ramp, Func<bool>? canWrite = null)
         {
+            BeforeWrite?.Invoke();
+            if (canWrite?.Invoke() == false) return false;
             Writes++;
             State = State with { Ramp = ramp.Copy() };
+            return true;
         }
-        public string Commit(GammaCalibrationSession session) => throw new InvalidOperationException("These tests only preview.");
+        public GammaProfileSelection Commit(GammaCalibrationSession session) => throw new InvalidOperationException("These tests only preview.");
         public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected) =>
             throw new InvalidOperationException("These tests only preview.");
     }
