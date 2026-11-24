@@ -13,6 +13,33 @@ public sealed class GammaWorkerTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "dccwpp-worker-tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public void LaunchWaitsForAnOwnedExpiredPreviewAndRejectsAnAbandonedJournal()
+    {
+        var store = new GammaCalibrationStore(_root);
+        var backend = new SimulatedGammaBackend();
+        var id = Guid.NewGuid();
+        var active = new GammaCalibrationTransaction(backend, store).Begin(id,
+            CalibrationPreset.Create("Initial", new() { RedGain = .9 }), backend.State.DisplayId, 60);
+        string directory = store.DirectoryFor(id);
+        GammaCalibrationSession? Read(bool exited) => PreviewWorkerFiles.ReadReadySession(directory, () => store.Find(id),
+            state => state.NeedsRecovery && state.Status != "recovery-pending",
+            state => state.Status == "previewing" ? state.ExpiresAt : null, launchExited: exited);
+
+        using (var worker = PreviewWorkerFiles.TryLock(directory, "worker"))
+        {
+            Assert.NotNull(worker);
+            Assert.Equal("previewing", Read(exited: false)?.Status);
+            store.Save(active with { ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1) });
+            Assert.Null(Read(exited: true)); // A joined launcher may exit while the original worker rolls back.
+        }
+
+        Assert.Equal("recovery_required", Assert.Throws<ProfilePreviewException>(() => Read(exited: true)).Code);
+        store.Save(active with { Status = "reverted", ReasonCode = "preview_expired" });
+        Assert.Null(Read(exited: false));
+        Assert.Equal("preview_expired", Read(exited: true)?.ReasonCode);
+    }
+
+    [Fact]
     public async Task DuplicateWorkerAndSimultaneousClientsShareOneSessionWithoutLosingCommands()
     {
         var store = new GammaCalibrationStore(_root);
@@ -326,6 +353,80 @@ public sealed class GammaWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task BulkRecoveryKeepsAnIccRollbackObservableWithoutAcceptingConfirmation()
+    {
+        var store = new ProfilePreviewStore(_root);
+        var backend = new SimulatedProfileBackend();
+        var id = Guid.NewGuid();
+        new ProfilePreviewTransaction(backend, store).Begin(id, backend.State.DisplayId, "candidate.icc", 30);
+        var restoring = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        backend.BeforeRead = () =>
+        {
+            restoring.TrySetResult();
+            if (!release.Wait(TimeSpan.FromSeconds(8))) throw new TimeoutException();
+        };
+        var service = new PreviewRecoveryService(_root);
+        var recovery = Task.Run(() =>
+        {
+            using var gate = DisplayMutationLock.Acquire();
+            return service.RecoverLocked(new SimulatedGammaBackend(), backend);
+        });
+
+        var observer = new PreviewSessionObserver(_root);
+        Task<ProfilePreviewSession>? confirm = null;
+        try
+        {
+            await restoring.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var observation = await observer.ObserveProfileAsync(id, 0);
+            Assert.Equal("recovering", observation.Session.Status);
+            Assert.Equal("in_progress", observation.Outcome);
+            Assert.Equal("preview_busy", new CalibrationBindingService(_root).RunStartup(true, "resume").Reason);
+            confirm = new ProfilePreviewClient(_root, "unused").CommandAsync(id, "confirm");
+            Assert.False(confirm.IsCompleted);
+            Assert.False(store.Requested(id, "confirm"));
+        }
+        finally
+        {
+            release.Set();
+            await recovery.WaitAsync(TimeSpan.FromSeconds(8));
+        }
+        Assert.Equal("recovery_finished", (await recovery).Reason);
+        Assert.Equal("reverted", (await confirm!.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+        Assert.Equal("finished", (await observer.ObserveProfileAsync(id, 0)).Outcome);
+        Assert.Equal("original.icc", backend.State.CurrentProfile);
+    }
+
+    [Fact]
+    public async Task BulkRecoveryLeavesAnOwnedSessionAloneAndReportsBusy()
+    {
+        var store = new GammaCalibrationStore(_root);
+        var gamma = new SimulatedGammaBackend();
+        var id = Guid.NewGuid();
+        new GammaCalibrationTransaction(gamma, store).Begin(id,
+            CalibrationPreset.Create("Initial", new() { RedGain = .9 }), gamma.State.DisplayId, 30);
+        var service = new PreviewRecoveryService(_root);
+        PreviewRecoveryReport report;
+        using (var worker = PreviewWorkerFiles.TryLock(store.DirectoryFor(id), "worker"))
+        {
+            Assert.NotNull(worker);
+            using (DisplayMutationLock.Acquire())
+                report = service.RecoverLocked(gamma, new SimulatedProfileBackend());
+            Assert.Equal("preview_busy", report.Reason);
+            Assert.Equal("preview_busy", Assert.Single(report.Sessions).ReasonCode);
+            Assert.Equal("preview_busy", new CalibrationBindingService(_root).RunStartup(true, "resume").Reason);
+            Assert.Equal("previewing", store.Load(id).Status);
+            Assert.Equal(1, gamma.Writes);
+        }
+
+        using (DisplayMutationLock.Acquire())
+            report = service.RecoverLocked(gamma, new SimulatedProfileBackend());
+        Assert.Equal("recovery_finished", report.Reason);
+        Assert.Equal("finished", (await new PreviewSessionObserver(_root).ObserveCalibrationAsync(id, 0)).Outcome);
+        Assert.True(gamma.State.Ramp.Matches(GammaRamp.Identity()));
+    }
+
+    [Fact]
     public async Task CommonRecoveryRestoresBothJournalsAndPreservesTheProfileRequest()
     {
         var gamma = new SimulatedGammaBackend();
@@ -458,6 +559,49 @@ public sealed class GammaWorkerTests : IDisposable
         Assert.Equal("confirmed", result.Status);
         Assert.True(result.NeedsBindingCompletion);
         Assert.Equal("recovery_required", (await observer.ObserveCalibrationAsync(id, 0)).Outcome);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task ConfirmReportsTheCommittedJournalWhenTheAcknowledgementFails(bool committed, bool acknowledged)
+    {
+        var backend = new SimulatedGammaBackend();
+        var store = new GammaCalibrationStore(_root);
+        var client = new GammaPreviewClient(_root, "unused");
+        var id = Guid.NewGuid();
+        var preview = new GammaCalibrationTransaction(backend, store).Begin(id,
+            CalibrationPreset.Create("Completion", new() { RedGain = .9 }), backend.State.DisplayId, 30);
+        string directory = store.DirectoryFor(id);
+        using var worker = PreviewWorkerFiles.TryLock(directory, "worker");
+        Assert.NotNull(worker);
+        var confirming = client.CommandAsync(id, "confirm");
+        var command = ProfilePreviewStore.Read<GammaPreviewCommand>(Path.Combine(directory, "command.json"));
+        var outcome = committed ? preview with
+        {
+            Status = "confirmed", ReasonCode = "confirmed", BindingStatus = "pending", ProfileCommitStarted = true,
+            CurveReadbackVerified = true, InstalledProfile = $"DCCWPlus-{id:N}.icc"
+        } : preview;
+        if (committed) store.Save(outcome);
+        if (acknowledged)
+        {
+            var ack = new GammaPreviewAck(command.Id, "calibration_failed", "Simulated worker error.");
+            AtomicFile.Write(Path.Combine(directory, "ack.json"), JsonSerializer.SerializeToUtf8Bytes(ack, ProfilePreviewStore.Json));
+        }
+
+        if (committed)
+        {
+            var confirmed = await confirming.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.Equal("confirmed", confirmed.Status);
+            Assert.True(confirmed.NeedsBindingCompletion);
+        }
+        else
+        {
+            var error = await Assert.ThrowsAsync<ProfilePreviewException>(() => confirming.WaitAsync(TimeSpan.FromSeconds(3)));
+            Assert.Equal("calibration_failed", error.Code);
+        }
+        Assert.Equal(outcome.Status, store.Load(id).Status);
     }
 
     private static async Task<GammaCalibrationSession> WaitForPreviewAsync(GammaCalibrationStore store, Guid id, Task<int> worker)

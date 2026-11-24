@@ -1,5 +1,60 @@
 # 开发交接
 
+## 2026-11-25 · 装包 CLI 调用与别名
+
+- 设置页在三种语言中显示 `dccwpp.exe capabilities --json` 和 Windows 执行别名排查提示。英文 README 和 CLI 参考说明 `PATH` 缺少 WindowsApps 时如何用完整别名路径调用，以及如何确认包身份。[CLI 参考](CLI.md)
+- Windows Sandbox build 26100 的 x64 开发包以普通用户运行。移除该进程的 WindowsApps `PATH` 项后，完整别名路径仍以相同包身份运行。通过 Windows 设置关闭别名后命令无法启动，WinUI 仍可打开。重新启用后原有预设可查。含中文及空格的预设路径也已通过导出和验证。校准会话始终为零，包已卸载。报告位于 `artifacts/alias-sandbox/432dbc39-f836-4afe-b809-c07a25263561/results/activation.json`。
+- 单独运行的普通用户装包检查验证了无窗口子进程通过标准输出接收 JSON，查询不存在的校准会话时返回退出码 3 和 `not_found`，标准错误为空。报告位于 `artifacts/sandbox-smoke/85302d7f-f900-4dbe-b35d-ffd028885731/results/result.json`。293 项单元及模拟测试、140 项本机 CLI 进程检查及 x64 MSIX 内容校验通过。
+
+## 2026-11-25 · 设置页恢复结果
+
+- 设置页显示最近一次自动恢复检查的本地时间、触发方式和所选显示器的结果。跳过、失败和仍待恢复的结果带有本地化原因。刷新结果会重新读取报告并保留所选显示器。
+- 在 Windows Sandbox build 26100 的普通用户会话中使用 x64 开发包和预置报告，核对英语、简中与繁中界面。覆盖尚无报告、断开、ICC 文件变化、忙碌、未知原因码和刷新后保留选择。校准会话计数始终为零，登录启动保持关闭，测试包已卸载。报告位于 `artifacts/restore-status-sandbox/a96f91b1-99ae-425f-960a-10bfe3800bbe/results/activation.json`。
+- 293 项单元及模拟测试、140 项本机 CLI 进程检查和 x64 MSIX 内容校验通过。实机唤醒、重连和自动恢复仍待验收。
+
+## 2026-11-25 · 商店上传包与对应源码
+
+- 发布证据脚本新增 `--store`。同一份源码快照用于构建双架构上传包和生成对应源码归档。证据记录各上传包、内嵌 MSIX、第三方声明索引和源码的 SHA-256。[发布手册](STORE.md)
+- 在隔离工作区使用测试身份生成 x64 和 ARM64 的 `1.0.0.0` 上传包，独立复核两种架构、清单身份及全部 148 个归档源码条目。缺少身份文件或身份与清单不符时已验证构建前停止。本机身份 JSON 和 Store 关联文件留在工作区。演练通过 293 项单元及模拟测试和 140 项本机 CLI 进程检查，报告位于 `artifacts/store-rehearsal/evidence-fixture/artifacts/release-evidence/synthetic-final/evidence.json`。正式身份和 Partner Center 认证待验收。
+
+## 2026-11-25 · 预览工作进程就绪
+
+- Gamma 和 ICC 启动客户端会核对工作锁和 `expiresAt`。过期预览等候回退结果。进程退出后，如已写下启动错误，则返回该原因。如只留下未完成日志，则报告 `recovery_required`。[CLI 契约](CLI.md)
+- 用独立子进程模拟正常启动、到期回退、中断、启动报错及回退后报错。基线有五项结果不符，修正后十项均通过。报告位于 `artifacts/preview-start-probe/fixed-final-results/result.json`。
+- 293 项单元及模拟测试、140 项本机 CLI 进程检查及 x64 MSIX 内容校验通过。Windows Sandbox 普通用户通过装包别名运行两个真实工作进程。不存在的目标分别报告 `not_found` 和 `display_disconnected`，两次都写入错误回执但未创建预览日志。报告位于 `artifacts/preview-start-probe/artifacts/sandbox-smoke/91822e64-a66a-48d3-9d79-e3cc55b64a62/results/result.json`。
+
+## 2026-11-25 · Gamma 预览期限复核
+
+- 正常显示状态读回、预览日志写入和向导比较倒计时落盘后都会再核对期限。操作期间到期时尝试恢复原曲线，成功回退记录 `preview_expired`。读回发现外部 ICC 选择时继续保留外部设置。[CLI 契约](CLI.md)
+- 新增模拟覆盖开始预览时的慢读、更新和进入比较时的慢写，以及到期与外部 ICC 选择同时发生。WinUI、CLI 构建、292 项单元及模拟测试和 139 项本机 CLI 进程检查通过。实机显示效果仍待验收。
+
+## 2026-11-25 · 跨入口恢复的会话锁
+
+- 批量恢复、单会话 ICC 恢复和绑定补写会持有相应的工作锁。CLI 可观察正在执行的回退。遇到另一个进程持有的会话时，恢复保留该会话并报告 `preview_busy`，后台沿用现有的限时重试。ICC 确认和取消会等待已经在执行的回退。[CLI 契约](CLI.md)
+- 288 项单元及模拟测试、139 项本机 CLI 检查及 x64 开发 MSIX 内容校验通过。Windows Sandbox 普通用户通过装包别名核对了跨进程锁、忙碌反馈、观察等待、锁释放后识别中断，以及回退中确认不会写入新的请求。使用隔离日志，包已卸载。报告位于 `artifacts/cli-outcome-check/artifacts/sandbox-smoke/3d1a90c9-119e-4331-9aac-cd3cd28f141a/results/result.json`。
+
+## 2026-11-25 · Agent CLI 事务退出码
+
+- `calibration update` 在预览已结束或进入回退时返回退出码 4。`profiles confirm` 与 `profiles revert` 按请求的目标状态判断成功，`profiles recover` 在恢复仍待处理时也返回退出码 4。失败响应保留会话原因码，`status` 和 `observe` 仍可查看完整状态。[CLI 契约](CLI.md)
+- 286 项单元及模拟测试、139 项本机 CLI 进程检查及 x64 开发 MSIX 内容校验通过。Windows Sandbox build 26100 普通用户通过装包别名验证了过期 Gamma 更新与 ICC 确认、重复 ICC 取消、断开目标的恢复及卸载。使用隔离数据和断开的目标。报告位于 `artifacts/cli-outcome-check/artifacts/sandbox-smoke/e539a25b-cd8c-44af-95c4-0dfcf7f592e8/results/result.json`。
+
+## 2026-11-25 · 参考照片切换
+
+- 选择新照片时立即清除旧图，只有当前选中的文件可以更新页面。选中的文件无法打开时，在照片下拉框旁显示本地化提示。切回有效照片后恢复显示。[参考照片验收项](ROADMAP.md)
+- 在 Windows Sandbox 的 x64 诊断包中以普通用户打开实际 PNG 文件，通过控制加载顺序验证较晚完成的旧图和旧解码错误均不影响当前照片。核对损坏文件的三语提示、选回有效文件及清空选择。沙盒卸载成功，前后均无校准会话。报告位于 `artifacts/reference-photo-probe/b7cf2262-c662-474f-96b2-ad8e62eb1699/results/activation.json`。
+- WinUI 与 CLI 构建、286 项单元及模拟测试、127 项本机 CLI 进程检查和 x64 开发 MSIX 内容校验通过。
+
+## 2026-11-25 · x64 开发包 WACK 预检
+
+- 核对了 GitHub Actions 构建 `82caea8` 的 x64、ARM64 MSIX 及对应源码的 SHA-256。取该构建的 x64 `0.2.0.0` 开发包，在 Windows Sandbox build 26100 内临时签名，用 WACK `10.0.26100.8249` 完成 Desktop Bridge 检查。[对应 GitHub 构建](https://github.com/Water-Run/DCCWpp/actions/runs/45462477516)
+- 首轮缺少 Windows SDK 平台元数据，元数据检查初始化失败。装齐 SDK 组件后复跑，同一开发包的 XML 报告为 `OVERALL_RESULT=PASS`、`PARTIAL_RUN=FALSE`，13 项必需检查全部通过。两项可选检查分别报告 SDK 自带的 WinUI 接口 GUID 与系统对应接口重复，以及应用和运行时引用进程启动 API。复跑报告位于 `artifacts/wack-sandbox/a8119ce0-ddd1-4742-b0a1-24ffbedbaf51/results/certification.xml`。[复测步骤](STORE.md)
+- 此结果覆盖临时签名的 x64 开发包。Store 签名包、原生 ARM64 运行和 Partner Center 认证仍待验收。
+
+## 2026-11-25 · 完成页保留 ICC 确认结果
+
+- 确认回执报错或超时时，GUI 和 CLI 共用的客户端以持久日志的 `confirmed` 为准，并返回当前 `bindingStatus`。模拟的提交后回执错误与超时均覆盖修正前后的差异。WinUI 与 CLI 构建、173 项核心测试、113 项 Windows 测试及 127 项本机 CLI 进程检查通过。[CLI 契约](CLI.md)
+- 完成页保留 ICC 文件名和绑定待处理状态。预设列表刷新出错时，保留已加载的列表，并提示可在预设页重试。ClearType 启动出错有独立反馈，可单独重开调谐器。真实 SDR 保存和原版逐页对照仍待实机验收。[验收项](ROADMAP.md)
+
 ## 2026-11-25 · 显示器选项的无障碍名称
 
 - WinUI 下拉选项使用显示器名称、主屏标识和可用的桌面坐标。基线沙盒的 `SelectionPattern` 名称包含整条显示器数据记录。界面现在向 UI Automation 提供与可见选项一致的本地化名称，并在切换语言和刷新后保留可核对的原选择。[验收项](ROADMAP.md)

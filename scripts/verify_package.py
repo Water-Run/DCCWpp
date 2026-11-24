@@ -8,6 +8,7 @@ import struct
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
@@ -143,9 +144,12 @@ def verify_msix(package, store_identity):
     return architecture, identity.attrib["Version"]
 
 
-def verify_package(path, store_identity):
+@contextmanager
+def open_msix(path):
     if path.suffix.lower() == ".msix":
-        return verify_msix(path, store_identity)
+        with path.open("rb") as package:
+            yield package
+        return
     if path.suffix.lower() != ".msixupload":
         raise ValueError("Pass a .msix or single-architecture .msixupload file.")
     with ZipFile(path) as upload:
@@ -155,7 +159,12 @@ def verify_package(path, store_identity):
         with upload.open(packages[0]) as nested, tempfile.TemporaryFile() as package:
             shutil.copyfileobj(nested, package)
             package.seek(0)
-            return verify_msix(package, store_identity)
+            yield package
+
+
+def verify_package(path, store_identity):
+    with open_msix(path) as package:
+        return verify_msix(package, store_identity)
 
 
 def main():

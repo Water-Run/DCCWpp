@@ -31,9 +31,10 @@ internal sealed class CalibrationCompletionService(string root, IDisplayService 
     {
         using var gate = DisplayMutationLock.Acquire();
         var session = _sessions.Load(id);
-        if (session.NeedsBindingCompletion
-            && (_sessions.Sessions().Any(other => other.NeedsRecovery) || new ProfilePreviewStore(root).Incomplete().Count > 0))
+        if (!session.NeedsBindingCompletion) return session;
+        if (_sessions.Sessions().Any(other => other.NeedsRecovery) || new ProfilePreviewStore(root).Incomplete().Count > 0)
             throw new ProfilePreviewException("recovery_required", new LocalizationService()["RecoveryMessage"]);
+        using var worker = PreviewWorkerFiles.AcquireForRecovery(_sessions.DirectoryFor(id));
         return CompleteLocked(session, replay: true);
     }
 

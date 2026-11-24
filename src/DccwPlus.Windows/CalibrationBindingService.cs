@@ -50,7 +50,9 @@ public sealed class CalibrationBindingService(string root)
 
         var recovery = new PreviewRecoveryService(root);
         if (dryRun && recovery.List().Any(item => item.Kind != "binding")) return Report("recovery_required");
-        var recoveries = dryRun ? [] : recovery.RecoverLocked().Sessions;
+        var recoveryReport = dryRun ? null : recovery.RecoverLocked();
+        var recoveries = recoveryReport?.Sessions ?? [];
+        if (recoveryReport?.Reason == "preview_busy") return Report("preview_busy", recoveries: recoveries);
         if (recoveries.Any(r => r.NeedsRecovery && r.Kind != "binding")) return Report("recovery_required", recoveries: recoveries);
 
         var gammaStore = new GammaCalibrationStore(root);

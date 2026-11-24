@@ -113,6 +113,32 @@ public static class SandboxIccProfile {
         if ($capabilities.contractVersion -ne 1) { throw 'The installed alias did not report the CLI v1 contract.' }
         $result.cliContractVersion = $capabilities.contractVersion
         $result.cliRequestIdCommands = @($capabilities.commands | Where-Object { $_.supportsRequestId } | ForEach-Object { $_.name })
+        $result.step = 'cli_redirected_process'
+        $processInfo = [Diagnostics.ProcessStartInfo]::new($alias)
+        $missingSession = [Guid]::NewGuid().ToString('D')
+        $processInfo.Arguments = "calibration status $missingSession --json"
+        $processInfo.UseShellExecute = $false
+        $processInfo.CreateNoWindow = $true
+        $processInfo.RedirectStandardOutput = $true
+        $processInfo.RedirectStandardError = $true
+        $processInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
+        $processInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
+        $process = [Diagnostics.Process]::Start($processInfo)
+        try {
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            if (!$process.WaitForExit(15000)) {
+                $process.Kill()
+                throw 'The installed CLI did not return to the caller.'
+            }
+            $response = $stdout.GetAwaiter().GetResult() | ConvertFrom-Json
+            if ($process.ExitCode -ne 3 -or $response.ok -or $response.error.code -ne 'not_found' -or $stderr.GetAwaiter().GetResult()) {
+                throw 'The installed CLI did not report the JSON error and exit code to the calling process.'
+            }
+            $result.cliRedirectedProcessExitCode = $process.ExitCode
+            $result.cliRedirectedProcessReason = $response.error.code
+        }
+        finally { $process.Dispose() }
         if ($capabilities.commands.name -contains 'calibration observe') {
             $result.step = 'cli_observe'
             foreach ($group in 'calibration', 'profiles') {

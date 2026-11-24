@@ -12,6 +12,7 @@ param(
     [switch]$Test,
     [switch]$Package,
     [switch]$Store,
+    [string]$StoreIdentityFile,
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')][string]$PackageRun
 )
 Set-StrictMode -Version Latest
@@ -23,12 +24,15 @@ $msbuildPath = & $vswhere -latest -prerelease -products '*' -requires Microsoft.
 if (-not $msbuildPath) { throw 'MSBuild was not found.' }
 $runtime = 'win-' + $Architecture.ToLowerInvariant()
 $cliOutput = Join-Path $taskRoot "artifacts\cli\$runtime"
+$identityFile = Join-Path $taskRoot 'store/identity.local.json'
+if ($Store -and $StoreIdentityFile) {
+    $identityFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($StoreIdentityFile)
+}
 Push-Location -LiteralPath $taskRoot
 try {
     if ($Store -and -not $Package) { throw '-Store requires -Package.' }
     if ($PackageRun -and -not $Package) { throw '-PackageRun requires -Package.' }
     if ($Store) {
-        $identityFile = 'store/identity.local.json'
         if (-not (Test-Path -LiteralPath $identityFile -PathType Leaf)) {
             throw 'Create the local identity file using the DCCW++ values from Partner Center. See docs/STORE.md.'
         }

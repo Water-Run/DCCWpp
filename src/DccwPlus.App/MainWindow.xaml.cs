@@ -1,3 +1,4 @@
+using System.Globalization;
 using DccwPlus.Core.Presets;
 using DccwPlus.Core.Storage;
 using DccwPlus.Windows;
@@ -17,6 +18,7 @@ public sealed partial class MainWindow : Window
     private bool _updating = true;
     private bool _updatingBindings;
     private bool _updatingLanguage;
+    private long _photoRequest;
     private string _headingKey = "CalibrationTitle";
     private readonly StartupService _startup = new();
     private readonly CalibrationBindingService _bindings = new(DataPaths.DefaultRoot);
@@ -208,9 +210,26 @@ public sealed partial class MainWindow : Window
     }
     private async void PhotoChanged(object sender, SelectionChangedEventArgs e)
     {
+        var request = ++_photoRequest;
+        ReferencePhoto.Source = null;
+        ReferencePhotoError.IsOpen = false;
         if (PhotoPicker.SelectedItem is not StorageFile file) return;
-        try { using var stream = await file.OpenReadAsync(); var image = new BitmapImage(); await image.SetSourceAsync(stream); ReferencePhoto.Source = image; }
-        catch (Exception ex) { ShowError(ex); }
+        try
+        {
+            using var stream = await file.OpenReadAsync();
+            if (request != _photoRequest) return;
+            var image = new BitmapImage();
+            image.ImageFailed += (_, _) => ShowReferencePhotoError(request);
+            await image.SetSourceAsync(stream);
+            if (request == _photoRequest && !ReferencePhotoError.IsOpen) ReferencePhoto.Source = image;
+        }
+        catch (Exception) { ShowReferencePhotoError(request); }
+    }
+    private void ShowReferencePhotoError(long request)
+    {
+        if (request != _photoRequest) return;
+        ReferencePhoto.Source = null;
+        ReferencePhotoError.IsOpen = true;
     }
     private async void LanguageChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -261,12 +280,17 @@ public sealed partial class MainWindow : Window
         try { await _startup.SetEnabledAsync(StartupToggle.IsOn); } catch (Exception ex) { ShowError(ex); }
         await RefreshStartupAsync();
     }
+
+    private void RefreshRestoreResultsClicked(object sender, RoutedEventArgs e) => RefreshBindings();
+
     private void RefreshBindings()
     {
         _updatingBindings = true;
         try
         {
             string? selectedKey = (BindingPicker.SelectedItem as BindingOption)?.Binding.PersistenceKey;
+            _lastRestore = _bindings.LastStartupReport();
+            UpdateRestoreReport();
             var bindings = _bindings.List();
             var displays = bindings.Count == 0 ? [] : new WindowsDisplayService().Enumerate();
             var options = bindings.Select(binding =>
@@ -280,7 +304,6 @@ public sealed partial class MainWindow : Window
                 };
                 return new BindingOption(binding, $"{binding.DisplayName} ({location})");
             }).ToArray();
-            _lastRestore = _bindings.LastStartupReport();
             BindingPicker.ItemsSource = options;
             BindingPicker.IsEnabled = options.Length > 0;
             BindingPicker.SelectedItem = options.FirstOrDefault(o => o.Binding.PersistenceKey == selectedKey) ?? options.FirstOrDefault();
@@ -289,6 +312,58 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) { BindingToggle.IsEnabled = false; RemoveBindingButton.IsEnabled = false; ShowError(ex); }
         finally { _updatingBindings = false; }
     }
+
+    private void UpdateRestoreReport()
+    {
+        if (_lastRestore is not { } report)
+        {
+            RestoreReportText.Text = Model.Text["RestoreReportNone"];
+            return;
+        }
+
+        string trigger = Model.Text[report.Trigger switch
+        {
+            "sign_in" => "RestoreTriggerSignIn",
+            "resume" => "RestoreTriggerResume",
+            "display_changed" => "RestoreTriggerDisplayChanged",
+            _ => "RestoreTriggerUnknown"
+        }];
+        var culture = CultureInfo.GetCultureInfo(Model.Text.EffectiveLanguage);
+        string time = report.Time.ToLocalTime().ToString("g", culture);
+        string summary = string.Format(culture, Model.Text["RestoreReportSummary"], time, trigger);
+        if (report.Reason != "restore_finished") summary += " " + DescribeRestoreReason(report.Reason);
+        RestoreReportText.Text = summary;
+    }
+
+    private string DescribeRestoreReason(string reason)
+    {
+        string? key = reason switch
+        {
+            "no_bindings_enabled" => "RestoreNoBindings",
+            "startup_disabled" => "RestoreStartupDisabled",
+            "preview_busy" => "RestorePreviewBusy",
+            "recovery_required" => "RecoveryMessage",
+            "binding_disabled" => "RestoreBindingDisabled",
+            "display_disconnected" => "RestoreDisplayDisconnected",
+            "display_identity_ambiguous" => "RestoreDisplayAmbiguous",
+            "display_state_changed" or "recovery_target_changed" => "RestoreDisplayChanged",
+            "sdr_path_blocked" => "SdrRequired",
+            "shared_source_blocked" => "MirroredDisplay",
+            "mhc2_profile_blocked" => "Mhc2ProfileBlocked",
+            "remote_session_blocked" => "RemoteCalibrationBlocked",
+            "profile_selection_changed" or "external_profile_change" => "RestoreProfileChanged",
+            "profile_file_changed" => "IccFileChanged",
+            "profile_file_unavailable" => "IccFileUnavailable",
+            "profile_state_unavailable" or "profile_scope_unavailable" => "ProfileStateUnavailable",
+            "profile_device_unavailable" => "ProfileDeviceUnavailable",
+            "curve_read_failed" => "CurveReadUnavailable",
+            "external_curve_change" => "RestoreCurveChanged",
+            "restore_data_unavailable" => "RestoreDataUnavailable",
+            _ => null
+        };
+        return key is null ? string.Format(Model.Text["RestoreReasonCode"], reason) : Model.Text[key];
+    }
+
     private void BindingSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_updatingBindings || BindingToggle is null) return;
@@ -312,13 +387,15 @@ public sealed partial class MainWindow : Window
         {
             "restored" => "BindingLastRestored",
             "unchanged" => "BindingLastUnchanged",
-            "failed" or "recovery-pending" => "BindingLastFailed",
-            "skipped" => "BindingLastSkipped",
+            "recovery-pending" => "BindingLastPending",
+            "failed" or "reverted" => "BindingLastFailed",
+            "skipped" or "superseded" => "BindingLastSkipped",
             _ => "BindingNoResult"
         };
-        BindingStateText.Text = last is null
-            ? Model.Text[key]
-            : string.Format(Model.Text[key], _lastRestore!.Time.ToLocalTime().ToString("g"));
+        string message = Model.Text[key];
+        if (last is not null && last.Status is not ("restored" or "unchanged"))
+            message += " " + DescribeRestoreReason(last.ReasonCode);
+        BindingStateText.Text = message;
     }
     private void BindingChanged(object sender, RoutedEventArgs e)
     {

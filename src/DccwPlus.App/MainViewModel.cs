@@ -38,8 +38,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
     public void RefreshPresets()
     {
-        Presets.Clear();
         var library = PresetStore.List();
+        Presets.Clear();
         foreach (var preset in library.Presets) Presets.Add(preset);
         if (library.InvalidFiles.Count > 0) Status = Text["InvalidPresets"] + " " + string.Join(", ", library.InvalidFiles);
     }

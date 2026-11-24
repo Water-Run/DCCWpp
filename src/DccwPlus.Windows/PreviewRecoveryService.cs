@@ -36,22 +36,37 @@ public sealed class PreviewRecoveryService(string root)
         var profiles = _profiles.Incomplete();
         List<InterruptedPreviewResult> results = [];
         foreach (var session in gamma.Where(session => session.NeedsRecovery))
-            results.Add(Summarize(new GammaCalibrationTransaction(gammaBackend, _gamma).Recover(session)));
+            results.Add(RecoverSession(_gamma.DirectoryFor(session.Id), Summarize(session),
+                () => Summarize(new GammaCalibrationTransaction(gammaBackend, _gamma).Recover(session))));
         foreach (var session in profiles)
-            results.Add(Summarize(new ProfilePreviewTransaction(profileBackend, _profiles).Recover(session)));
+            results.Add(RecoverSession(_profiles.DirectoryFor(session.Id), Summarize(session),
+                () => Summarize(new ProfilePreviewTransaction(profileBackend, _profiles).Recover(session))));
         bool interrupted = results.Any(result => result.NeedsRecovery);
         if (completion is not null)
             foreach (var session in gamma.Where(session => session.NeedsBindingCompletion))
-                results.Add(SummarizeBinding(interrupted ? session : completion.CompleteLocked(session, replay: true)));
+                results.Add(interrupted ? SummarizeBinding(session)
+                    : RecoverSession(_gamma.DirectoryFor(session.Id), SummarizeBinding(session),
+                        () => SummarizeBinding(completion.CompleteLocked(session, replay: true))));
         string reason = results.Count == 0 ? "no_recovery_needed"
+            : results.Any(result => result is { NeedsRecovery: true, ReasonCode: "preview_busy" }) ? "preview_busy"
             : results.Any(result => result.NeedsRecovery) ? "recovery_required" : "recovery_finished";
         return new(1, reason, results);
+    }
+
+    private static InterruptedPreviewResult RecoverSession(string directory, InterruptedPreviewResult pending,
+        Func<InterruptedPreviewResult> recover)
+    {
+        using var worker = PreviewWorkerFiles.TryLock(directory, "worker");
+        return worker is null ? pending with { ReasonCode = "preview_busy" } : recover();
     }
 
     internal ProfilePreviewSession RecoverProfile(Guid id)
     {
         using var gate = DisplayMutationLock.Acquire();
-        return new ProfilePreviewTransaction(new WindowsProfileAssociationBackend(), _profiles).Recover(_profiles.Load(id));
+        var saved = _profiles.Load(id);
+        if (!saved.NeedsRecovery) return saved;
+        using var worker = PreviewWorkerFiles.AcquireForRecovery(_profiles.DirectoryFor(id));
+        return new ProfilePreviewTransaction(new WindowsProfileAssociationBackend(), _profiles).Recover(saved);
     }
 
     private static InterruptedPreviewResult Summarize(GammaCalibrationSession session) =>

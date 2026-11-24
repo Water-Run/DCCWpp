@@ -116,6 +116,9 @@
             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
       <StackPanel Spacing="8">
         <InfoBar x:Name="Outcome" IsOpen="False" IsClosable="True" Severity="Informational" />
+        <InfoBar x:Name="ClearTypeNotice" IsOpen="False" IsClosable="True" Severity="Warning" Message="{Binding Text[ClearTypeLaunchFailed]}">
+          <InfoBar.ActionButton><Button Content="{Binding Text[RetryOpenClearType]}" Click="RetryClearTypeClicked" /></InfoBar.ActionButton>
+        </InfoBar>
         <TextBlock x:Name="CountdownText" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" Visibility="Collapsed" />
         <Grid ColumnSpacing="12">
           <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>

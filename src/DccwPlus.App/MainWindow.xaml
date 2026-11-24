@@ -66,6 +66,8 @@
                 <TextBlock Text="{Binding Text[ReferenceCategories]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <Button Content="{Binding Text[ChooseReferencePhotos]}" Click="ChoosePhotosClicked" />
                 <ComboBox x:Name="PhotoPicker" DisplayMemberPath="Name" SelectionChanged="PhotoChanged" HorizontalAlignment="Stretch" AutomationProperties.Name="{Binding Text[References]}" />
+                <InfoBar x:Name="ReferencePhotoError" Severity="Error" IsOpen="False" IsClosable="False"
+                         Title="{Binding Text[ReferencePhotoOpenFailed]}" />
                 <Image x:Name="ReferencePhoto" MaxHeight="540" Stretch="Uniform" />
               </StackPanel></Border>
             </StackPanel>
@@ -80,17 +82,21 @@
                 <ToggleSwitch x:Name="StartupToggle" Header="{Binding Text[Startup]}" OnContent="{Binding Text[On]}" OffContent="{Binding Text[Off]}" Toggled="StartupChanged" />
                 <TextBlock x:Name="StartupStateText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <TextBlock Text="{Binding Text[StartupHint]}" TextWrapping="Wrap" />
+                <TextBlock x:Name="RestoreReportText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           AutomationProperties.LiveSetting="Polite" />
+                <Button Content="{Binding Text[RefreshRestoreResults]}" Click="RefreshRestoreResultsClicked" />
                 <ComboBox x:Name="BindingPicker" Header="{Binding Text[BindingDisplay]}" DisplayMemberPath="Label"
                         HorizontalAlignment="Stretch" SelectionChanged="BindingSelectionChanged" />
+                <TextBlock x:Name="BindingStateText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                         AutomationProperties.LiveSetting="Polite" />
                 <ToggleSwitch x:Name="BindingToggle" Header="{Binding Text[BindingRestore]}" IsEnabled="False"
                             OnContent="{Binding Text[On]}" OffContent="{Binding Text[Off]}" Toggled="BindingChanged" />
                 <Button x:Name="RemoveBindingButton" Content="{Binding Text[RemoveDisplayBinding]}" IsEnabled="False" Click="RemoveBindingClicked" />
-                <TextBlock x:Name="BindingStateText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                         AutomationProperties.LiveSetting="Polite" />
               </StackPanel></Border>
               <Border Style="{StaticResource Card}"><StackPanel Spacing="12">
                 <TextBlock Text="{Binding Text[AgentTitle]}" Style="{ThemeResource BodyStrongTextBlockStyle}" />
-                <TextBlock Text="dccwpp --help --json" FontFamily="Cascadia Mono, Consolas" IsTextSelectionEnabled="True" />
+                <TextBlock Text="dccwpp.exe capabilities --json" FontFamily="Cascadia Mono, Consolas"
+                           IsTextSelectionEnabled="True" TextWrapping="Wrap" />
                 <TextBlock Text="{Binding Text[AgentHint]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <TextBlock Text="{Binding DataDirectory}" IsTextSelectionEnabled="True" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" />
               </StackPanel></Border>

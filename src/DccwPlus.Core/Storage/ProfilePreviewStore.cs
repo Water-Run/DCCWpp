@@ -44,7 +44,7 @@ public sealed class ProfilePreviewStore(string root) : IProfilePreviewJournal
     public void Request(Guid id, string action)
     {
         if (action is not ("confirm" or "revert")) throw new ArgumentException("Unsupported preview action.");
-        _ = Load(id);
+        if (Load(id).Status is not ("prepared" or "applying" or "previewing")) return;
         // Separate immutable requests: revert wins if both arrived before the worker's tick.
         string path = Path.Combine(DirectoryFor(id), action + ".request");
         if (!File.Exists(path))

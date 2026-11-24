@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using DccwPlus.Core.Calibration;
 using DccwPlus.Core.Presets;
 using DccwPlus.Core.Storage;
@@ -205,31 +207,51 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (!OnPreviewDisplay()) { await CancelAsync(targetMoved: true); return; }
         if (!undo && !await PushAsync()) return;
         if (!OnPreviewDisplay()) { await CancelAsync(targetMoved: true); return; }
+        bool openClearType = !undo && ClearTypeOption.IsChecked == true;
         _busy = true; UpdateUi();
         try
         {
             ClosePatternWindow();
             _session = await _client.CommandAsync(_session!.Id, "confirm");
-            if (_session.Status == "confirmed" && undo)
-            {
-                bool bindingWarning = _session.BindingStatus is "failed" or "pending";
-                Show(bindingWarning ? "UndoSavedBindingWarning" : "UndoSaved",
-                    bindingWarning ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
-            }
-            else if (_session.Status == "confirmed")
-            {
-                _model!.RefreshPresets();
-                bool bindingSaved = _session.BindingStatus == "saved";
-                Show(bindingSaved ? "CalibrationSaved" : "CalibrationSavedWithoutBinding",
-                    bindingSaved ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
-                Outcome.Message += " " + _session.InstalledProfile;
-                if (ClearTypeOption.IsChecked == true)
-                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cttune.exe")) { UseShellExecute = true });
-            }
-            else ShowState();
+            ShowState();
+            if (_session.Status == "confirmed" && !undo)
+                FinishCalibration(openClearType);
         }
-        catch (Exception ex) { ReloadSession(); ShowError(ex); }
+        catch (Exception ex)
+        {
+            try { ReloadSession(); }
+            catch (Exception readError) when (readError is IOException or InvalidDataException or UnauthorizedAccessException)
+            { Debug.WriteLine(readError); }
+            if (_session?.Status == "confirmed") ShowState();
+            else ShowError(ex);
+        }
         finally { _busy = false; if (!Active) _timer!.Stop(); UpdateUi(); RefreshRecovery(); }
+    }
+    private void FinishCalibration(bool openClearType)
+    {
+        try { _model!.RefreshPresets(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            Debug.WriteLine(ex);
+            Outcome.Message += " " + _model!.Text["PresetRefreshAfterSaveFailed"];
+            Outcome.Severity = InfoBarSeverity.Warning;
+        }
+        if (openClearType) OpenClearType();
+    }
+    private void RetryClearTypeClicked(object sender, RoutedEventArgs e) => OpenClearType();
+    private void OpenClearType()
+    {
+        try
+        {
+            string tool = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cttune.exe");
+            using var process = Process.Start(new ProcessStartInfo(tool) { UseShellExecute = true });
+            ClearTypeNotice.IsOpen = false;
+        }
+        catch (Exception ex) when (ex is Win32Exception or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            Debug.WriteLine(ex);
+            ClearTypeNotice.IsOpen = true;
+        }
     }
     private async void UndoCalibrationClicked(object sender, RoutedEventArgs e)
     {
@@ -434,6 +456,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     {
         ClosePatternWindow();
         Outcome.IsOpen = false;
+        ClearTypeNotice.IsOpen = false;
         UpdateUi();
     }
     private void UpdateDisplayOptions(DisplayInfo? selected)
@@ -687,7 +710,12 @@ public sealed partial class CalibrationWorkspace : UserControl
             RecoveryNotice.Message = _model.Text[onlyBindings ? "BindingRecoveryMessage" : "RecoveryMessage"];
             RecoveryNotice.IsOpen = pending.Length > 0;
         }
-        catch (Exception ex) { ShowError(ex); RecoveryNotice.IsOpen = true; }
+        catch (Exception ex)
+        {
+            RecoveryNotice.Title = _model.Text["RecoveryTitle"];
+            RecoveryNotice.Message = _model.Text["Error"] + " " + ex.Message;
+            RecoveryNotice.IsOpen = true;
+        }
     }
     private async void RecoverClicked(object sender, RoutedEventArgs e)
     {
@@ -716,9 +744,13 @@ public sealed partial class CalibrationWorkspace : UserControl
     private void ShowState()
     {
         if (_session is null) return;
+        if (_session.Status == "confirmed")
+        {
+            ShowConfirmedOutcome(_session);
+            return;
+        }
         string key = HasPendingPreviewRecovery ? "RecoveryMessage" : _session.Status switch
         {
-            "confirmed" => "CalibrationSaved",
             "reverted" when _session.ReasonCode == "preview_expired" => "PreviewExpiredRestored",
             "reverted" => "CalibrationReverted",
             "superseded" => "CalibrationSuperseded",
@@ -726,8 +758,32 @@ public sealed partial class CalibrationWorkspace : UserControl
         };
         Show(key, _session.NeedsRecovery && !Active ? InfoBarSeverity.Warning : InfoBarSeverity.Informational);
     }
+    private void ShowConfirmedOutcome(GammaCalibrationSession session)
+    {
+        if (session.UndoOf is not null)
+        {
+            bool bindingWarning = session.BindingStatus is "failed" or "pending";
+            Show(bindingWarning ? "UndoSavedBindingWarning" : "UndoSaved",
+                bindingWarning ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
+            return;
+        }
+        string key = session.BindingStatus switch
+        {
+            "saved" => "CalibrationSaved",
+            "pending" => "CalibrationSavedBindingPending",
+            _ => "CalibrationSavedWithoutBinding"
+        };
+        Show(key, session.BindingStatus == "saved" ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+        if (session.InstalledProfile is { } profile) Outcome.Message += " " + profile;
+    }
     private void Show(string key, InfoBarSeverity severity)
-    { if (_model is null) return; Outcome.Message = _model.Text[key]; Outcome.Severity = severity; Outcome.IsOpen = true; }
+    {
+        if (_model is null) return;
+        ClearTypeNotice.IsOpen = false;
+        Outcome.Message = _model.Text[key];
+        Outcome.Severity = severity;
+        Outcome.IsOpen = true;
+    }
     private void ShowError(Exception ex)
     {
         if (_model is null) return;
@@ -749,6 +805,7 @@ public sealed partial class CalibrationWorkspace : UserControl
             };
             if (guidance is not null) { Show(guidance, InfoBarSeverity.Warning); return; }
         }
+        ClearTypeNotice.IsOpen = false;
         Outcome.Message = _model.Text["Error"] + " " + ex.Message;
         Outcome.Severity = InfoBarSeverity.Error;
         Outcome.IsOpen = true;

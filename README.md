@@ -22,6 +22,8 @@ The x64 development MSIX has been exercised in an interactive Windows Sandbox at
 
 A separate standard-user Sandbox check covered WinUI launch, opt-in sign-in startup, a skipped disconnected display binding, and the next sign-in after disabling startup. The packaged CLI also read presets imported through the GUI. Repeated import reused the existing preset and importing a copy created a separate entry.
 
+Settings shows when the last automatic restore check ran, what triggered it, and why the selected display was skipped or still needs recovery. Refresh restore results to read the latest report.
+
 Display calibration and ICC preview require a local Windows session. In Remote Desktop, DCCW++ keeps reference patterns and presets available and reports `remote_session_blocked` for display previews. Windows Display Color Calibration also requires a local session.
 
 ## Build from source
@@ -37,7 +39,9 @@ The first command builds the unpackaged app and CLI and runs core and simulated 
 
 ## Command line
 
-The MSIX declares the `dccwpp.exe` execution alias. For local development, run the built CLI directly or use `dotnet run --project src/DccwPlus.Cli --` followed by the arguments.
+The MSIX registers `dccwpp.exe` for the Windows user who installed it. If Windows cannot find the command, check that DCCW++ is enabled under **App execution aliases** in Windows Settings. An agent whose `PATH` omits WindowsApps can invoke the enabled alias at `%LOCALAPPDATA%\Microsoft\WindowsApps\dccwpp.exe`. See [Windows alias troubleshooting](docs/CLI.md#windows-执行别名).
+
+For local development, run the built CLI directly or use `dotnet run --project src/DccwPlus.Cli --` followed by the arguments.
 
 ```powershell
 dccwpp.exe capabilities --json
@@ -53,7 +57,7 @@ dccwpp.exe startup last-restore --json
 dccwpp.exe recovery status --json
 ```
 
-Agents can use `capabilities --json` to discover command effects, dry-run support, and request ID support. For a preset dry run, set `$presetId` to a saved preset ID and `$displayId` to an ID from `displays list`. The dry run checks for interrupted previews, reads the current curve and ICC association, and builds a candidate ICC in memory. Calling `apply` without `--dry-run` repeats those checks and starts a timed SDR preview if they pass. Use `calibration status`, `calibration confirm`, or `calibration revert` with its session ID.
+The capability report lists command effects, dry-run support, and request ID support. For a preset dry run, set `$presetId` to a saved preset ID and `$displayId` to an ID from `displays list`. The dry run checks for interrupted previews, reads the current curve and ICC association, and builds a candidate ICC in memory. Calling `apply` without `--dry-run` repeats those checks and starts a timed SDR preview if they pass. Use `calibration status`, `calibration confirm`, or `calibration revert` with its session ID.
 
 For direct numeric control, use `calibration preview` with a display ID and Gamma or RGB gain values. Start with `--dry-run` and check `data.canPreview`. Once the user is ready to review, run the preview with a request UUID and use its `sessionId` with `calibration update` to tune individual values or switch between `--original` and `--adjusted`. The 10–60 second deadline is fixed for a CLI preview. Ask the user to inspect the display before confirming. The preset can enter the library as part of the confirmed save.
 
@@ -61,7 +65,9 @@ Use `calibration observe <session-id> --json` or `profiles observe <session-id> 
 
 If `confirm` or `revert` returns exit code 4 with `error.code` set to `recovery_required`, the preview worker has stopped while the session still needs recovery. Run `recover` with the same command group (`calibration` or `profiles`) and session ID to attempt restoration, then check the returned state.
 
-If a confirmed session reports `bindingStatus: pending`, query it with `calibration status <session-id> --json` and try `calibration recover <session-id> --json` to finish the local records. Use `recovery status --json` to find outstanding work across sessions.
+A late `calibration update`, an ICC confirmation or revert that did not reach the requested state, and an ICC recovery that remains pending return exit code 4. Read `error.code` for the reason and use the corresponding `status` command for the full session.
+
+`calibration confirm` uses the recorded display outcome if the worker encounters a later error writing local records. If a confirmed session reports `bindingStatus: pending`, query it with `calibration status <session-id> --json` and try `calibration recover <session-id> --json` to finish the local records. Use `recovery status --json` to find outstanding work across sessions.
 
 Generate a UUID before starting a preview with `calibration preview`, `apply`, `calibration undo`, or `profiles preview` and pass it as `--request-id`. If the response is lost, use that UUID to check the session or retry the same command and arguments. Check the exit code and JSON `ok` field, then read the outcome fields in `data`. The [CLI reference](docs/CLI.md) covers command effects, transaction states, and exit codes.
 
@@ -87,6 +93,6 @@ Save `calibration capture --json` output before and after a test. Use `dccwpp.ex
 
 ## License and references
 
-DCCW++ is licensed under [GPL-3.0-only](LICENSE). Development MSIX packages include third-party notices. The [Store runbook](docs/STORE.md) describes how to build both architectures from an archived source snapshot and record their checksums. Bundled photographs will have separate attribution and license records.
+DCCW++ is licensed under [GPL-3.0-only](LICENSE). MSIX packages include third-party notices. The [Store runbook](docs/STORE.md) describes how to build both architectures from an archived source snapshot and record checksums for development MSIX files or Store uploads. Bundled photographs will have separate attribution and license records.
 
 The UI follows [WinUI Gallery](https://github.com/microsoft/WinUI-Gallery) conventions. [RunOnce](https://github.com/Water-Run/RunOnce) is the reference for Microsoft Store packaging, and Clash# is a reference for language selection and fallback. DCCW++ uses its own implementation and runs independently of these apps and `dccw.exe`.

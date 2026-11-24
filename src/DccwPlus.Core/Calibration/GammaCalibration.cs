@@ -116,6 +116,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
             if (!now.Ramp.Matches(Session.LastWritten, ReadbackTolerance)) return Revert("external_curve_change");
         }
         catch { return Revert("display_unavailable"); }
+        RevertIfExpired();
         return Session;
     }
     public void Renew()
@@ -137,6 +138,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         _deadlineStart = now;
         _deadlineDuration = effectiveDuration;
         Session = next;
+        RevertIfExpired();
     }
     public void SetReviewMode(bool reviewing, CalibrationPreset? edits = null)
     {
@@ -259,6 +261,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         if (RevertIfExpired()) return;
         Session = Session with { BeforeWrite = null };
         Persist("previewing", "previewing", true);
+        RevertIfExpired();
     }
     public static bool SameTarget(GammaDeviceState before, GammaDeviceState now) =>
         SamePath(before, now)

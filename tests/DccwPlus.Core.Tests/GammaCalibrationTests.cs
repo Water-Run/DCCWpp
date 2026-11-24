@@ -309,6 +309,74 @@ public sealed class GammaCalibrationTests
         Assert.True(fixture.Backend.State.Ramp.Matches(GammaRamp.Identity()));
     }
 
+    [Fact] public void InitialPreviewExpiresDuringItsFinalDisplayRead()
+    {
+        var fixture = new Fixture();
+        int reads = 0;
+        fixture.Backend.BeforeRead = () =>
+        {
+            if (++reads == 4) fixture.Clock.Advance(30);
+        };
+
+        var result = fixture.Begin();
+
+        Assert.Equal("reverted", result.Status);
+        Assert.Equal("preview_expired", result.ReasonCode);
+        Assert.True(fixture.Backend.State.Ramp.Matches(result.Original.Ramp));
+    }
+
+    [Fact] public void ExpiryDuringDisplayReadDoesNotOverwriteAnOutsideProfileChange()
+    {
+        var fixture = new Fixture();
+        var preview = fixture.Begin();
+        fixture.Backend.BeforeRead = () =>
+        {
+            fixture.Clock.Advance(30);
+            fixture.Backend.State = fixture.Backend.State with { ProfileName = "external.icc" };
+        };
+        fixture.Backend.BeforeWrite = () => throw new InvalidOperationException("Do not overwrite an outside change.");
+
+        var result = fixture.Engine.Tick();
+
+        Assert.Equal("superseded", result.Status);
+        Assert.Equal("external_profile_change", result.ReasonCode);
+        Assert.Equal("external.icc", fixture.Backend.State.ProfileName);
+        Assert.True(fixture.Backend.State.Ramp.Matches(preview.Candidate));
+    }
+
+    [Fact] public void UpdateExpiresWhileThePreviewJournalIsBeingSaved()
+    {
+        var fixture = new Fixture();
+        var preview = fixture.Begin();
+        fixture.Journal.BeforeSave = session =>
+        {
+            if (session.Status == "previewing") fixture.Clock.Advance(30);
+        };
+
+        var result = fixture.Engine.Update(fixture.Preset with { Calibration = new() { GreenGain = .8 } });
+
+        Assert.Equal("reverted", result.Status);
+        Assert.Equal("preview_expired", result.ReasonCode);
+        Assert.Equal(preview.ExpiresAt, result.ExpiresAt);
+        Assert.True(fixture.Backend.State.Ramp.Matches(preview.Original.Ramp));
+    }
+
+    [Fact] public void ReviewExpiresWhileTheNewDeadlineIsBeingSaved()
+    {
+        var fixture = new Fixture();
+        var preview = fixture.Begin(windowOwned: true);
+        fixture.Journal.BeforeSave = session =>
+        {
+            if (session is { Status: "previewing", IsReviewing: true }) fixture.Clock.Advance(30);
+        };
+
+        fixture.Engine.SetReviewMode(true);
+
+        Assert.Equal("reverted", fixture.Engine.Session!.Status);
+        Assert.Equal("preview_expired", fixture.Engine.Session.ReasonCode);
+        Assert.True(fixture.Backend.State.Ramp.Matches(preview.Original.Ramp));
+    }
+
     [Fact] public void ConfirmCannotCommitIfTheDeadlinePassesDuringDisplayRead()
     {
         var fixture = new Fixture();
@@ -609,10 +677,12 @@ public sealed class GammaCalibrationTests
     }
     private sealed class Journal : IGammaCalibrationJournal
     {
+        public Action<GammaCalibrationSession>? BeforeSave { get; set; }
         public GammaCalibrationSession? LastApplying { get; private set; }
         public GammaCalibrationSession? LastCommitting { get; private set; }
         public void Save(GammaCalibrationSession session)
         {
+            BeforeSave?.Invoke(session);
             if (session.Status == "applying") LastApplying = session;
             if (session.Status == "committing") LastCommitting = session;
         }

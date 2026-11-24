@@ -177,7 +177,7 @@ internal static class Cli
                 {
                     var result = await client.CommandAsync(ParseId(actionId), remaining[1]);
                     string desired = remaining[1] == "confirm" ? "confirmed" : "reverted";
-                    if (result.Status != desired) return Failure(result.ReasonCode, $"Calibration session is {result.Status}.", 4, json);
+                    if (result.Status != desired) return SessionFailure(result.Status, result.ReasonCode, json);
                     return Success(SessionSummary(result), json);
                 }
                 if (remaining is ["calibration", "recover", var recoverId])
@@ -200,11 +200,14 @@ internal static class Cli
                         throw new ArgumentException(new LocalizationService()["CalibrationUpdateCliUsage"]);
 
                     Guid sessionId = ParseId(updateId);
-                    if (updatePreset is not null)
-                        return Success(SessionSummary(await client.CommandAsync(sessionId, "update", store.Get(ParseId(updatePreset)), original)), json);
                     if (options.HasValues)
                         PresetCodec.Validate(CalibrationPreset.Create(new LocalizationService()["CliCalibrationPresetName"], options.ApplyTo(new())));
-                    return Success(SessionSummary(await client.EditAsync(sessionId, options.Edit, original)), json);
+                    var result = updatePreset is not null
+                        ? await client.CommandAsync(sessionId, "update", store.Get(ParseId(updatePreset)), original)
+                        : await client.EditAsync(sessionId, options.Edit, original);
+                    return result.Status == "previewing"
+                        ? Success(SessionSummary(result), json)
+                        : SessionFailure(result.Status, result.ReasonCode, json);
                 }
                 throw new ArgumentException("Run dccwpp --help for calibration commands.");
             }
@@ -214,9 +217,16 @@ internal static class Cli
                 var client = new ProfilePreviewClient(root, Path.Combine(AppContext.BaseDirectory, "dccwpp.exe"));
                 if (remaining is ["profiles", "status", var sessionId]) return Success(client.Status(ParseId(sessionId)), json);
                 if (remaining is ["profiles", "confirm" or "revert", var commandId])
-                    return Success(await client.CommandAsync(ParseId(commandId), remaining[1]), json);
+                {
+                    var result = await client.CommandAsync(ParseId(commandId), remaining[1]);
+                    string desired = remaining[1] == "confirm" ? "confirmed" : "reverted";
+                    return result.Status == desired ? Success(result, json) : SessionFailure(result.Status, result.ReasonCode, json);
+                }
                 if (remaining is ["profiles", "recover", var recoveryId])
-                    return Success(await client.RecoverAsync(ParseId(recoveryId)), json);
+                {
+                    var result = await client.RecoverAsync(ParseId(recoveryId));
+                    return result.NeedsRecovery ? SessionFailure(result.Status, result.ReasonCode, json) : Success(result, json);
+                }
                 string? displayId = TakeOption(remaining, "--display");
                 if (remaining is ["profiles", "list"] && displayId is not null)
                     return Success(new WindowsProfileAssociationBackend().Read(displayId), json);
@@ -410,6 +420,9 @@ internal static class Cli
         Console.Out.WriteLine(JsonSerializer.Serialize(json ? new { schemaVersion = 1, ok = true, data } : data, OutputJson));
         return 0;
     }
+    private static int SessionFailure(string status, string reasonCode, bool json) =>
+        Failure(reasonCode, string.Format(CultureInfo.CurrentCulture, new LocalizationService()["CliSessionOutcome"], status), 4, json);
+
     private static int Failure(string code, string message, int exitCode, bool json)
     {
         if (json) Console.Out.WriteLine(JsonSerializer.Serialize(new { schemaVersion = 1, ok = false, error = new { code, message } }, OutputJson));

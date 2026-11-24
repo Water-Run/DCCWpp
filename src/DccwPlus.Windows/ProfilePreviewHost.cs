@@ -132,7 +132,7 @@ public sealed class ProfilePreviewClient(string root, string workerExecutable)
         {
             var (state, workerRunning) = PreviewWorkerFiles.Observe(directory, () => _store.Load(id), NeedsWorker);
             if (!workerRunning && NeedsWorker(state))
-                throw new ProfilePreviewException("recovery_required", new LocalizationService()["RecoveryMessage"]);
+                throw PreviewWorkerFiles.RecoveryRequired();
             return state;
         }
 
@@ -144,7 +144,8 @@ public sealed class ProfilePreviewClient(string root, string workerExecutable)
     {
         if (!File.Exists(workerExecutable)) throw new FileNotFoundException("The independent preview worker is missing. Rebuild or reinstall DCCW++.", workerExecutable);
         Guid attemptId = Guid.NewGuid();
-        string errorPath = PreviewWorkerFiles.ErrorPath(_store.DirectoryFor(id), attemptId);
+        string directory = _store.DirectoryFor(id);
+        string errorPath = PreviewWorkerFiles.ErrorPath(directory, attemptId);
         var start = new ProcessStartInfo(Path.GetFullPath(workerExecutable)) { UseShellExecute = false, CreateNoWindow = true,
             WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(workerExecutable))! };
         foreach (string arg in new[] { "__profile-worker", "--session", id.ToString("D"), "--data-dir",
@@ -153,16 +154,13 @@ public sealed class ProfilePreviewClient(string root, string workerExecutable)
         var timer = Stopwatch.StartNew();
         do
         {
-            if (File.Exists(errorPath))
-            {
-                var error = ProfilePreviewStore.Read<ProfileWorkerError>(errorPath);
-                throw new ProfilePreviewException(error.Code, error.Message);
-            }
-            bool exited = worker.HasExited;
-            var session = _store.Find(id);
-            if (session is not null && (exited || session.Status is "previewing" or "recovery-pending" || !session.NeedsRecovery))
-                return session;
-            if (exited && worker.ExitCode != PreviewWorkerFiles.JoinedExistingWorker) break;
+            int? exitCode = PreviewWorkerFiles.ReadLaunchExitCode(worker, errorPath);
+            var session = PreviewWorkerFiles.ReadReadySession(directory, () => _store.Find(id),
+                state => state.NeedsRecovery && state.Status != "recovery-pending",
+                state => state.Status == "previewing" ? state.ExpiresAt : null,
+                launchExited: exitCode is not null);
+            if (session is not null) return session;
+            if (exitCode is not (null or PreviewWorkerFiles.JoinedExistingWorker)) break;
             await Task.Delay(75);
         } while (timer.Elapsed < TimeSpan.FromSeconds(10));
         // Never kill a worker that might be restoring an association. Its timeout remains authoritative.

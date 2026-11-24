@@ -122,7 +122,7 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
             await WaitForCommandAsync(id, pending, reportError: false);
         }
         var (session, workerRunning) = Observe(id);
-        if (!workerRunning && session.NeedsRecovery && session.Status != "recovery-pending") throw RecoveryRequired();
+        if (!workerRunning && session.NeedsRecovery && session.Status != "recovery-pending") throw PreviewWorkerFiles.RecoveryRequired();
         if (session.Status != "previewing") return session;
         var command = new GammaPreviewCommand(Guid.NewGuid(), action, edit is null ? preset : edit(session.Preset), showOriginal);
         AtomicFile.Write(commandPath, JsonSerializer.SerializeToUtf8Bytes(command, ProfilePreviewStore.Json));
@@ -133,6 +133,7 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
     {
         string path = Path.Combine(_store.DirectoryFor(id), "ack.json");
         var timer = Stopwatch.StartNew();
+        bool confirming = command.Action == "confirm";
         do
         {
             if (File.Exists(path))
@@ -141,7 +142,10 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
                 if (ack.CommandId == command.Id)
                 {
                     if (reportError && ack.ErrorCode is not null)
+                    {
+                        if (confirming && _store.Load(id) is { Status: "confirmed" } committed) return committed;
                         throw new ProfilePreviewException(ack.ErrorCode, ack.Message ?? ack.ErrorCode);
+                    }
                     return _store.Load(id);
                 }
             }
@@ -150,12 +154,14 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
             // A confirmed outcome can precede the acknowledgement and the local binding write.
             if (!session.NeedsRecovery)
             {
-                if (!reportError || command.Action != "confirm" || session.Status != "confirmed") return session;
+                if (!reportError || !confirming || session.Status != "confirmed") return session;
                 if (!PreviewWorkerFiles.IsLocked(_store.DirectoryFor(id), "worker")) return _store.Load(id);
             }
-            if (session.NeedsRecovery && !workerRunning) throw RecoveryRequired();
+            if (session.NeedsRecovery && !workerRunning) throw PreviewWorkerFiles.RecoveryRequired();
             await Task.Delay(75);
         } while (timer.Elapsed < WaitLimit);
+        // The display commit is durable even if local completion has not produced a receipt.
+        if (confirming && _store.Load(id) is { Status: "confirmed" } completed) return completed;
         throw new ProfilePreviewException("worker_not_responding", "The calibration worker did not acknowledge the request. Check the session status before retrying.");
     }
 
@@ -174,7 +180,8 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
     {
         if (!File.Exists(workerExecutable)) throw new FileNotFoundException("The calibration worker is missing. Rebuild or reinstall DCCW++.", workerExecutable);
         Guid attemptId = Guid.NewGuid();
-        string errorPath = PreviewWorkerFiles.ErrorPath(_store.DirectoryFor(id), attemptId);
+        string directory = _store.DirectoryFor(id);
+        string errorPath = PreviewWorkerFiles.ErrorPath(directory, attemptId);
         var start = new ProcessStartInfo(Path.GetFullPath(workerExecutable))
         {
             UseShellExecute = false,
@@ -190,16 +197,16 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
         var timer = Stopwatch.StartNew();
         do
         {
-            if (File.Exists(errorPath))
+            int? exitCode = PreviewWorkerFiles.ReadLaunchExitCode(worker, errorPath);
+            if (recover)
             {
-                var error = ProfilePreviewStore.Read<ProfileWorkerError>(errorPath);
-                throw new ProfilePreviewException(error.Code, error.Message);
+                if (exitCode is not null && _store.Find(id) is { } recovered) return recovered;
             }
-            bool exited = worker.HasExited;
-            var session = _store.Find(id);
-            if (session is not null && (recover ? exited : exited || session.Status is "previewing" or "recovery-pending"))
-                return session;
-            if (exited && worker.ExitCode != PreviewWorkerFiles.JoinedExistingWorker) break;
+            else if (PreviewWorkerFiles.ReadReadySession(directory, () => _store.Find(id),
+                session => session.NeedsRecovery && session.Status != "recovery-pending",
+                session => session.Status == "previewing" ? session.ExpiresAt : null,
+                launchExited: exitCode is not null) is { } ready) return ready;
+            if (exitCode is not (null or PreviewWorkerFiles.JoinedExistingWorker)) break;
             await Task.Delay(75);
         } while (timer.Elapsed < WaitLimit);
         throw new ProfilePreviewException("worker_start_timeout", $"The calibration worker did not become ready. Query session {id:D} before retrying.");
@@ -224,15 +231,43 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
 
     private static ProfilePreviewException RequestConflict() =>
         new("request_id_conflict", "This request ID belongs to a different calibration request.");
-
-    private static ProfilePreviewException RecoveryRequired() =>
-        new("recovery_required", new LocalizationService()["RecoveryMessage"]);
 }
 
 internal static class PreviewWorkerFiles
 {
     // A redundant worker exits without publishing an error to the active worker's client.
     public const int JoinedExistingWorker = 10;
+
+    public static FileStream AcquireForRecovery(string directory) => TryLock(directory, "worker")
+        ?? throw new ProfilePreviewException("preview_busy", new LocalizationService()["RecoveryBusy"]);
+
+    public static ProfilePreviewException RecoveryRequired() =>
+        new("recovery_required", new LocalizationService()["RecoveryMessage"]);
+
+    public static int? ReadLaunchExitCode(Process worker, string errorPath)
+    {
+        // Check for the receipt after sampling process exit, since the worker publishes it before exiting.
+        int? exitCode = worker.HasExited ? worker.ExitCode : null;
+        if (File.Exists(errorPath))
+        {
+            var error = ProfilePreviewStore.Read<ProfileWorkerError>(errorPath);
+            throw new ProfilePreviewException(error.Code, error.Message);
+        }
+        return exitCode;
+    }
+
+    public static T? ReadReadySession<T>(string directory, Func<T?> load, Func<T, bool> needsWorker,
+        Func<T, DateTimeOffset?> previewDeadline, bool launchExited) where T : class
+    {
+        var (session, workerRunning) = Observe(directory, load, state => state is not null && needsWorker(state));
+        if (session is null) return null;
+        // A rollback can be journaled before the worker writes its failure receipt.
+        if (!needsWorker(session)) return launchExited ? session : null;
+        if (workerRunning)
+            return previewDeadline(session) is { } deadline && DateTimeOffset.UtcNow < deadline ? session : null;
+        if (launchExited) throw RecoveryRequired();
+        return null;
+    }
 
     public static (T State, bool WorkerRunning) Observe<T>(string directory, Func<T> load, Func<T, bool> mayHaveWorker)
     {

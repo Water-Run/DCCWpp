@@ -191,6 +191,10 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     calibration_state.update(status="reverted", reasonCode="preview_expired", preset=copy)
     terminal = json.dumps(calibration_state).encode()
     interrupted.write_bytes(terminal)
+    assert call("calibration", "update", str(interrupted_id), "--gamma", "2.3", expected=4)["code"] == "preview_expired"
+    assert call("calibration", "update", str(interrupted_id), "--preset", created["id"], expected=4)["code"] == "preview_expired"
+    assert not interrupted.with_name("command.json").exists()
+    assert interrupted.read_bytes() == terminal
     assert call("recovery", "status")["sessions"] == []
     assert call("recovery", "run") == dict(schemaVersion=1, reason="no_recovery_needed", sessions=[])
     request = interrupted.parent / "request.json"
@@ -309,7 +313,7 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
                               dict(fileName=candidate_profile, sha256="B" * 64, canSelect=True)])
     profile_journal = dict(schemaVersion=1, id=str(profile_id), original=original,
                            candidateProfile=candidate_profile, candidateSha256="B" * 64,
-                           expiresAt=created["createdAt"], status="reverted")
+                           expiresAt=created["createdAt"], status="reverted", reasonCode="preview_expired")
     profile_state.write_text(json.dumps(profile_journal), encoding="utf-8")
     profile_request = profile_state.with_name("request.json")
     profile_reservation = json.dumps(dict(id=str(profile_id), displayId=profile_display, candidateProfile=candidate_profile,
@@ -320,6 +324,8 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert all("mhc2Present" not in item for item in prior["original"]["profiles"])
     assert call(*profile_args) == prior
     assert call("profiles", "observe", str(profile_id)) == dict(outcome="finished", session=prior)
+    assert call("profiles", "revert", str(profile_id)) == prior
+    assert call("profiles", "confirm", str(profile_id), expected=4)["code"] == "preview_expired"
     assert call(*profile_args, "--seconds", "20", expected=4)["code"] == "request_id_conflict"
     assert call(*profile_args, "--dry-run", expected=4)["code"] == "display_disconnected"
     assert profile_request.read_bytes() == profile_reservation
@@ -335,7 +341,23 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         assert call("profiles", action, str(profile_id), expected=4)["code"] == "recovery_required"
         assert not profile_state.with_name(f"{action}.request").exists()
     assert profile_state.read_bytes() == interrupted_profile
-    profile_state.write_text(json.dumps(profile_journal), encoding="utf-8")
+    pending_profile = dict(profile_journal, status="recovery-pending", reasonCode="display_disconnected")
+    profile_state.write_text(json.dumps(pending_profile), encoding="utf-8")
+    for action in ("confirm", "revert"):
+        assert call("profiles", action, str(profile_id), expected=4)["code"] == "display_disconnected"
+        assert not profile_state.with_name(f"{action}.request").exists()
+    failure = call("profiles", "recover", str(profile_id), expected=4)["code"]
+    assert failure in {"display_disconnected", "remote_session_blocked"}
+    pending = call("profiles", "status", str(profile_id))
+    assert pending["status"] == "recovery-pending" and pending["reasonCode"] == failure
+
+    committed_profile = dict(profile_journal, status="confirmed", reasonCode="confirmed", associationVerified=True)
+    profile_state.write_text(json.dumps(committed_profile), encoding="utf-8")
+    committed = call("profiles", "status", str(profile_id))
+    assert call("profiles", "confirm", str(profile_id)) == committed
+    assert call("profiles", "recover", str(profile_id)) == committed
+    assert call("profiles", "revert", str(profile_id), expected=4)["code"] == "confirmed"
+    assert not profile_state.with_name("revert.request").exists()
 
     displays = call("displays", "list")
     allowed = {"sdr", "wcg", "hdr", "advanced-color", "unknown", "not-probed"}
@@ -378,6 +400,11 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert call("displays", "snapshot", "show")["capturedAt"] == observed["capturedAt"]
     call("apply", created["id"], "--display", "missing-monitor", "--dry-run", expected=3)
     assert call("apply", created["id"], "--display", "missing-monitor", expected=3)["code"] == "not_found"
+    rejected_profile_id = uuid4()
+    rejected_profile = call("profiles", "preview", "candidate.icc", "--display", "missing-monitor",
+                            "--request-id", str(rejected_profile_id), expected=4)
+    assert rejected_profile["code"] == "display_disconnected"
+    assert not (data / "profile-previews" / rejected_profile_id.hex / "state.json").exists()
     call("calibration", "diagnose", "--display", "missing-monitor", expected=3)
     call("calibration", "capture", "--display", "missing-monitor", expected=3)
     call("displays", "restore-plan", "--display", "missing-monitor", expected=3)
