@@ -1,17 +1,20 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using DccwPlus.Core.Calibration;
+using DccwPlus.Core.Localization;
 using DccwPlus.Core.Storage;
 
 namespace DccwPlus.Windows;
 
 public sealed record ProfilePreviewRequest(Guid Id, string DisplayId, string CandidateProfile, int Seconds,
-    int? OwnerProcessId = null, long? OwnerStartTicks = null, bool Recover = false);
+    int? OwnerProcessId = null, long? OwnerStartTicks = null, bool Recover = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool AllowRetries = false);
 public sealed record ProfileWorkerError(string Code, string Message);
 
 public static class ProfilePreviewHost
 {
-    public static int Run(string root, Guid id)
+    public static int Run(string root, Guid id, Guid? attemptId = null, Func<IProfileAssociationBackend>? backendFactory = null)
     {
         var store = new ProfilePreviewStore(root);
         string directory = store.DirectoryFor(id);
@@ -19,10 +22,14 @@ public static class ProfilePreviewHost
         ProfilePreviewTransaction? transaction = null;
         try
         {
-            gate = DisplayMutationLock.Acquire();
+            if (id == Guid.Empty) throw new InvalidDataException("Invalid preview request identity.");
+            using var worker = PreviewWorkerFiles.TryLock(directory, "worker");
+            if (worker is null) return PreviewWorkerFiles.JoinedExistingWorker;
             var request = ProfilePreviewStore.Read<ProfilePreviewRequest>(Path.Combine(directory, "request.json"));
-            if (request.Id != id || id == Guid.Empty) throw new InvalidDataException("Invalid preview request identity.");
-            transaction = new(new WindowsProfileAssociationBackend(), store);
+            if (request.Id != id) throw new InvalidDataException("Invalid preview request identity.");
+            if (!request.Recover && store.Find(id) is not null) return 0;
+            gate = DisplayMutationLock.Acquire();
+            transaction = new(backendFactory?.Invoke() ?? new WindowsProfileAssociationBackend(), store);
             if (request.Recover)
             {
                 var recovered = transaction.Recover(store.Load(id));
@@ -49,7 +56,7 @@ public static class ProfilePreviewHost
                 try { transaction.Revert("worker_error"); } catch (Exception) { /* Existing journal remains recoverable. */ }
             }
             var error = new ProfileWorkerError(ex is ProfilePreviewException p ? p.Code : "preview_failed", ex.Message);
-            AtomicFile.Write(Path.Combine(directory, "error.json"), JsonSerializer.SerializeToUtf8Bytes(error, ProfilePreviewStore.Json));
+            AtomicFile.Write(PreviewWorkerFiles.ErrorPath(directory, attemptId), JsonSerializer.SerializeToUtf8Bytes(error, ProfilePreviewStore.Json));
             return 4;
         }
         finally { gate?.Dispose(); }
@@ -72,14 +79,34 @@ public static class ProfilePreviewHost
 public sealed class ProfilePreviewClient(string root, string workerExecutable)
 {
     private readonly ProfilePreviewStore _store = new(root);
-    public async Task<ProfilePreviewSession> BeginAsync(string displayId, string candidate, int seconds = 30, bool tieToCurrentProcess = false)
+    public Task<ProfilePreviewSession> BeginAsync(string displayId, string candidate, int seconds = 30, bool tieToCurrentProcess = false,
+        Guid? requestId = null)
     {
         if (seconds is < 10 or > 60) throw new ArgumentException("Preview timeout must be 10–60 seconds.");
+        if (requestId == Guid.Empty || (requestId is not null && tieToCurrentProcess))
+            throw new ArgumentException(new LocalizationService()["PreviewRequestIdOwnership"]);
         IccProfileInspector.ValidateFileName(candidate);
         using var owner = Process.GetCurrentProcess();
-        var request = new ProfilePreviewRequest(Guid.NewGuid(), displayId, candidate, seconds,
-            tieToCurrentProcess ? owner.Id : null, tieToCurrentProcess ? owner.StartTime.ToUniversalTime().Ticks : null);
-        return await LaunchAsync(request);
+        var request = new ProfilePreviewRequest(requestId ?? Guid.NewGuid(), displayId, candidate, seconds,
+            tieToCurrentProcess ? owner.Id : null, tieToCurrentProcess ? owner.StartTime.ToUniversalTime().Ticks : null,
+            AllowRetries: requestId is not null);
+        string requestPath = Path.Combine(_store.DirectoryFor(request.Id), "request.json");
+        if (_store.Find(request.Id) is { } prior)
+        {
+            if (!request.AllowRetries) throw RequestConflict();
+            VerifyRequest(requestPath, request);
+            return Task.FromResult(prior);
+        }
+        try
+        {
+            AtomicFile.Write(requestPath, JsonSerializer.SerializeToUtf8Bytes(request, ProfilePreviewStore.Json), overwrite: false);
+        }
+        catch (IOException) when (request.AllowRetries && File.Exists(requestPath))
+        {
+            VerifyRequest(requestPath, request);
+        }
+        var existing = _store.Find(request.Id);
+        return existing is null ? LaunchAsync(request.Id) : Task.FromResult(existing);
     }
     public ProfilePreviewSession Status(Guid id) => _store.Load(id);
     public async Task<ProfilePreviewSession> CommandAsync(Guid id, string action)
@@ -97,32 +124,45 @@ public sealed class ProfilePreviewClient(string root, string workerExecutable)
     }
     public Task<ProfilePreviewSession> RecoverAsync(Guid id) => Task.Run(() => new PreviewRecoveryService(root).RecoverProfile(id));
 
-    private async Task<ProfilePreviewSession> LaunchAsync(ProfilePreviewRequest request)
+    private async Task<ProfilePreviewSession> LaunchAsync(Guid id)
     {
         if (!File.Exists(workerExecutable)) throw new FileNotFoundException("The independent preview worker is missing. Rebuild or reinstall DCCW++.", workerExecutable);
-        string directory = _store.DirectoryFor(request.Id);
-        string errorPath = Path.Combine(directory, "error.json");
-        AtomicFile.Write(Path.Combine(directory, "request.json"), JsonSerializer.SerializeToUtf8Bytes(request, ProfilePreviewStore.Json));
+        Guid attemptId = Guid.NewGuid();
+        string errorPath = PreviewWorkerFiles.ErrorPath(_store.DirectoryFor(id), attemptId);
         var start = new ProcessStartInfo(Path.GetFullPath(workerExecutable)) { UseShellExecute = false, CreateNoWindow = true,
             WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(workerExecutable))! };
-        foreach (string arg in new[] { "__profile-worker", "--session", request.Id.ToString("D"), "--data-dir", Path.GetFullPath(root) }) start.ArgumentList.Add(arg);
+        foreach (string arg in new[] { "__profile-worker", "--session", id.ToString("D"), "--data-dir",
+            Path.GetFullPath(root), "--attempt", attemptId.ToString("D") }) start.ArgumentList.Add(arg);
         using var worker = Process.Start(start) ?? throw new IOException("Cannot start profile preview worker.");
-        for (int i = 0; i < 100; i++)
+        var timer = Stopwatch.StartNew();
+        do
         {
-            await Task.Delay(100);
             if (File.Exists(errorPath))
             {
                 var error = ProfilePreviewStore.Read<ProfileWorkerError>(errorPath);
                 throw new ProfilePreviewException(error.Code, error.Message);
             }
-            if (File.Exists(Path.Combine(directory, "state.json")))
-            {
-                var session = _store.Load(request.Id);
-                if (session.Status is "previewing" or "reverted" or "recovery-pending") return session;
-            }
-            if (worker.HasExited) break;
-        }
+            bool exited = worker.HasExited;
+            var session = _store.Find(id);
+            if (session is not null && (exited || session.Status is "previewing" or "recovery-pending" || !session.NeedsRecovery))
+                return session;
+            if (exited && worker.ExitCode != PreviewWorkerFiles.JoinedExistingWorker) break;
+            await Task.Delay(75);
+        } while (timer.Elapsed < TimeSpan.FromSeconds(10));
         // Never kill a worker that might be restoring an association. Its timeout remains authoritative.
-        throw new ProfilePreviewException("worker_start_timeout", $"The preview worker did not become ready. Session: {request.Id:D}.");
+        throw new ProfilePreviewException("worker_start_timeout", $"The preview worker did not become ready. Session: {id:D}.");
+    }
+
+    private static ProfilePreviewException RequestConflict() =>
+        new("request_id_conflict", new LocalizationService()["ProfilePreviewRequestConflict"]);
+
+    private static void VerifyRequest(string requestPath, ProfilePreviewRequest request)
+    {
+        if (!File.Exists(requestPath)) throw RequestConflict();
+        var original = ProfilePreviewStore.Read<ProfilePreviewRequest>(requestPath);
+        if (!original.AllowRetries || original.Recover || original.OwnerProcessId is not null || original.OwnerStartTicks is not null
+            || original.Id != request.Id || original.Seconds != request.Seconds || original.DisplayId != request.DisplayId
+            || !ProfilePreviewPolicy.EqualName(original.CandidateProfile, request.CandidateProfile))
+            throw RequestConflict();
     }
 }

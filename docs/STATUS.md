@@ -1,5 +1,28 @@
 # 开发交接
 
+## 2026-11-24 · Agent 重试撤回校准和 ICC 预览
+
+- `apply`、`calibration undo` 和 `profiles preview` 均支持 `--request-id`。同一请求使用原会话和截止时间。冲突参数返回 `request_id_conflict`，预演不占用 UUID。
+- 108 项核心测试、21 项 Windows 测试和 73 项 CLI 进程检查通过。模拟 ICC 工作进程验证重复启动只保留一个预览。实机显示写入仍待验收。
+- x64 与 ARM64 开发 MSIX 通过内容检查。x64 开发包在 Windows Sandbox build 26100 中由普通用户安装，命令别名报告 CLI v1 及全部三条支持请求 ID 的命令，随后成功卸载。[CLI 参考](CLI.md)
+
+## 2026-11-24 · 普通用户原地升级
+
+- Windows Sandbox build 26100 的普通用户从 x64 开发包 `0.2.0.0` 原地升级到 `0.2.1.0` 测试包。新包保留同一数据目录、预设 UUID 及参数、已保存的显示观察、CLI 别名的包身份和登录任务的 `Disabled` 状态，随后成功卸载。
+- `0.2.1.0` 是用于验收的清单版本。交互式冷启动、登录启动、原生 ARM64 运行与 Store 签名包升级仍待验收。[复测步骤](STORE.md)
+
+## 2026-11-24 · 普通用户安装与登录任务查询
+
+- 在 Windows Sandbox build 26100 中，普通用户安装了 DCCW++ 生成的 ICC。系统目录中的文件摘要与原件相符，随后由同一用户移除。
+- 普通用户安装并卸载 x64 开发 MSIX，`dccwpp.exe` 别名以包身份运行。修复了 CLI 查不到登录任务的问题。两个可执行程序现归同一个应用 ID，冷安装后 `startup status` 返回 `Disabled`。
+- 108 项核心测试、20 项 Windows 测试和 65 项 CLI 检查通过。双架构开发 MSIX 通过包内容检查。交互式 GUI 冷启动、登录触发、升级、原生 ARM64 运行及实际显示器 ICC 关联仍待验收。[复测步骤](STORE.md)
+
+## 2026-11-24 · SDR 实机验收采样
+
+- CLI `calibration capture` 可只读记录全屏幕或指定屏幕的 ICC、作用域、逻辑曲线摘要以及 Windows build 和拓扑。检测到采样期间变化时返回可重试的原因码。
+- 在 build 26340 的三屏扩展桌面上保存两次样本，逐屏结果相同。三个逻辑曲线摘要与直接驱动读回相符，一个 ICC 摘要与系统目录中的实际文件相符。记录保存在本机 `artifacts/sdr-validation/`。这组样本用于后续校准前后比对。
+- 108 项核心测试、20 项 Windows 测试和 65 项 CLI 检查通过。标准用户保存、取消、超时及撤回后的配对样本仍待实机验收。[验收路线图](ROADMAP.md)
+
 ## 2026-11-24 · 跨入口恢复预览
 
 - 向导识别未结束的 Gamma 及 ICC 预览。CLI 可通过 `recovery status` 查询，也可通过 `recovery run` 调用与向导和登录恢复相同的逻辑。

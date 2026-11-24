@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using DccwPlus.Core.Calibration;
+using DccwPlus.Core.Localization;
 using DccwPlus.Core.Presets;
 using DccwPlus.Core.Storage;
 using DccwPlus.Windows;
@@ -9,6 +10,9 @@ using DccwPlus.Windows;
 Console.OutputEncoding = new UTF8Encoding(false);
 if (args is ["__profile-worker", "--session", var workerId, "--data-dir", var workerRoot])
     return Guid.TryParse(workerId, out var workerSession) ? ProfilePreviewHost.Run(workerRoot, workerSession) : 2;
+if (args is ["__profile-worker", "--session", var profileId, "--data-dir", var profileRoot, "--attempt", var profileAttemptId])
+    return Guid.TryParse(profileId, out var profileSession) && Guid.TryParse(profileAttemptId, out var profileAttempt)
+        && profileAttempt != Guid.Empty ? ProfilePreviewHost.Run(profileRoot, profileSession, profileAttempt) : 2;
 if (args is ["__gamma-worker", "--session", var gammaId, "--data-dir", var gammaRoot])
     return Guid.TryParse(gammaId, out var gammaSession) ? GammaPreviewHost.Run(gammaRoot, gammaSession) : 2;
 if (args is ["__gamma-worker", "--session", var sessionId, "--data-dir", var root, "--attempt", var attemptId, .. var tail]
@@ -103,6 +107,13 @@ internal static class Cli
 
             if (remaining.FirstOrDefault() == "calibration")
             {
+                if (remaining.ElementAtOrDefault(1) == "capture")
+                {
+                    string? target = TakeOption(remaining, "--display");
+                    if (remaining.Count != 2)
+                        throw new ArgumentException(new LocalizationService()["CaptureUsage"]);
+                    return Success(new CalibrationCapture().Read(target), json);
+                }
                 if (remaining.ElementAtOrDefault(1) == "diagnose")
                 {
                     string? displayId = TakeOption(remaining, "--display");
@@ -115,14 +126,16 @@ internal static class Cli
                 {
                     bool dryRun = remaining.Remove("--dry-run");
                     string? timeout = TakeOption(remaining, "--seconds");
+                    string? request = TakeOption(remaining, "--request-id");
                     if (remaining is not ["calibration", "undo", var sourceId])
-                        throw new ArgumentException("Use calibration undo <calibration-id> [--seconds 30] [--dry-run].");
+                        throw new ArgumentException(new LocalizationService()["UndoUsage"]);
+                    Guid? requestId = request is null ? null : ParseRequestId(request);
                     Guid calibrationId = ParseId(sourceId);
                     int seconds = timeout is null ? 30 : int.TryParse(timeout, NumberStyles.None, CultureInfo.InvariantCulture,
                         out int duration) ? duration : 0;
                     if (seconds is < 10 or > 60) throw new ArgumentException("Undo preview timeout must be 10–60 seconds.");
                     if (dryRun) return Success(new WindowsGammaCalibrationBackend(root).PlanUndo(calibrationId), json);
-                    return Success(SessionSummary(await client.BeginUndoAsync(calibrationId, seconds)), json);
+                    return Success(SessionSummary(await client.BeginUndoAsync(calibrationId, seconds, requestId: requestId)), json);
                 }
                 if (remaining is ["calibration", "sessions"])
                     return Success(new GammaCalibrationStore(root).Sessions().Select(SessionSummary).ToArray(), json);
@@ -159,14 +172,16 @@ internal static class Cli
                 if (remaining is ["profiles", "list"] && displayId is not null)
                     return Success(new WindowsProfileAssociationBackend().Read(displayId), json);
                 string? duration = TakeOption(remaining, "--seconds");
+                string? request = TakeOption(remaining, "--request-id");
                 bool dryRun = remaining.Remove("--dry-run");
                 if (remaining is not ["profiles", "preview", var candidate] || displayId is null)
-                    throw new ArgumentException("Use profiles preview <profile-name> --display <display-id> [--seconds 30] [--dry-run].");
+                    throw new ArgumentException(new LocalizationService()["ProfilePreviewUsage"]);
+                Guid? requestId = request is null ? null : ParseRequestId(request);
                 int seconds = duration is null ? 30 : int.TryParse(duration, System.Globalization.NumberStyles.None,
                     System.Globalization.CultureInfo.InvariantCulture, out int value) ? value : 0;
                 if (seconds is < 10 or > 60) throw new ArgumentException("Preview timeout must be 10–60 seconds.");
                 if (dryRun) return Success(ProfilePreviewPolicy.Plan(new WindowsProfileAssociationBackend().Read(displayId), candidate), json);
-                return Success(await client.BeginAsync(displayId, candidate, seconds), json);
+                return Success(await client.BeginAsync(displayId, candidate, seconds, requestId: requestId), json);
             }
 
             if (remaining.FirstOrDefault() == "displays" && remaining.ElementAtOrDefault(1) == "restore-plan")

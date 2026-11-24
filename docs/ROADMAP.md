@@ -16,10 +16,10 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 | SDR 写入和 ICC | 已有曲线读回、`vcgt` 生成、默认关联提交和限时撤回预览 | 标准用户安装 ICC、系统加载、撤回关联、退出和重连恢复的实机验收 |
 | 多屏和重连 | 已探测活动拓扑和彩色模式，分开当前查询 ID 和持久身份 | 同型号/无序列号屏、扩展和复制切换、换端口的实机验证 |
 | HDR 与 Advanced Color 入口 | 区分 SDR、WCG 和 HDR，查询对应的默认 ICC，向导已接入 Windows 设置和 HDR 校准入口 | 核对实际 HDR、WCG 和 MHC2 的显示提示与跳转 |
-| 预设与 CLI | 已有草稿参数、绑定保护、重复导入、预演、请求 ID 重试、同会话命令串行和机器可读的命令发现 | 装包别名和实际显示事务验收 |
-| 登录恢复 | StartupTask 与逐屏恢复开关已接通，监视登录、唤醒和显示路径变化 | 需验证装包后的后台启动、恢复、关闭和兼容性 |
+| 预设与 CLI | 已有草稿参数、绑定保护、重复导入、机器可读的命令发现；应用预设、撤回校准和试用 ICC 都支持预演和请求 ID | 已验证 x64 开发包别名；仍需实机显示事务及装包 GUI 与 CLI 互通验收 |
+| 登录恢复 | StartupTask 与逐屏恢复开关已接通。x64 沙盒普通用户可通过装包 CLI 查询初始关闭状态 | 需验证装包后的后台启动、恢复、关闭和兼容性 |
 | 语言和照片 | en-US、zh-Hans、zh-Hant，可打开本机照片 | 三语言 UI 验收，内置照片依赖项目所有者供片及许可 |
-| 商店包 | 双架构开发 MSIX、对应源码与依赖许可已验证，x64 沙盒预配通过 | DCCW++ 专属商店身份、双架构普通用户安装和升级、认证、上架 |
+| 商店包 | 双架构开发 MSIX、对应源码与依赖许可已验证。x64 沙盒已通过普通用户安装、CLI 执行、原地升级保留数据及卸载 | GUI 冷启动、原生 ARM64 安装与运行、Store 签名包升级、DCCW++ 专属商店身份及认证 |
 
 ## 开发顺序与交付物
 
@@ -43,6 +43,8 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 - 确认 `SetDeviceGammaRamp` 仅在受控 SDR 兼容路径使用。确定回读容差、驱动拒写后的处理，以及休眠、分辨率变化和外部工具覆盖后的预期行为。使用 ICC 和 Windows 关联作为持久化路线。微软记录了 Gamma Ramp 静默拒写、系统覆盖和 HDR 行为未定义等限制。[Gamma Ramp 文档](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp) · [默认 ICC 关联](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-colorprofilesetdisplaydefaultassociation)
 
 验收以独立的 SDR 显示器完成整轮校准、退出后恢复、确认后重新加载和恢复原关联为准。额外验证撤回已确认校准时，取消和超时可回到撤回前状态，确认可还原前一个 ICC、作用域和曲线。扩展桌面至少验证两台屏幕，确认另一屏的 ICC 和曲线保持原状。模拟测试覆盖失败分支，真实写入仅在人工实机验收中进行。
+
+每个步骤前后都可用 `dccwpp calibration capture --json` 保存全屏幕的只读报告。先以 `displayId` 匹配同一拓扑内的目标，通过 `profileSha256`、`selectedProfileScope`、`profileScope` 和 `logicalRampSha256` 核对变更或恢复。用 `curveStatus` 记录不可读或不支持的目标，另外记录会话原因码、Windows 设置所示配置和视觉观察。全屏幕采样可同时核对未选屏。[采样命令](CLI.md)
 
 ## M2 · 0.4 · DCCW 行为对齐与 WinUI 体验
 

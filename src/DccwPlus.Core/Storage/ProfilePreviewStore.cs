@@ -25,6 +25,13 @@ public sealed class ProfilePreviewStore(string root) : IProfilePreviewJournal
         if (session.Id != id) throw new InvalidDataException("Preview identity does not match its journal.");
         return session;
     }
+    public ProfilePreviewSession? Find(Guid id)
+    {
+        try { return Load(id); }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+    }
+
     public IReadOnlyList<ProfilePreviewSession> Incomplete()
     {
         if (!Directory.Exists(_root)) return [];

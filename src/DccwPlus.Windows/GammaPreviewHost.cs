@@ -13,9 +13,6 @@ public sealed record GammaPreviewAck(Guid CommandId, string? ErrorCode, string? 
 
 public static class GammaPreviewHost
 {
-    // A redundant worker exits without publishing an error to the active worker's client.
-    internal const int JoinedExistingWorker = 10;
-
     public static int Run(string root, Guid id, Func<IGammaCalibrationBackend>? backendFactory = null,
         Guid? attemptId = null, bool recover = false)
     {
@@ -26,10 +23,10 @@ public static class GammaPreviewHost
         try
         {
             if (id == Guid.Empty) throw new InvalidDataException("Invalid calibration request.");
-            using var worker = GammaPreviewFiles.TryLock(directory, "worker");
+            using var worker = PreviewWorkerFiles.TryLock(directory, "worker");
             if (worker is null)
             {
-                if (!recover) return JoinedExistingWorker;
+                if (!recover) return PreviewWorkerFiles.JoinedExistingWorker;
                 throw new ProfilePreviewException("preview_busy", "Another process is handling this calibration session.");
             }
             var request = recover ? null : ProfilePreviewStore.Read<GammaPreviewRequest>(Path.Combine(directory, "request.json"));
@@ -48,7 +45,7 @@ public static class GammaPreviewHost
             if (request.UndoOf is Guid calibrationId)
             {
                 var saved = store.Load(calibrationId);
-                if (backend is not WindowsGammaCalibrationBackend windows || request.AllowRetries || saved.Original.DisplayId != request.DisplayId)
+                if (backend is not WindowsGammaCalibrationBackend windows || request.Preset is not null || saved.Original.DisplayId != request.DisplayId)
                     throw new InvalidDataException("Invalid undo request.");
                 var current = windows.CheckUndoStart(saved);
                 transaction.Begin(id, saved.Preset, request.DisplayId, request.Seconds, saved.Original.Ramp, current, calibrationId);
@@ -96,7 +93,7 @@ public static class GammaPreviewHost
         {
             if (transaction?.Session?.NeedsRecovery == true)
             { try { transaction.Revert("worker_error"); } catch (Exception) { } }
-            AtomicFile.Write(GammaPreviewFiles.ErrorPath(directory, attemptId), JsonSerializer.SerializeToUtf8Bytes(
+            AtomicFile.Write(PreviewWorkerFiles.ErrorPath(directory, attemptId), JsonSerializer.SerializeToUtf8Bytes(
                 new ProfileWorkerError(ex is ProfilePreviewException p ? p.Code : "calibration_failed", ex.Message), ProfilePreviewStore.Json));
             return 4;
         }

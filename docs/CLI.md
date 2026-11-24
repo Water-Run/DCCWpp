@@ -13,7 +13,7 @@
 | `display-preview` | 开始或更新限时预览 |
 | `display-change` | 确认、取消或恢复显示状态 |
 
-Agent 从 `displays list` 选择明确的显示器，从 `presets list` 取得预设 UUID，再执行 `apply --dry-run`。实际预览返回会话 ID 与 `expiresAt`。通过 `calibration status` 读回状态，并在得到用户选择后调用 `calibration confirm` 或 `calibration revert`。显示会话来自当前 Windows 用户和桌面。Agent 应读取退出码、`ok`、状态和原因码。
+Agent 从 `displays list` 选择明确的显示器，从 `presets list` 取得预设 UUID，再执行 `apply --dry-run`。实际预览返回会话 ID 与 `expiresAt`。通过 `calibration status` 读回状态，并在得到用户选择后调用 `calibration confirm` 或 `calibration revert`。显示会话来自当前 Windows 用户和桌面。Agent 应读取退出码、`ok`、状态和原因码。`--request-id` 适用于 `apply`、`calibration undo` 和 `profiles preview`，可在客户端超时或响应丢失时查回同一个会话。
 
 ## 命令参考
 
@@ -28,6 +28,7 @@ dccwpp displays snapshot --json
 dccwpp displays snapshot show --json
 dccwpp displays restore-plan --display <display-id> --json
 dccwpp calibration diagnose --display <display-id> --json
+dccwpp calibration capture [--display <display-id>] --json
 dccwpp presets list --json
 dccwpp presets create "Daylight" --json
 dccwpp presets create "Daylight edited" --gamma 2.35 --red-gain 0.92 --author "Studio" --json
@@ -61,7 +62,11 @@ dccwpp bindings restore --dry-run --json
 
 `displays list` 和 `calibration diagnose` 同时报告 `selectedProfileScope` 和 `profileQueryStatus`。前者是 Windows 选用的作用域，`profileScope` 是实际返回的 ICC 所在作用域。后者可以是 `read`、`not-found` 或 `unavailable`。系统明确无默认关联时使用 `not-found`；查询未执行时用 `null`。读取失败会以 `profile_state_unavailable` 阻止 SDR 预览或暂缓恢复。[Windows 作用域查询](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-colorprofilegetdisplayuserscope)
 
+`calibration capture` 只读采集当前显示状态并输出到 stdout。默认采集全部活动显示器，可用 `--display` 只返回指定目标。报告记录 Windows build、架构、拓扑、每屏 ICC 和作用域。可读取时，`profileSha256` 是 ICC 文件的 SHA-256，`logicalRampSha256` 是按 `vcgt` 编码的逻辑 Gamma 曲线的 SHA-256。摘要可用于核对前后是否逐项相同。即使摘要相同，光学结果和驱动行为仍需单独验收。采集期间检测到状态变化时返回 `capture_state_changed`，待状态稳定后可重试。不可读的曲线用 `curveStatus` 解释，摘要为 `null`。[Windows 逻辑曲线读回](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getdevicegammaramp)
+
 已确认校准的逐屏绑定可在设置或 `bindings` 命令中启用。启用绑定仅保存偏好。Windows 登录任务由设置页单独管理。确认会话的 `bindingStatus` 表示本机绑定保存情况。旧日志中该字段可能为空。
+
+`startup status` 从当前 MSIX 包查询登录任务。未安装版返回 `unpackaged`，Windows 未报告任务时返回 `unavailable`。[Windows 包范围的 StartupTask 查询](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptask.getforcurrentpackageasync)
 
 `bindings restore --dry-run` 生成恢复报告。去掉 `--dry-run` 会先尝试恢复中断预览，再为已启用且符合条件的绑定写回已确认的绝对曲线。只有原目标可唯一识别、当前为独立 SDR 路径、已确认的用户 ICC 仍被选用且摘要一致、当前曲线匹配已知基线时才写入。报告通过 `reason` 和每屏 `status` 表示结果，退出码 0 表示已生成报告。Windows 登录任务使用同一路径。`startup last-restore` 返回后台最近一次报告及触发原因，尚无报告时为 `null`。
 
@@ -79,7 +84,7 @@ dccwpp calibration confirm <session-id> --json
 dccwpp calibration revert <session-id> --json
 dccwpp calibration recover <session-id> --json
 dccwpp calibration undo <calibration-id> --dry-run --json
-dccwpp calibration undo <calibration-id> --seconds 30 --json
+dccwpp calibration undo <calibration-id> --seconds 30 --request-id <request-uuid> --json
 ```
 
 **未带 `--dry-run` 的 `apply` 会实际写入所选 SDR 显示器的临时 Gamma 曲线。** 它返回会话 ID 和固定的 `expiresAt`。CLI 时限为 10–60 秒，更新参数或切回原曲线都沿用同一时限。未在到期前进入保存流程的会话会尝试恢复原曲线。`confirm` 保存 ICC 并在 Windows 中选用，`revert` 取消尚未确认的预览，`recover` 尝试恢复中断会话。
@@ -96,6 +101,8 @@ GUI 编辑阶段使用心跳维持预览，单次会话最多 30 分钟。进入
 
 `calibration undo` 接收已确认的原校准会话 ID。先用 `--dry-run` 查看 `canPreview` 和 `reasonCode`。去掉预演选项后会启动一个新会话并临时显示之前的曲线。对新会话执行 `confirm` 才会恢复之前的 ICC、作用域和曲线。`revert`、确认时限结束或预览进程退出会触发回退。撤回会话会在 JSON 中记录 `undoOf`。撤回成功会清除仍指向被撤回配置的自动恢复绑定，已保存的预设和 ICC 文件仍可保留。
 
+撤回可用 `--request-id` 指定新会话的 UUID。以相同 UUID、原校准 ID 和时限重试会返回已有会话，不会再启动预览或延长时限。`apply` 和 `calibration undo` 共用会话 ID 范围。尝试复用已被另一条校准请求占用的 UUID 会返回 `request_id_conflict`。预演不占用 UUID。
+
 恢复前需核对实际选中的已确认 ICC、曲线、显示器身份和配置文件摘要。旧版会话缺少摘要时报告 `undo_backup_unavailable`。已确认的旧记录仍可查询。
 
 Gamma 参数的中性位置为 2.2，曲线按 `x^(2.2/gamma)` 和通道增益调整后，再与开始时捕获的曲线组合。这是视觉调整参数，不是对面板物理 Gamma 的测量。确认的绝对曲线保存在 ICC `vcgt` 中；再次恢复已确认曲线不能重复叠加预设。
@@ -107,7 +114,7 @@ Gamma 参数的中性位置为 2.2，曲线按 `x^(2.2/gamma)` 和通道增益�
 ```text
 dccwpp profiles list --display <display-id> --json
 dccwpp profiles preview <profile-name> --display <display-id> --dry-run --json
-dccwpp profiles preview <profile-name> --display <display-id> --seconds 30 --json
+dccwpp profiles preview <profile-name> --display <display-id> --seconds 30 --request-id <request-uuid> --json
 dccwpp profiles status <session-id> --json
 dccwpp profiles confirm <session-id> --json
 dccwpp profiles revert <session-id> --json
@@ -115,6 +122,8 @@ dccwpp profiles recover <session-id> --json
 ```
 
 这条路径限于已关联的、可验证原默认配置的当前用户 SDR 显示器。它试用默认 ICC 关联，不生成新的校准曲线。
+
+`profiles preview --request-id` 的 UUID 用于 `profiles status`，也会出现在响应的 `data.id`。用相同 UUID、显示器、ICC 文件名和时限重试会返回已有会话。文件名比较忽略大小写。参数冲突时返回 `request_id_conflict`。ICC 预览有独立的会话 ID 范围，预演不占用 UUID。
 
 JSON 模式在 stdout 输出一个文档，成功为 `{"schemaVersion":1,"ok":true,"data":...}`，失败为 `{"schemaVersion":1,"ok":false,"error":{"code":"...","message":"..."}}`。非 JSON 模式失败写入 stderr。
 

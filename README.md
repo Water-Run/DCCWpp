@@ -38,13 +38,16 @@ dccwpp.exe capabilities --json
 dccwpp.exe displays list --json
 dccwpp.exe presets validate examples/neutral.dccw.json --json
 dccwpp.exe calibration diagnose --display $displayId --json
+dccwpp.exe calibration capture --json
 dccwpp.exe apply $presetId --display $displayId --dry-run --json
 dccwpp.exe bindings restore --dry-run --json
 dccwpp.exe startup last-restore --json
 dccwpp.exe recovery status --json
 ```
 
-Agents can use `capabilities --json` to discover command effects, dry-run support, and request ID support. For a dry run, set `$presetId` to a saved preset ID and `$displayId` to an ID from `displays list`. Calling `apply` without `--dry-run` starts an SDR preview on the selected display with a fixed deadline. Use the returned session ID to check its status, confirm, or revert. See the [CLI reference](docs/CLI.md) for the transaction commands, machine-readable results, and exit codes.
+Agents can use `capabilities --json` to discover command effects, dry-run support, and request ID support. For a dry run, set `$presetId` to a saved preset ID and `$displayId` to an ID from `displays list`. Calling `apply` without `--dry-run` starts an SDR preview on the selected display with a fixed deadline. Use `calibration status`, `calibration confirm`, or `calibration revert` with its session ID.
+
+Generate a UUID before starting a preview with `apply`, `calibration undo`, or `profiles preview` and pass it as `--request-id`. If the response is lost, use that UUID to check the session or retry the same command and arguments. Check the exit code and JSON `ok` field, then read the outcome fields in `data`. The [CLI reference](docs/CLI.md) covers command effects, transaction states, and exit codes.
 
 ## Project layout
 

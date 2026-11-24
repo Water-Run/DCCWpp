@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using DccwPlus.Core.Calibration;
+using DccwPlus.Core.Localization;
 using DccwPlus.Core.Presets;
 using DccwPlus.Core.Storage;
 
@@ -11,7 +12,10 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
     private static readonly TimeSpan WaitLimit = TimeSpan.FromSeconds(10);
     private readonly GammaCalibrationStore _store = new(root);
 
-    public GammaCalibrationSession? FindByRequestId(Guid requestId, string displayId, Guid presetId, int seconds)
+    public GammaCalibrationSession? FindByRequestId(Guid requestId, string displayId, Guid presetId, int seconds) =>
+        FindByRequestId(requestId, seconds, displayId, presetId, undoOf: null);
+
+    private GammaCalibrationSession? FindByRequestId(Guid requestId, int seconds, string? displayId, Guid? presetId, Guid? undoOf)
     {
         var original = ReadRequest(requestId);
         if (original is null)
@@ -19,7 +23,7 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
             if (_store.Find(requestId) is null) return null;
             original = ReadRequest(requestId); // Reservation can appear between the two reads.
         }
-        EnsureSameRequest(original, requestId, displayId, presetId, seconds);
+        EnsureSameRequest(original, requestId, seconds, displayId, presetId, undoOf);
         return _store.Find(requestId);
     }
 
@@ -28,12 +32,17 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
     {
         if (seconds is < 10 or > 60) throw new ArgumentException("Preview timeout must be 10–60 seconds.");
         if (requestId == Guid.Empty || (requestId is not null && windowOwned))
-            throw new ArgumentException("A request ID must be nonempty and belongs to a CLI preview.");
+            throw new ArgumentException(new LocalizationService()["PreviewRequestIdOwnership"]);
         PresetCodec.Validate(preset);
         using var owner = Process.GetCurrentProcess();
         var request = new GammaPreviewRequest(requestId ?? Guid.NewGuid(), displayId, preset, seconds,
             windowOwned ? owner.Id : null, windowOwned ? owner.StartTime.ToUniversalTime().Ticks : null,
             AllowRetries: requestId is not null);
+        return ReserveAndLaunch(request);
+    }
+
+    private Task<GammaCalibrationSession> ReserveAndLaunch(GammaPreviewRequest request)
+    {
         string directory = _store.DirectoryFor(request.Id);
         string requestPath = Path.Combine(directory, "request.json");
         if (_store.Find(request.Id) is not null && !File.Exists(requestPath))
@@ -44,7 +53,7 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
         }
         catch (IOException) when (request.AllowRetries && File.Exists(requestPath))
         {
-            EnsureSameRequest(ReadRequest(request.Id), request.Id, displayId, preset.Id, seconds);
+            EnsureSameRequest(ReadRequest(request.Id), request.Id, request.Seconds, request.DisplayId, request.Preset?.Id, request.UndoOf);
         }
         var existing = _store.Find(request.Id);
         return existing is null ? LaunchAsync(request.Id, recover: false) : Task.FromResult(existing);
@@ -52,17 +61,21 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
 
     public GammaCalibrationSession Status(Guid id) => _store.Load(id);
 
-    public Task<GammaCalibrationSession> BeginUndoAsync(Guid calibrationId, int seconds = 30, bool windowOwned = false)
+    public Task<GammaCalibrationSession> BeginUndoAsync(Guid calibrationId, int seconds = 30, bool windowOwned = false,
+        Guid? requestId = null)
     {
         if (seconds is < 10 or > 60) throw new ArgumentException("Undo preview timeout must be 10–60 seconds.");
+        if (requestId == Guid.Empty || (requestId is not null && windowOwned))
+            throw new ArgumentException(new LocalizationService()["PreviewRequestIdOwnership"]);
+        if (requestId is Guid replayId && FindByRequestId(replayId, seconds, displayId: null, presetId: null, undoOf: calibrationId) is { } prior)
+            return Task.FromResult(prior);
         var saved = _store.Load(calibrationId);
         CalibrationUndoPolicy.VerifySource(saved);
         using var owner = Process.GetCurrentProcess();
-        var request = new GammaPreviewRequest(Guid.NewGuid(), saved.Original.DisplayId, null, seconds,
-            windowOwned ? owner.Id : null, windowOwned ? owner.StartTime.ToUniversalTime().Ticks : null, UndoOf: calibrationId);
-        AtomicFile.Write(Path.Combine(_store.DirectoryFor(request.Id), "request.json"),
-            JsonSerializer.SerializeToUtf8Bytes(request, ProfilePreviewStore.Json), overwrite: false);
-        return LaunchAsync(request.Id, recover: false);
+        var request = new GammaPreviewRequest(requestId ?? Guid.NewGuid(), saved.Original.DisplayId, null, seconds,
+            windowOwned ? owner.Id : null, windowOwned ? owner.StartTime.ToUniversalTime().Ticks : null,
+            AllowRetries: requestId is not null, UndoOf: calibrationId);
+        return ReserveAndLaunch(request);
     }
 
     public Task<GammaCalibrationSession> RecoverAsync(Guid id)
@@ -121,7 +134,7 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
         var timer = Stopwatch.StartNew();
         do
         {
-            if (GammaPreviewFiles.TryLock(directory, "command") is { } handle) return handle;
+            if (PreviewWorkerFiles.TryLock(directory, "command") is { } handle) return handle;
             await Task.Delay(75);
         } while (timer.Elapsed < WaitLimit);
         throw new ProfilePreviewException("command_busy", "Another command is already waiting for this calibration session.");
@@ -131,7 +144,7 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
     {
         if (!File.Exists(workerExecutable)) throw new FileNotFoundException("The calibration worker is missing. Rebuild or reinstall DCCW++.", workerExecutable);
         Guid attemptId = Guid.NewGuid();
-        string errorPath = GammaPreviewFiles.ErrorPath(_store.DirectoryFor(id), attemptId);
+        string errorPath = PreviewWorkerFiles.ErrorPath(_store.DirectoryFor(id), attemptId);
         var start = new ProcessStartInfo(Path.GetFullPath(workerExecutable))
         {
             UseShellExecute = false,
@@ -156,7 +169,7 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
             var session = _store.Find(id);
             if (session is not null && (recover ? exited : exited || session.Status is "previewing" or "recovery-pending"))
                 return session;
-            if (exited && worker.ExitCode != GammaPreviewHost.JoinedExistingWorker) break;
+            if (exited && worker.ExitCode != PreviewWorkerFiles.JoinedExistingWorker) break;
             await Task.Delay(75);
         } while (timer.Elapsed < WaitLimit);
         throw new ProfilePreviewException("worker_start_timeout", $"The calibration worker did not become ready. Query session {id:D} before retrying.");
@@ -168,10 +181,11 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
         return File.Exists(path) ? ProfilePreviewStore.Read<GammaPreviewRequest>(path) : null;
     }
 
-    private static void EnsureSameRequest(GammaPreviewRequest? original, Guid id, string displayId, Guid presetId, int seconds)
+    private static void EnsureSameRequest(GammaPreviewRequest? original, Guid id, int seconds, string? displayId, Guid? presetId, Guid? undoOf)
     {
-        if (original is not { AllowRetries: true, Recover: false, OwnerPid: null, OwnerStartTicks: null, UndoOf: null }
-            || original.Id != id || original.DisplayId != displayId || original.Preset?.Id != presetId || original.Seconds != seconds)
+        if (original is not { AllowRetries: true, Recover: false, OwnerPid: null, OwnerStartTicks: null }
+            || original.Id != id || original.Seconds != seconds || original.UndoOf != undoOf || original.Preset?.Id != presetId
+            || (displayId is not null && original.DisplayId != displayId))
             throw RequestConflict();
     }
 
@@ -179,8 +193,11 @@ public sealed class GammaPreviewClient(string root, string workerExecutable)
         new("request_id_conflict", "This request ID belongs to a different calibration request.");
 }
 
-internal static class GammaPreviewFiles
+internal static class PreviewWorkerFiles
 {
+    // A redundant worker exits without publishing an error to the active worker's client.
+    public const int JoinedExistingWorker = 10;
+
     public static string ErrorPath(string directory, Guid? attemptId) => Path.Combine(directory,
         attemptId is Guid id ? $"attempt-{id:N}.error.json" : "error.json");
 

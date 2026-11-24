@@ -36,7 +36,8 @@ internal static class CliDiscovery
         new("bindings remove", LocalWrite, "<persistence-key>"),
         new("bindings restore", DisplayChange, "[--dry-run]", supportsDryRun: true),
         new("profiles list", Read, "--display <id>"),
-        new("profiles preview", DisplayPreview, "<profile-name> --display <id> [--seconds 30] [--dry-run]", supportsDryRun: true),
+        new("profiles preview", DisplayPreview, "<profile-name> --display <id> [--seconds 30] [--request-id <uuid>] [--dry-run]",
+            supportsDryRun: true, supportsRequestId: true),
         new("profiles status", Read, "<session-id>"),
         new("profiles confirm", DisplayChange, "<session-id>"),
         new("profiles revert", DisplayChange, "<session-id>"),
@@ -47,10 +48,12 @@ internal static class CliDiscovery
         new("calibration confirm", DisplayChange, "<session-id>"),
         new("calibration revert", DisplayChange, "<session-id>"),
         new("calibration recover", DisplayChange, "<session-id>"),
-        new("calibration undo", DisplayPreview, "<calibration-id> [--seconds 30] [--dry-run]", supportsDryRun: true),
+        new("calibration undo", DisplayPreview, "<calibration-id> [--seconds 30] [--request-id <uuid>] [--dry-run]",
+            supportsDryRun: true, supportsRequestId: true),
         new("calibration update", DisplayPreview, "<session-id> --preset <preset-id> [--original]"),
         new("recovery status", Read),
         new("recovery run", DisplayChange),
+        new("calibration capture", Read, "[--display <display-id>]"),
         new("capabilities", Read)
     ];
 

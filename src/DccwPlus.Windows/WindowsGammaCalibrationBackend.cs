@@ -47,21 +47,12 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         bool? loader = WcsGetCalibrationManagementState(out int enabled) ? enabled != 0 : null;
         bool? vcgt = null;
         bool? readable = null;
-        string reason = "logical_ramp_readable";
-        if (!CalibrationService.IsExplicitSdr(display))
-            reason = "sdr_path_blocked";
-        else if (display.Profile?.Mhc2Present == true)
-            reason = "mhc2_profile_blocked";
-        else if (display.ProfileQueryStatus == "unavailable")
-            reason = "profile_state_unavailable";
-        else if (display.TargetKey is null || display.SourceId is null)
-            reason = "display_identity_unavailable";
-        else if (display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1)
-            reason = "shared_source_blocked";
-        else
+        string? blocked = SdrBlockReason(display, displays);
+        string reason = blocked ?? "logical_ramp_readable";
+        if (blocked is null)
         {
-            var adapter = Adapter(display.TargetKey);
-            uint source = display.SourceId.Value;
+            var adapter = Adapter(display.TargetKey!);
+            uint source = display.SourceId!.Value;
             if (display.SelectedProfileScope is "current-user" or "system-wide")
             {
                 int scope = display.SelectedProfileScope == "current-user" ? CurrentUser : SystemWide;
@@ -85,6 +76,16 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         }
         return new(display.Id, display.ColorState, display.ProfileName, display.ProfileScope, loader, vcgt, readable, reason,
             display.Profile?.Mhc2Present, display.SelectedProfileScope, display.ProfileQueryStatus);
+    }
+
+    internal static string? SdrBlockReason(DisplayInfo display, IReadOnlyList<DisplayInfo> displays)
+    {
+        if (!CalibrationService.IsExplicitSdr(display)) return "sdr_path_blocked";
+        if (display.Profile?.Mhc2Present == true) return "mhc2_profile_blocked";
+        if (display.ProfileQueryStatus == "unavailable") return "profile_state_unavailable";
+        if (display.TargetKey is null || display.SourceId is null) return "display_identity_unavailable";
+        return display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1
+            ? "shared_source_blocked" : null;
     }
     public void Write(GammaDeviceState expected, GammaRamp ramp)
     {
@@ -221,7 +222,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             throw new ProfilePreviewException("recovery_target_changed", "The original ICC association target is unavailable.");
     }
 
-    private static GammaRamp ReadRamp(string deviceName)
+    internal static GammaRamp ReadRamp(string deviceName)
     {
         using var dc = DisplayDc.Create(deviceName);
         var native = NativeRamp.Empty();

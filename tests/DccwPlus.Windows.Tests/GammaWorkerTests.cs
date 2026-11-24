@@ -66,6 +66,45 @@ public sealed class GammaWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task DuplicateProfileWorkerKeepsTheOriginalPreviewAndDeadline()
+    {
+        var profile = new SimulatedProfileBackend();
+        var store = new ProfilePreviewStore(_root);
+        var client = new ProfilePreviewClient(_root, "unused");
+        var id = Guid.NewGuid();
+        string displayId = profile.State.DisplayId;
+        string path = Path.Combine(store.DirectoryFor(id), "request.json");
+        byte[] request = JsonSerializer.SerializeToUtf8Bytes(
+            new ProfilePreviewRequest(id, displayId, "candidate.icc", 30, AllowRetries: true), ProfilePreviewStore.Json);
+        AtomicFile.Write(path, request, overwrite: false);
+        var worker = Task.Run(() => ProfilePreviewHost.Run(_root, id, Guid.NewGuid(), () => profile));
+
+        try
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (!worker.IsCompleted && store.Find(id) is not { Status: "previewing" })
+                await Task.Delay(25, deadline.Token);
+            Assert.False(worker.IsCompleted, "The simulated profile worker exited before previewing.");
+            Assert.Equal("candidate.icc", profile.State.CurrentProfile);
+            Assert.Equal(10, await Task.Run(() => ProfilePreviewHost.Run(_root, id, Guid.NewGuid(),
+                () => throw new InvalidOperationException("A second backend must not open a session."))));
+            Assert.Equal(store.Load(id).ExpiresAt, (await client.BeginAsync(displayId, "candidate.icc", requestId: id)).ExpiresAt);
+            Assert.Equal("reverted", (await client.CommandAsync(id, "revert")).Status);
+            Assert.Equal(0, await worker.WaitAsync(TimeSpan.FromSeconds(4)));
+            Assert.Equal(0, ProfilePreviewHost.Run(_root, id, Guid.NewGuid(),
+                () => throw new InvalidOperationException("A finished session must not reopen.")));
+            Assert.Equal("reverted", (await client.BeginAsync(displayId, "CANDIDATE.ICC", requestId: id)).Status);
+            Assert.Equal("original.icc", profile.State.CurrentProfile);
+            Assert.Equal(request, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            if (!worker.IsCompleted && store.Find(id)?.Status == "previewing") store.Request(id, "revert");
+            await worker.WaitAsync(TimeSpan.FromSeconds(35));
+        }
+    }
+
+    [Fact]
     public async Task CommonRecoveryRestoresBothJournalsAndPreservesTheProfileRequest()
     {
         var gamma = new SimulatedGammaBackend();

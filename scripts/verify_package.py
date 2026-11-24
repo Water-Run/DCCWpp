@@ -38,13 +38,15 @@ with ZipFile(package) as archive:
             assert machine_type(content) == expected_machine, f"{binary} does not target {architecture}"
     for application in manifest.findall("p:Applications/p:Application", ns):
         assert application.attrib["Executable"].replace("\\", "/") in names
-    startup = manifest.find(".//uap5:StartupTask", ns)
+    app = manifest.find("p:Applications/p:Application[@Id='App']", ns)
+    assert app.attrib[f"{{{ns['desktop4']}}}SupportsMultipleInstances"] == "true"
+    startup = app.find("p:Extensions/uap5:Extension[@Category='windows.startupTask']/uap5:StartupTask", ns)
     assert startup is not None and startup.attrib["TaskId"] == "DccwPlusStartup"
     assert startup.attrib["Enabled"] == "false"
-    alias = manifest.find(".//uap5:ExecutionAlias", ns)
+    cli = app.find("p:Extensions/uap5:Extension[@Category='windows.appExecutionAlias']", ns)
+    assert cli.attrib["Executable"].replace("\\", "/") == "Cli/dccwpp.exe"
+    alias = cli.find("uap5:AppExecutionAlias/uap5:ExecutionAlias", ns)
     assert alias is not None and alias.attrib["Alias"] == "dccwpp.exe"
-    cli = manifest.find("p:Applications/p:Application[@Id='Cli']", ns)
-    assert cli.attrib[f"{{{ns['desktop4']}}}SupportsMultipleInstances"] == "true"
     for element in manifest.iter():
         for attribute in ("Square44x44Logo", "Square150x150Logo", "Wide310x150Logo", "Image"):
             if attribute in element.attrib:

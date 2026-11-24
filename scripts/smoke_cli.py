@@ -41,6 +41,9 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert public_commands["apply"]["effect"] == "display-preview"
     assert public_commands["apply"]["supportsDryRun"] is True
     assert public_commands["apply"]["supportsRequestId"] is True
+    for name in ("calibration undo", "profiles preview"):
+        assert public_commands[name]["supportsDryRun"] is True
+        assert public_commands[name]["supportsRequestId"] is True
     assert public_commands["calibration confirm"]["effect"] == "display-change"
     assert public_commands["calibration confirm"]["supportsDryRun"] is False
     assert not data.exists(), "Help and capabilities must leave app data untouched"
@@ -127,9 +130,11 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     reservation = json.dumps(dict(id=str(interrupted_id), displayId="0123456789abcdef",
                                   preset=copy, seconds=30, allowRetries=True)).encode()
     request.write_bytes(reservation)
-    undo_plan = call("calibration", "undo", str(interrupted_id), "--dry-run")
+    dry_undo_id = uuid4()
+    undo_plan = call("calibration", "undo", str(interrupted_id), "--dry-run", "--request-id", str(dry_undo_id))
     assert undo_plan["canPreview"] is False and undo_plan["reasonCode"] == "undo_not_confirmed"
     assert undo_plan["calibrationId"] == str(interrupted_id)
+    assert not (data / "calibration-sessions" / dry_undo_id.hex).exists()
     replay_args = ("apply", copy["id"], "--display", "0123456789abcdef", "--request-id", str(interrupted_id))
     prior = call("calibration", "status", str(interrupted_id))
     with ThreadPoolExecutor(max_workers=3) as pool:
@@ -150,6 +155,41 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         assert worker.returncode == 0 and not worker.stdout and not worker.stderr, worker
         assert request.read_bytes() == reservation and interrupted.read_bytes() == terminal
         checks += 1
+    undo_id, source_id = uuid4(), uuid4()
+    undo_state = data / "calibration-sessions" / undo_id.hex / "state.json"
+    undo_state.parent.mkdir()
+    undo_state.write_text(json.dumps(dict(calibration_state, id=str(undo_id), undoOf=str(source_id))), encoding="utf-8")
+    undo_request = undo_state.with_name("request.json")
+    undo_reservation = json.dumps(dict(id=str(undo_id), displayId="0123456789abcdef", seconds=30,
+                                       allowRetries=True, undoOf=str(source_id))).encode()
+    undo_request.write_bytes(undo_reservation)
+    undo_args = ("calibration", "undo", str(source_id), "--request-id", str(undo_id))
+    assert call(*undo_args) == call("calibration", "status", str(undo_id))
+    assert call(*undo_args, "--seconds", "20", expected=4)["code"] == "request_id_conflict"
+    assert call(*replay_args[:-1], str(undo_id), expected=4)["code"] == "request_id_conflict"
+    assert undo_request.read_bytes() == undo_reservation
+
+    profile_id = uuid4()
+    profile_display = "fixture-disconnected"
+    profile_state = data / "profile-previews" / profile_id.hex / "state.json"
+    profile_state.parent.mkdir(parents=True)
+    original_profile, candidate_profile = "original.icc", "candidate.icc"
+    original = dict(displayId=profile_display, targetKey="fixture", sourceId=1, topologyFingerprint="3" * 64,
+                    currentProfile=original_profile, scope="current-user", explicitSdr=True, sharedSource=False,
+                    profiles=[dict(fileName=original_profile, sha256="A" * 64, canSelect=True),
+                              dict(fileName=candidate_profile, sha256="B" * 64, canSelect=True)])
+    profile_state.write_text(json.dumps(dict(schemaVersion=1, id=str(profile_id), original=original,
+                                             candidateProfile=candidate_profile, candidateSha256="B" * 64,
+                                             expiresAt=created["createdAt"], status="reverted")), encoding="utf-8")
+    profile_request = profile_state.with_name("request.json")
+    profile_reservation = json.dumps(dict(id=str(profile_id), displayId=profile_display, candidateProfile=candidate_profile,
+                                          seconds=30, allowRetries=True)).encode()
+    profile_request.write_bytes(profile_reservation)
+    profile_args = ("profiles", "preview", candidate_profile, "--display", profile_display, "--request-id", str(profile_id))
+    assert call(*profile_args) == call("profiles", "status", str(profile_id))
+    assert call(*profile_args, "--seconds", "20", expected=4)["code"] == "request_id_conflict"
+    assert call(*profile_args, "--dry-run", expected=4)["code"] == "display_disconnected"
+    assert profile_request.read_bytes() == profile_reservation
     displays = call("displays", "list")
     allowed = {"sdr", "wcg", "hdr", "advanced-color", "unknown", "not-probed"}
     profile_statuses = {"read", "not-found", "too-large", "truncated", "unreadable"}
@@ -191,6 +231,7 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert call("displays", "snapshot", "show")["capturedAt"] == observed["capturedAt"]
     call("apply", created["id"], "--display", "missing-monitor", "--dry-run", expected=3)
     call("calibration", "diagnose", "--display", "missing-monitor", expected=3)
+    call("calibration", "capture", "--display", "missing-monitor", expected=3)
     call("displays", "restore-plan", "--display", "missing-monitor", expected=3)
     restore_reasons = {
         "observation_missing_display", "topology_changed", "sdr_path_blocked",
@@ -198,6 +239,17 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     }
     if displays:
         display = displays[0]["id"]
+        capture = call("calibration", "capture", "--display", display, expected=(0, 4))
+        if "displays" in capture:
+            assert capture["windowsBuild"] > 0
+            assert len(capture["displays"]) == 1 and capture["displays"][0]["displayId"] == display
+            sample = capture["displays"][0]
+            for key in ("profileSha256", "logicalRampSha256"):
+                value = sample[key]
+                assert value is None or (len(value) == 64 and int(value, 16) >= 0)
+            assert (sample["curveStatus"] == "logical_ramp_readable") == (sample["logicalRampSha256"] is not None)
+        else:
+            assert capture["code"] == "capture_state_changed"
         diagnostic = call("calibration", "diagnose", "--display", display)
         assert diagnostic["displayId"] == display
         for key in ("windowsCalibrationLoaderEnabled", "driverSupportsVcgt", "logicalRampReadable"):

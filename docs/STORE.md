@@ -4,7 +4,7 @@
 
 ## 工程和身份
 
-DCCW++ 采用 RunOnce 使用的 WinUI 3 单项目 MSIX 方式。应用面向 Windows Desktop，清单最低版本为 Windows 11 build 22000。包内包含自包含的 GUI 和 CLI、三语言资源、图标、默认关闭的 StartupTask，以及 `dccwpp.exe` 执行别名。清单声明桌面应用所需的 `runFullTrust`，应用入口以普通用户运行。[RunOnce](https://github.com/Water-Run/RunOnce) · [单项目 MSIX](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/single-project-msix)
+DCCW++ 采用 RunOnce 使用的 WinUI 3 单项目 MSIX 方式。应用面向 Windows Desktop，清单最低版本为 Windows 11 build 22000。包内包含自包含的 GUI 和 CLI、三语言资源及图标。登录启动任务和 `dccwpp.exe` 执行别名属于同一应用 ID，分别启动 GUI 和控制台程序。登录任务默认关闭。清单声明桌面应用所需的 `runFullTrust`，应用入口以普通用户运行。[RunOnce](https://github.com/Water-Run/RunOnce) · [单项目 MSIX](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/single-project-msix)
 
 仓库中的 `DCCWPlus.Development` 和 `CN=DCCWPlus-Development` 用于本地构建。使用 Partner Center 为 DCCW++ 预留名称，从 Visual Studio 的 **Publish → Associate App with the Store** 关联本产品，并核对清单中的 Package Identity Name、Publisher 和 PublisherDisplayName。商店关联文件保存在本地。使用 DCCW++ 的身份、Store ID 和清单扩展。
 
@@ -34,10 +34,23 @@ python ./scripts/verify_package.py ./artifacts/packages/DccwPlus.App_0.2.0.0_x64
 
 开发包未签名。需在测试设备侧载时，以与开发包 Publisher 匹配的开发签名签包，并在测试设备上信任相应证书。测试签名私钥、密码和正式 Store 关联文件保存在本地。
 
-在支持 Windows Sandbox CLI 的 Windows 11 上，可以验证开发包签名和系统预配。脚本只映射当次的构建输入及报告目录。临时签名证书及信任只存在于沙盒中。预配检查使用沙盒系统会话，普通用户安装、别名和 GUI 激活需要登录桌面后单独验收。[Windows Sandbox CLI](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli) · [MSIX 系统预配](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/sideload-apps-with-dism-s14)
+在支持 Windows Sandbox CLI 的 Windows 11 上，可以验证开发包签名和系统预配。脚本只映射当次的构建输入及报告目录。临时签名证书及信任只存在于沙盒中。[Windows Sandbox CLI](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli) · [MSIX 系统预配](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/sideload-apps-with-dism-s14)
 
 ```powershell
 ./scripts/Test-PackageInSandbox.ps1 -Package $x64DevelopmentMsix
+```
+
+加上 `-StandardUser` 可验证沙盒普通用户直接安装、CLI 别名、默认登录启动状态和卸载。可用 DCCW++ 的 `vcgt` 写入器生成临时 ICC，再通过 `-IccProfile` 验证普通用户安装该文件、校验安装后的摘要并移除。GUI 冷启动、登录触发及显示器关联在交互桌面和实机单独验收。
+
+```powershell
+$fixture = dotnet run --file ./scripts/New-IccTestFixture.cs -- ./artifacts/icc-test-fixtures
+./scripts/Test-PackageInSandbox.ps1 -Package $x64DevelopmentMsix -StandardUser -IccProfile $fixture
+```
+
+升级验收可传入相同开发身份的两个未签名 x64 MSIX。第二个包的清单版本必须更高。检查会以同一沙盒用户安装旧包、在默认数据目录保存预设与显示观察、原地升级，再核对数据、执行别名、启动任务状态和卸载结果。报告记录两个原始包的版本与 SHA-256。[MSIX 更新要求](https://learn.microsoft.com/en-us/windows/msix/app-package-updates)
+
+```powershell
+./scripts/Test-PackageInSandbox.ps1 -Package $previousX64Msix -UpgradePackage $newerX64Msix -StandardUser
 ```
 
 在同一份源码上重建双架构开发包和对应源码压缩包。

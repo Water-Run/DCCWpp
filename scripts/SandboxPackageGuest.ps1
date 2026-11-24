@@ -1,6 +1,6 @@
 # Runs only inside a disposable Windows Sandbox instance.
 [CmdletBinding()]
-param()
+param([switch]$StandardUser)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -14,6 +14,12 @@ if ($identity.User.Value -ne 'S-1-5-18' -or !(Test-Path -LiteralPath $inputRoot)
 
 $result = [ordered]@{ success = $false; scope = 'provisioning'; step = 'setup'; osBuild = [Environment]::OSVersion.Version.Build }
 $log = Join-Path $testRoot 'dism.log'
+
+function Sign-DevelopmentPackage([string]$Path, [string]$Thumbprint) {
+    $signLog = & (Join-Path $inputRoot 'signtool.exe') sign /sm /sha1 $Thumbprint /fd SHA256 $Path 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "Could not sign the isolated development package. $signLog" }
+}
+
 try {
     New-Item -ItemType Directory -Path $testRoot | Out-Null
     $guestPackage = Join-Path $testRoot 'DccwPlus.msix'
@@ -27,9 +33,48 @@ try {
     $cerPath = Join-Path $testRoot 'Development.cer'
     Export-Certificate -Cert $certificate -FilePath $cerPath | Out-Null
     Import-Certificate -FilePath $cerPath -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' | Out-Null
-    $signLog = & (Join-Path $inputRoot 'signtool.exe') sign /sm /sha1 $certificate.Thumbprint /fd SHA256 $guestPackage 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { throw "Could not sign the isolated development package. $signLog" }
+    Sign-DevelopmentPackage $guestPackage $certificate.Thumbprint
     $result.signed = $true
+
+    if ($StandardUser) {
+        $result.scope = 'standard-user'
+        $upgradeInput = Join-Path $inputRoot 'DccwPlusUpgrade.msix'
+        if (Test-Path -LiteralPath $upgradeInput) {
+            $result.step = 'sign_upgrade'
+            $guestUpgrade = Join-Path $testRoot 'DccwPlusUpgrade.msix'
+            Copy-Item -LiteralPath $upgradeInput -Destination $guestUpgrade
+            $result.upgradeInputSha256 = (Get-FileHash -LiteralPath $guestUpgrade).Hash
+            Sign-DevelopmentPackage $guestUpgrade $certificate.Thumbprint
+        }
+        $result.step = 'standard_user'
+        $userOutput = Join-Path $testRoot 'user'
+        New-Item -ItemType Directory -Path $userOutput | Out-Null
+        $runner = Join-Path $testRoot 'SandboxStandardUserGuest.ps1'
+        Copy-Item -LiteralPath (Join-Path $inputRoot 'SandboxStandardUserGuest.ps1') -Destination $runner
+        $profiles = Get-ChildItem -LiteralPath $inputRoot -Filter 'DCCWPlus-*.icc' -File
+        foreach ($profile in $profiles) { Copy-Item -LiteralPath $profile.FullName -Destination $testRoot }
+
+        $password = 'Q!' + [Guid]::NewGuid().ToString('N') + '9z'
+        $user = New-LocalUser -Name 'DccwSmokeUser' -Password (ConvertTo-SecureString $password -AsPlainText -Force)
+        if (!(Get-LocalGroupMember -SID 'S-1-5-32-545' | Where-Object SID -EQ $user.SID)) {
+            Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $user
+        }
+        & icacls.exe $userOutput /grant "*$($user.SID):(OI)(CI)M" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Could not provide an isolated results directory for the standard user.' }
+
+        $result.step = 'user_process'
+        Add-Type -Path (Join-Path $inputRoot 'SandboxUserProcess.cs')
+        $result.userExitCode = [SandboxUserProcess]::Run($user.Name, $password, "$PSHOME\powershell.exe",
+            "-NoProfile -ExecutionPolicy Bypass -File $runner", $testRoot)
+        $userReport = Join-Path $userOutput 'result.json'
+        if ($result.userExitCode -ne 0 -or !(Test-Path -LiteralPath $userReport)) {
+            throw ('The standard-user process did not produce a report (0x{0:X8}).' -f $result.userExitCode)
+        }
+        $result.userCheck = Get-Content -LiteralPath $userReport -Raw | ConvertFrom-Json
+        $result.step = $result.userCheck.step
+        $result.success = $result.userCheck.success
+        return
+    }
 
     $result.step = 'provision'
     Add-AppxProvisionedPackage -Online -PackagePath $guestPackage -SkipLicense -LogPath $log | Out-Null
