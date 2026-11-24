@@ -36,6 +36,19 @@ internal static class Cli
                 return Success(CliDiscovery.Help(), json);
             if (remaining is ["capabilities"])
                 return Success(CliDiscovery.Capabilities(), json);
+            if (remaining is ["calibration", "compare", ..])
+            {
+                if (remaining is not ["calibration", "compare", var beforePath, var afterPath])
+                    throw new ArgumentException(new LocalizationService()["CaptureCompareUsage"]);
+                try
+                {
+                    var before = CalibrationCaptureCodec.Read(beforePath);
+                    var after = CalibrationCaptureCodec.Read(afterPath);
+                    return Success(CalibrationCaptureComparison.Compare(before, after), json);
+                }
+                catch (InvalidDataException)
+                { return Failure("invalid_capture", new LocalizationService()["InvalidCaptureDocument"], 2, json); }
+            }
 
             string root = dataDirectory ?? DataPaths.DefaultRoot;
             var store = new PresetStore(root);

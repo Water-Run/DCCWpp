@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using DccwPlus.Core.Calibration;
 
 namespace DccwPlus.Windows;
@@ -5,6 +6,8 @@ namespace DccwPlus.Windows;
 // Reads an installed profile by file name from the system color directory. It never writes or loads a LUT.
 internal static class InstalledProfileReader
 {
+    internal static string ReadSha256(string fileName) => Convert.ToHexString(SHA256.HashData(ReadBytes(fileName)));
+
     public static byte[] ReadBytes(string fileName)
     {
         IccProfileInspector.ValidateFileName(fileName);

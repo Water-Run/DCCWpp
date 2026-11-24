@@ -9,12 +9,12 @@ DCCW++ is a native WinUI 3 display color calibration app for Windows 11. It aims
 **0.2 is a development milestone.** The SDR wizard, timed preview and recovery, and ICC save flow are implemented. Physical display behavior, ICC installation and restoration on supported hardware, and packaged end-to-end behavior still need acceptance testing. The Microsoft Store release is pending.
 
 - Select a display and step through gamma, brightness, contrast, grayscale color balance, and before/after comparison. View example gamma patterns, inspect a full-screen test pattern on the chosen display, or skip hardware controls. The app can open Windows ClearType tuning after calibration.
-- Preview an SDR curve with a bounded timer and an independent recovery process. Confirm to generate an ICC profile with the new calibration curve and associate it with the selected display. Driver readback can verify the logical curve. Optical results require separate validation.
+- Preview an SDR curve with a bounded timer and an independent recovery process. Confirm to generate an ICC profile with the new curve, verify the installed file, and associate it with the selected display. Driver readback can verify the logical curve. Optical results require separate validation.
 - Undo a saved calibration on the selected display. A timed preview shows the previous curve before you confirm the change to the previous Windows profile and its scope.
 - Find and recover interrupted curve or ICC previews from the wizard or the CLI.
 - Create, rename, and delete local presets. Import versioned JSON, reuse a previously imported preset, or make a separate copy. Import places presets in the library for review. Display bindings stay local and protect referenced presets from deletion.
 - Inspect displays and profiles, manage presets, and run calibration transactions from `dccwpp.exe`. The CLI provides stable JSON fields, exit codes, and request IDs for retrying a preview safely. It shares calibration logic with the GUI.
-- Use the app in English, Simplified Chinese, or Traditional Chinese. View local PNG, JPEG, or TIFF photos as visual references.
+- Use the app in English, Simplified Chinese, or Traditional Chinese. View local PNG, JPEG, or TIFF photos as visual references. You can switch to the References page during a preview. The current deadline still applies, and you can cancel from that page.
 
 The SDR curve backend requires an independent display in SDR and checks for MHC2 hardware calibration before previewing. The wizard links to Windows display settings for Advanced Color and MHC2, and to Microsoft's HDR calibration tool for active HDR displays. In the installed MSIX, enable the Windows sign-in task and opt in for each calibrated display in Settings. The background monitor checks saved bindings at sign-in, on resume, and after a display change. Packaged activation and hardware restoration still need acceptance testing.
 
@@ -48,6 +48,8 @@ dccwpp.exe recovery status --json
 Agents can use `capabilities --json` to discover command effects, dry-run support, and request ID support. For a dry run, set `$presetId` to a saved preset ID and `$displayId` to an ID from `displays list`. Calling `apply` without `--dry-run` starts an SDR preview on the selected display with a fixed deadline. Use `calibration status`, `calibration confirm`, or `calibration revert` with its session ID.
 
 Generate a UUID before starting a preview with `apply`, `calibration undo`, or `profiles preview` and pass it as `--request-id`. If the response is lost, use that UUID to check the session or retry the same command and arguments. Check the exit code and JSON `ok` field, then read the outcome fields in `data`. The [CLI reference](docs/CLI.md) covers command effects, transaction states, and exit codes.
+
+Save `calibration capture --json` output before and after a test. Use `dccwpp.exe calibration compare before.json after.json --json` to compare the captured ICC, scope, logical curve, and display topology offline.
 
 ## Project layout
 

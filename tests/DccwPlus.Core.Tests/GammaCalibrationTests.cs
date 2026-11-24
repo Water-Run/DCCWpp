@@ -36,6 +36,28 @@ public sealed class GammaCalibrationTests
         Assert.True(fixture.Backend.State.Ramp.Matches(GammaRamp.Identity()));
     }
 
+    [Theory]
+    [InlineData("profile_file_changed")]
+    [InlineData("profile_file_unavailable")]
+    [InlineData("previous_system_profile_changed")]
+    public void InterruptedCommitWaitsForTheRecordedProfileBeforeRewritingTheCurve(string reason)
+    {
+        var fixture = new Fixture();
+        var interrupted = fixture.Begin() with { Status = "committing", ProfileCommitStarted = true };
+        fixture.Backend.BeforeRestoreProfile = () => throw new ProfilePreviewException(reason, "Simulated ICC verification failure.");
+
+        var pending = new GammaCalibrationTransaction(fixture.Backend, fixture.Journal).Recover(interrupted);
+
+        Assert.Equal("recovery-pending", pending.Status);
+        Assert.Equal(reason, pending.ReasonCode);
+        Assert.True(fixture.Backend.State.Ramp.Matches(interrupted.Candidate));
+
+        fixture.Backend.BeforeRestoreProfile = null;
+        var recovered = new GammaCalibrationTransaction(fixture.Backend, fixture.Journal).Recover(pending);
+        Assert.Equal("reverted", recovered.Status);
+        Assert.True(fixture.Backend.State.Ramp.Matches(interrupted.Original.Ramp));
+    }
+
     [Fact] public void Mhc2BaseStopsPreviewBeforeTheFirstWrite()
     {
         var fixture = new Fixture();
@@ -377,7 +399,7 @@ public sealed class GammaCalibrationTests
         public GammaDeviceState State { get; set; } = new("0123456789abcdef", @"\\.\DISPLAY1", "00000000:00000001:1",
             new string('A', 64), true, false, GammaRamp.Identity(), SourceId: 1, PersistenceKey: "path:" + new string('D', 64));
         public bool Committed, FailCommit, FailNextWrite, ProfileRestoreCalled, Disconnected, MisreportCommit;
-        public Action? BeforeRead, BeforeWrite;
+        public Action? BeforeRead, BeforeWrite, BeforeRestoreProfile;
         public GammaDeviceState Read(string displayId)
         {
             BeforeRead?.Invoke();
@@ -400,6 +422,7 @@ public sealed class GammaCalibrationTests
         }
         public void RestoreProfile(GammaCalibrationSession session)
         {
+            BeforeRestoreProfile?.Invoke();
             ProfileRestoreCalled = true;
             State = State with { ProfileName = session.Original.ProfileName, ProfileScope = session.Original.ProfileScope };
         }

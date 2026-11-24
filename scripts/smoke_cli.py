@@ -47,6 +47,35 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert public_commands["calibration confirm"]["effect"] == "display-change"
     assert public_commands["calibration confirm"]["supportsDryRun"] is False
     assert not data.exists(), "Help and capabilities must leave app data untouched"
+
+    before_file = Path(directory) / "校准前 capture.json"
+    after_file = Path(directory) / "校准后 capture.json"
+    sample = dict(displayId="0123456789abcdef", name="Fixture", isPrimary=True, colorState="sdr",
+                  selectedProfileScope="current-user", profileQueryStatus="not-found",
+                  curveStatus="logical_ramp_readable", logicalRampSha256="B" * 64)
+    capture = dict(schemaVersion=1, capturedAt="2026-11-24T04:00:00+00:00", windowsBuild=26100,
+                   osArchitecture="x64", topology="extend", topologySha256="A" * 64, displays=[sample])
+    wrapped = dict(schemaVersion=1, ok=True, data=capture)
+    before_file.write_text(json.dumps(wrapped), encoding="utf-8-sig")
+    after_file.write_text(json.dumps(capture), encoding="utf-16")
+    compare_args = ("calibration", "compare", str(before_file), str(after_file))
+    assert public_commands["calibration compare"]["effect"] == "read"
+    comparison = call(*compare_args)
+    assert comparison["status"] == "matched" and comparison["colorAccuracyVerified"] is False
+    after_file.write_text(json.dumps(dict(capture, displays=[dict(sample, logicalRampSha256="C" * 64)])), encoding="utf-8")
+    comparison = call(*compare_args)
+    assert comparison["status"] == "changed" and comparison["topologyStatus"] == "matched"
+    assert comparison["displays"][0]["logicalRampStatus"] == "changed"
+    after_file.write_text(json.dumps(dict(capture, topologySha256=None)), encoding="utf-8")
+    assert call(*compare_args)["status"] == "inconclusive"
+    for malformed in (dict(capture, schemaVersion=2), dict(capture, displays=[sample, sample]),
+                      dict(schemaVersion=1, ok=False, data=capture)):
+        after_file.write_text(json.dumps(malformed), encoding="utf-8")
+        assert call(*compare_args, expected=2)["code"] == "invalid_capture"
+    after_file.write_bytes(b" " * (256 * 1024 + 1))
+    assert call(*compare_args, expected=2)["code"] == "invalid_capture"
+    assert not data.exists(), "Comparing capture documents must leave app data untouched"
+
     assert call("status")["calibrationAvailable"] is True
     call("presets", "validate", str(root / "examples/neutral.dccw.json"))
     created = call("presets", "create", "CLI 中文预设")

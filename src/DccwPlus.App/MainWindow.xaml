@@ -3,14 +3,22 @@
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:local="using:DccwPlus.App">
   <Grid x:Name="Root">
-    <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+    <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+    <Grid.KeyboardAccelerators>
+      <KeyboardAccelerator x:Name="CancelPreviewKey" Key="Escape" IsEnabled="False" Invoked="CancelPreviewKeyInvoked" />
+    </Grid.KeyboardAccelerators>
     <Grid x:Name="TitleBar" Background="Transparent" Padding="16,0,0,0">
       <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
         <Image Source="Assets/Square44x44Logo.png" Width="24" Height="24" />
         <TextBlock Text="DCCW++" Style="{ThemeResource CaptionTextBlockStyle}" VerticalAlignment="Center" />
       </StackPanel>
     </Grid>
-    <NavigationView x:Name="Navigation" Grid.Row="1" IsBackButtonVisible="Collapsed" IsSettingsVisible="True"
+    <InfoBar x:Name="BackgroundPreview" Grid.Row="1" IsOpen="False" IsClosable="False">
+      <InfoBar.ActionButton>
+        <Button x:Name="BackgroundPreviewAction" Click="BackgroundPreviewActionClicked" />
+      </InfoBar.ActionButton>
+    </InfoBar>
+    <NavigationView x:Name="Navigation" Grid.Row="2" IsBackButtonVisible="Collapsed" IsSettingsVisible="True"
        PaneDisplayMode="Auto" OpenPaneLength="216" SelectionChanged="NavigationChanged">
       <NavigationView.MenuItems>
         <NavigationViewItem x:Name="CalibrationNav" Content="{Binding Text[Calibration]}" Tag="calibration">

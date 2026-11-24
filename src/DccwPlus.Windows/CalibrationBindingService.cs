@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using DccwPlus.Core.Calibration;
 using DccwPlus.Core.Presets;
@@ -53,7 +52,8 @@ public sealed class CalibrationBindingService(string root)
             || session.Original.PersistenceKey is null || session.Original.PersistenceKey != display.PersistenceKey
             || displays.Count(d => d.PersistenceKey == display.PersistenceKey) != 1)
             throw new ProfilePreviewException("display_identity_unavailable", "A unique persistent display identity is required.");
-        var saved = new WindowsGammaCalibrationBackend(root).Read(display.Id);
+        var backend = new WindowsGammaCalibrationBackend(root);
+        var saved = backend.Read(display.Id);
         if (!GammaCalibrationTransaction.SameTarget(session.Original, saved) || saved.ProfileScope != "current-user"
             || !ProfilePreviewPolicy.EqualName(saved.ProfileName, session.InstalledProfile))
             throw new ProfilePreviewException("profile_selection_changed", "The confirmed profile is no longer selected.");
@@ -66,7 +66,7 @@ public sealed class CalibrationBindingService(string root)
             DisplayName = display.Name,
             PresetId = session.Preset.Id,
             ProfileName = session.InstalledProfile,
-            ProfileSha256 = HashInstalledProfile(session.InstalledProfile),
+            ProfileSha256 = backend.ReadConfirmedProfileHash(session),
             Ramp = session.Candidate.Copy(),
             OriginalRamp = session.Original.Ramp.Copy(),
             RestoreEnabled = old?.RestoreEnabled ?? false,
@@ -98,7 +98,8 @@ public sealed class CalibrationBindingService(string root)
         var backend = new WindowsGammaCalibrationBackend(root);
         var bindings = _store.List().Where(b => b.RestoreEnabled).ToArray();
         if (bindings.Length == 0) return Report("no_bindings_enabled", recoveries: recoveries);
-        var restorer = new CalibrationBindingRestorer(new WindowsDisplayService(), backend, gammaStore, HashInstalledProfile, new PresetStore(root).Get);
+        var restorer = new CalibrationBindingRestorer(new WindowsDisplayService(), backend, gammaStore,
+            InstalledProfileReader.ReadSha256, new PresetStore(root).Get);
         var results = new List<BindingRestoreResult>(bindings.Length);
         foreach (var binding in bindings)
         {
@@ -135,9 +136,6 @@ public sealed class CalibrationBindingService(string root)
             return null;
         }
     }
-
-    private static string HashInstalledProfile(string name) =>
-        Convert.ToHexString(SHA256.HashData(InstalledProfileReader.ReadBytes(name)));
 
     private static CalibrationRestoreReport Report(string reason, IReadOnlyList<BindingRestoreResult>? bindings = null,
         IReadOnlyList<InterruptedPreviewResult>? recoveries = null) =>

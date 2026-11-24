@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using DccwPlus.Core.Calibration;
 using DccwPlus.Core.Storage;
 using static DccwPlus.Windows.WindowsColorProfileQuery;
@@ -40,12 +39,9 @@ public sealed partial class WindowsGammaCalibrationBackend
         VerifyProfileHash(backup.CandidateName, backup.CandidateHash);
         VerifyProfileHash(backup.EffectiveDefault, backup.EffectiveDefaultHash);
         VerifyProfileHash(backup.UserDefault, backup.UserDefaultHash);
-        if (backup.Scope == 0 || backup.UserDefault is null)
-        {
-            var system = ReadDefault(Adapter(backup.TargetKey), backup.SourceId, 0);
-            if (!ProfilePreviewPolicy.EqualName(system, backup.EffectiveDefault))
-                throw new ProfilePreviewException("undo_previous_profile_changed", "The previous system profile is no longer selected.");
-        }
+        if (!PreviousSystemDefaultMatches(backup, backup.EffectiveDefault,
+            () => ReadDefault(Adapter(backup.TargetKey), backup.SourceId, SystemWide)))
+            throw new ProfilePreviewException("undo_previous_profile_changed", "The previous system profile is no longer selected.");
         return (current, backup);
     }
 
@@ -111,15 +107,12 @@ public sealed partial class WindowsGammaCalibrationBackend
         if (scope == 0) SetUserScope(backup.DeviceKey, true);
     }
 
-    private static string HashInstalled(string profileName) =>
-        Convert.ToHexString(SHA256.HashData(InstalledProfileReader.ReadBytes(profileName)));
-
     private static void VerifyProfileHash(string? profileName, string? hash)
     {
         if (profileName is null) return;
         if (!ProfilePreviewPolicy.IsHash(hash))
             throw new ProfilePreviewException("undo_backup_unavailable", "The calibration has no saved profile fingerprint.");
-        if (!string.Equals(HashInstalled(profileName), hash, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(InstalledProfileReader.ReadSha256(profileName), hash, StringComparison.OrdinalIgnoreCase))
             throw new ProfilePreviewException("undo_profile_file_changed", "An ICC profile file changed since the calibration was saved.");
     }
 }

@@ -3,6 +3,7 @@ using DccwPlus.Core.Storage;
 using DccwPlus.Windows;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Storage;
@@ -23,23 +24,53 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent(); Root.DataContext = Model; Title = "DCCW++";
         SystemBackdrop = new MicaBackdrop(); ExtendsContentIntoTitleBar = true; SetTitleBar(TitleBar);
-        AppWindow.Resize(new(1180, 940)); AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "App.ico"));
-        Workspace.Initialize(Model, this); Navigation.SelectedItem = CalibrationNav;
+        DisplayWindowPlacement.SizeInitialWindow(this, new(1180, 940));
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "App.ico"));
+        Workspace.Initialize(Model, this);
+        Workspace.PreviewUiUpdated += UpdateBackgroundPreview;
+        Navigation.SelectedItem = CalibrationNav;
         LanguagePicker.SelectedItem = LanguagePicker.Items.Cast<ComboBoxItem>().First(i => (string)i.Tag == Model.Text.Language);
         UpdateLanguage(); _updating = false;
         Root.Loaded += async (_, _) => await RefreshStartupAsync();
     }
     private void NavigationChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
-        if (CalibrationPanel is null) return;
+        if (CalibrationPanel is null || Workspace is null) return;
         string page = args.IsSettingsSelected ? "settings" : (args.SelectedItem as NavigationViewItem)?.Tag as string ?? "calibration";
         CalibrationPanel.Visibility = page == "calibration" ? Visibility.Visible : Visibility.Collapsed;
         PresetsPanel.Visibility = page == "presets" ? Visibility.Visible : Visibility.Collapsed;
         ReferencesPanel.Visibility = page == "references" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPanel.Visibility = page == "settings" ? Visibility.Visible : Visibility.Collapsed;
+        Workspace.SetCalibrationPageVisible(page == "calibration");
+        UpdateBackgroundPreview();
         Model.Status = "";
         if (page == "settings") RefreshBindings();
         if (page == "presets") UpdatePresetSelection();
+    }
+    private void UpdateBackgroundPreview()
+    {
+        CancelPreviewKey.IsEnabled = Workspace.CanCancelPreview;
+        bool pending = Workspace.HasPendingPreviewRecovery;
+        bool show = CalibrationPanel.Visibility != Visibility.Visible && (Workspace.HasActivePreview || pending);
+        if (show)
+        {
+            BackgroundPreview.Message = Model.Text[pending ? "RecoveryMessage" : "PreviewOutsideWizard"];
+            BackgroundPreview.Severity = pending ? InfoBarSeverity.Warning : InfoBarSeverity.Informational;
+            BackgroundPreviewAction.Content = Model.Text[pending ? "Calibration" : "CancelCalibration"];
+            BackgroundPreviewAction.IsEnabled = pending || Workspace.CanCancelPreview;
+        }
+        BackgroundPreview.IsOpen = show;
+    }
+    private async void CancelPreviewKeyInvoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (!Workspace.CanCancelPreview) return;
+        args.Handled = true;
+        await Workspace.CancelPreviewAsync();
+    }
+    private async void BackgroundPreviewActionClicked(object sender, RoutedEventArgs e)
+    {
+        if (Workspace.HasPendingPreviewRecovery) Navigation.SelectedItem = CalibrationNav;
+        else await Workspace.CancelPreviewAsync();
     }
     private void RefreshClicked(object sender, RoutedEventArgs e)
     { try { RefreshPresetSelection((PresetList.SelectedItem as CalibrationPreset)?.Id); } catch (Exception ex) { ShowError(ex); } }

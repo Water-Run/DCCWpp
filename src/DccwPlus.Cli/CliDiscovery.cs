@@ -54,6 +54,7 @@ internal static class CliDiscovery
         new("recovery status", Read),
         new("recovery run", DisplayChange),
         new("calibration capture", Read, "[--display <display-id>]"),
+        new("calibration compare", Read, "<before.json> <after.json>"),
         new("capabilities", Read)
     ];
 

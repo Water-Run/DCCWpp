@@ -29,6 +29,7 @@ dccwpp displays snapshot show --json
 dccwpp displays restore-plan --display <display-id> --json
 dccwpp calibration diagnose --display <display-id> --json
 dccwpp calibration capture [--display <display-id>] --json
+dccwpp calibration compare <before.json> <after.json> --json
 dccwpp presets list --json
 dccwpp presets create "Daylight" --json
 dccwpp presets create "Daylight edited" --gamma 2.35 --red-gain 0.92 --author "Studio" --json
@@ -64,6 +65,21 @@ dccwpp bindings restore --dry-run --json
 
 `calibration capture` 只读采集当前显示状态并输出到 stdout。默认采集全部活动显示器，可用 `--display` 只返回指定目标。报告记录 Windows build、架构、拓扑、每屏 ICC 和作用域。可读取时，`profileSha256` 是 ICC 文件的 SHA-256，`logicalRampSha256` 是按 `vcgt` 编码的逻辑 Gamma 曲线的 SHA-256。摘要可用于核对前后是否逐项相同。即使摘要相同，光学结果和驱动行为仍需单独验收。采集期间检测到状态变化时返回 `capture_state_changed`，待状态稳定后可重试。不可读的曲线用 `curveStatus` 解释，摘要为 `null`。[Windows 逻辑曲线读回](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getdevicegammaramp)
 
+Windows 提供足够的活动路径和桌面几何信息时，采样还会记录 `topologySha256`。摘要涵盖全桌面的目标和源、分辨率、位置、刷新率及色彩模式，即使只返回某一屏的采样。旧采样没有该字段时仍可比较逐屏证据。
+
+`calibration compare` 只读取两份采样文件。它支持 `--json` 输出的成功封装和未封装的采样，单个文件上限为 256 KiB，接受 UTF-8 和带 BOM 的 UTF-16 LE。无效采样返回退出码 2 和 `invalid_capture`。可按以下方式保存样本并比对。
+
+```powershell
+dccwpp.exe calibration capture --json > before.json
+# Capture after.json after the test action has completed.
+dccwpp.exe calibration capture --json > after.json
+dccwpp.exe calibration compare before.json after.json --json
+```
+
+比对按 `displayId` 配对，逐屏返回 `profileStatus`、`logicalRampStatus` 和前后原始条目。只有一侧有条目时报告 `before-only` 或 `after-only`。检测到持久显示身份变化时报告 `identity-changed`。色彩模式或身份变化时不比较该屏的 ICC 和曲线。两次都明确无默认关联且作用域一致时，ICC 状态可以匹配。仅缺少摘要或无法查询时返回 `inconclusive`。
+
+退出码 0 表示成功生成比较报告。`status: matched` 需要拓扑摘要、Windows build 与架构一致，并且两侧采样的显示器均有匹配的 ICC 和曲线证据。`changed` 表示采样发现明确变化，其余情况为 `inconclusive`。用同一 Windows 用户和桌面采样。检查未选中屏幕时保存两份全屏幕报告。`colorAccuracyVerified` 固定为 false。
+
 已确认校准的逐屏绑定可在设置或 `bindings` 命令中启用。启用绑定仅保存偏好。Windows 登录任务由设置页单独管理。确认会话的 `bindingStatus` 表示本机绑定保存情况。旧日志中该字段可能为空。
 
 `startup status` 从当前 MSIX 包查询登录任务。未安装版返回 `unpackaged`，Windows 未报告任务时返回 `unavailable`。[Windows 包范围的 StartupTask 查询](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptask.getforcurrentpackageasync)
@@ -95,7 +111,7 @@ Agent 可以在第一次实际预览前生成一个 UUID 并传入 `--request-id
 
 `recovery status` 列出尚未结束的曲线与 ICC 预览，`kind` 分别为 `calibration` 和 `profile`。`recovery run` 尝试恢复这些会话，也可在向导里点击恢复。启用的登录绑定由 `bindings restore` 和登录任务管理。命令返回完整报告，调用方可用 `reason` 判断是否为忙碌 `preview_busy`、仍需恢复 `recovery_required`、处理完毕 `recovery_finished` 或无待处理会话 `no_recovery_needed`。仍在运行的预览由原工作进程处理。
 
-GUI 编辑阶段使用心跳维持预览，单次会话最多 30 分钟。进入比较页后，原始与调整后视图共用最多 30 秒的确认倒计时，且受单次会话总时限约束。`showingOriginal` 记录比较视图选择。窗口进程退出会触发独立工作进程恢复。工作进程自身中断后，需要读取持久日志并恢复。显示器不匹配或不可用时保留待恢复状态。
+GUI 在校准页编辑时使用心跳维持预览，单次会话最多 30 分钟。切到其他页面会暂停心跳，可使用该页面的取消入口。进入比较页后，原始与调整后视图共用最多 30 秒的确认倒计时，且受单次会话总时限约束。`showingOriginal` 记录比较视图选择。窗口进程退出会触发独立工作进程恢复。工作进程自身中断后，需要读取持久日志并恢复。显示器不匹配或不可用时保留待恢复状态。
 
 拓扑变化会结束活动预览。恢复会核对原始显示器身份、目标和源路径、SDR 模式、ICC 关联和曲线。兼容旧版会话日志。检测到其他程序选择了新配置或写入新曲线时，状态可变为 `superseded`。
 
@@ -104,6 +120,8 @@ GUI 编辑阶段使用心跳维持预览，单次会话最多 30 分钟。进入
 撤回可用 `--request-id` 指定新会话的 UUID。以相同 UUID、原校准 ID 和时限重试会返回已有会话，不会再启动预览或延长时限。`apply` 和 `calibration undo` 共用会话 ID 范围。尝试复用已被另一条校准请求占用的 UUID 会返回 `request_id_conflict`。预演不占用 UUID。
 
 恢复前需核对实际选中的已确认 ICC、曲线、显示器身份和配置文件摘要。旧版会话缺少摘要时报告 `undo_backup_unavailable`。已确认的旧记录仍可查询。
+
+保存时会在设置默认关联前后比对新 ICC 的安装摘要。回滚会检查事务已记录的 ICC 摘要和将要恢复的系统默认关联。`profile_file_changed` 表示同名文件的内容有变化，`profile_file_unavailable` 表示无法读取，`previous_system_profile_changed` 表示原来的系统默认关联已更改。无法核对的回滚保留为 `recovery-pending`，可通过 `recovery status` 查看。旧中断日志仍使用其中已有的证据恢复。
 
 Gamma 参数的中性位置为 2.2，曲线按 `x^(2.2/gamma)` 和通道增益调整后，再与开始时捕获的曲线组合。这是视觉调整参数，不是对面板物理 Gamma 的测量。确认的绝对曲线保存在 ICC `vcgt` 中；再次恢复已确认曲线不能重复叠加预设。
 

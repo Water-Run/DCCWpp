@@ -42,6 +42,8 @@ python ./scripts/verify_package.py ./artifacts/packages/DccwPlus.App_0.2.0.0_x64
 
 加上 `-StandardUser` 可验证沙盒普通用户直接安装、CLI 别名、默认登录启动状态和卸载。可用 DCCW++ 的 `vcgt` 写入器生成临时 ICC，再通过 `-IccProfile` 验证普通用户安装该文件、校验安装后的摘要并移除。GUI 冷启动、登录触发及显示器关联在交互桌面和实机单独验收。
 
+GUI 冷启动验收需要已登录的交互桌面。在普通用户安装后，从开始菜单启动 DCCW++，记录首次出现的窗口、默认页和退出结果。随后在扩展桌面上选中原点偏离主屏的目标屏，核对移屏和全屏图案的位置。[Windows Sandbox CLI 的交互会话要求](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli#exec)
+
 ```powershell
 $fixture = dotnet run --file ./scripts/New-IccTestFixture.cs -- ./artifacts/icc-test-fixtures
 ./scripts/Test-PackageInSandbox.ps1 -Package $x64DevelopmentMsix -StandardUser -IccProfile $fixture

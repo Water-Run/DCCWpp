@@ -187,7 +187,8 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         }
         catch (ProfilePreviewException ex) when (ex.Code == "external_profile_change") { return Superseded(ex.Code); }
         catch (ProfilePreviewException ex) when (ex.Code == "display_disconnected") { return Pending(ex.Code); }
-        catch (ProfilePreviewException ex) when (ex.Code is "profile_state_unavailable" or "profile_scope_unavailable")
+        catch (ProfilePreviewException ex) when (ex.Code is "profile_state_unavailable" or "profile_scope_unavailable"
+            or "profile_file_changed" or "profile_file_unavailable" or "previous_system_profile_changed")
         { return Pending(ex.Code); }
         catch { return Pending("restore_failed"); }
         return Session;

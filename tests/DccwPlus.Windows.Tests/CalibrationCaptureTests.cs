@@ -56,6 +56,23 @@ public sealed class CalibrationCaptureTests
         Assert.Equal("capture_state_changed", Assert.Throws<ProfilePreviewException>(() => capture.Read(display.Id)).Code);
     }
 
+    [Fact]
+    public void TopologyHashCoversAllPathsEvenWithOneDisplaySampled()
+    {
+        var display = Display() with { Width = 1920, Height = 1080, PositionX = 0, PositionY = 0 };
+        var secondary = display with { Id = "fedcba9876543210", TargetKey = "00000000:00000001:2", SourceId = 2,
+            DeviceName = "Secondary", PositionX = -1920, IsPrimary = false };
+        DisplayProbe probe = new("extend", [secondary, display]);
+        var capture = new CalibrationCapture(() => probe, _ => GammaRamp.Identity(), _ => [1]);
+
+        var first = capture.Read(display.Id);
+        Assert.Matches("^[0-9A-F]{64}$", first.TopologySha256!);
+        probe = new("extend", [display, secondary with { ProfileName = "other.icc" }]);
+        Assert.Equal(first.TopologySha256, capture.Read().TopologySha256);
+        probe = new("extend", [display, secondary with { PositionX = 1920 }]);
+        Assert.NotEqual(first.TopologySha256, capture.Read(display.Id).TopologySha256);
+    }
+
     private static DisplayInfo Display() => new("0123456789abcdef", "Panel", "SDR", true, "sdr",
         Topology: "extend", TargetKey: "00000000:00000001:1", ProfileName: "panel.icc", ProfileScope: "system-wide",
         HdrActive: false, AdvancedColorActive: false, SourceId: 1, SelectedProfileScope: "system-wide", ProfileQueryStatus: "read");

@@ -6,7 +6,6 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Input;
 
 namespace DccwPlus.App;
 
@@ -15,6 +14,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private MainViewModel? _model;
     private Window? _window;
     private Window? _patternWindow;
+    private PatternSurface? _fullScreenPattern;
     private GammaPreviewClient? _client;
     private readonly PreviewRecoveryService _recovery = new(DataPaths.DefaultRoot);
     private GammaCalibrationSession? _session;
@@ -22,9 +22,14 @@ public sealed partial class CalibrationWorkspace : UserControl
     private DispatcherQueueTimer? _timer, _debounce;
     private bool _setting, _busy, _pushing, _dirty, _timerBusy;
     private bool _reviewMode;
+    private bool _calibrationPageVisible = true;
     private DateTimeOffset _lastHeartbeat;
     private bool Active => _session?.Status == "previewing";
     private bool UndoActive => Active && _session?.UndoOf is not null;
+    internal bool HasActivePreview => Active;
+    internal bool CanCancelPreview => Active && !_busy;
+    internal bool HasPendingPreviewRecovery => _session?.Status == "recovery-pending";
+    internal event Action? PreviewUiUpdated;
 
     public CalibrationWorkspace() => InitializeComponent();
     public void Initialize(MainViewModel model, Window window)
@@ -41,8 +46,6 @@ public sealed partial class CalibrationWorkspace : UserControl
         _debounce = DispatcherQueue.CreateTimer(); _debounce.Interval = TimeSpan.FromMilliseconds(180); _debounce.IsRepeating = false;
         _debounce.Tick += async (_, _) => await PushAsync();
         model.Text.LanguageChanged += (_, _) => { UpdateStep(); UpdateUi(); };
-        KeyDown += async (_, e) =>
-        { if (e.Key == global::Windows.System.VirtualKey.Escape && Active) { e.Handled = true; await CancelAsync(); } };
         window.Closed += (_, _) => ClosePatternWindow();
         window.Activated += (_, e) =>
         {
@@ -50,6 +53,20 @@ public sealed partial class CalibrationWorkspace : UserControl
         };
         _setting = false; UpdateStep(); UpdateUi(); RefreshRecovery();
     }
+
+    internal void SetCalibrationPageVisible(bool visible)
+    {
+        if (_calibrationPageVisible == visible) return;
+        _calibrationPageVisible = visible;
+        if (!visible)
+        {
+            _debounce?.Stop();
+            ClosePatternWindow();
+        }
+        else if (_dirty && Active) _debounce?.Start();
+    }
+
+    internal Task CancelPreviewAsync() => CancelAsync();
     public void LoadPreset(CalibrationPreset preset)
     {
         if (Active || _busy) { Show("FinishOrCancel", InfoBarSeverity.Warning); return; }
@@ -95,7 +112,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
     private async Task<bool> PushAsync()
     {
-        if (_model is null || _client is null || !Active || UndoActive || _busy || _pushing) return false;
+        if (_model is null || _client is null || !Active || UndoActive || _busy || _pushing || !_calibrationPageVisible) return false;
         _pushing = true; UpdateUi();
         try
         {
@@ -103,7 +120,7 @@ public sealed partial class CalibrationWorkspace : UserControl
             {
                 _dirty = false; _draft = CurrentPreset();
                 _session = await _client.CommandAsync(_session!.Id, "update", _draft, OriginalToggle.IsOn);
-            } while (_dirty && Active && !_busy);
+            } while (_dirty && Active && !_busy && _calibrationPageVisible);
             if (!Active) ShowState();
             return Active;
         }
@@ -122,12 +139,10 @@ public sealed partial class CalibrationWorkspace : UserControl
                 await CancelAsync(targetMoved: true);
                 return;
             }
-            if (Active && StepPicker.SelectedIndex < 5 && !_busy && !_pushing && DateTimeOffset.UtcNow - _lastHeartbeat > TimeSpan.FromSeconds(3))
+            if (Active && _calibrationPageVisible && StepPicker.SelectedIndex < 5
+                && DateTimeOffset.UtcNow - _lastHeartbeat > TimeSpan.FromSeconds(3))
             { _lastHeartbeat = DateTimeOffset.UtcNow; _session = await _client.CommandAsync(_session!.Id, "heartbeat"); }
-            if (Active)
-                CountdownText.Text = string.Format(_model!.Text[UndoActive ? "UndoCountdown" : "PreviewCountdown"],
-                    Math.Max(0, (int)Math.Ceiling((_session!.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds)));
-            else if (_session?.NeedsRecovery != true || _session.Status == "recovery-pending")
+            if (!Active && (_session?.NeedsRecovery != true || _session.Status == "recovery-pending"))
             { _timer!.Stop(); ClosePatternWindow(); ShowState(); RefreshRecovery(); }
         }
         catch (Exception ex) { ShowError(ex); }
@@ -219,7 +234,7 @@ public sealed partial class CalibrationWorkspace : UserControl
             if (targetMoved && _session.Status == "reverted") Show("PreviewMoved", InfoBarSeverity.Warning);
             else ShowState();
         }
-        catch (Exception ex) { ReloadSession(); ShowError(ex); }
+        catch (Exception ex) { ShowError(ex); }
         finally { _busy = false; if (!Active) _timer!.Stop(); UpdateUi(); RefreshRecovery(); }
     }
     private async void StepChanged(object sender, SelectionChangedEventArgs e)
@@ -255,7 +270,9 @@ public sealed partial class CalibrationWorkspace : UserControl
         BalanceControls.Visibility = step == 4 ? Visibility.Visible : Visibility.Collapsed;
         ReviewControls.Visibility = step == 5 ? Visibility.Visible : Visibility.Collapsed;
         SkipHardwareButton.Visibility = step is 2 or 3 ? Visibility.Visible : Visibility.Collapsed;
-        Pattern.SetPattern((ReferencePatternKind)step);
+        var pattern = (ReferencePatternKind)step;
+        Pattern.SetPattern(pattern);
+        _fullScreenPattern?.SetPattern(pattern);
     }
     private void UpdateUi()
     {
@@ -273,7 +290,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         StartButton.Visibility = Active ? Visibility.Collapsed : Visibility.Visible;
         UndoCalibrationButton.Visibility = Active ? Visibility.Collapsed : Visibility.Visible;
         UndoCalibrationButton.IsEnabled = StartButton.IsEnabled;
-        CancelButton.IsEnabled = Active && !_busy;
+        CancelButton.IsEnabled = CanCancelPreview;
         CancelButton.Visibility = Active ? Visibility.Visible : Visibility.Collapsed;
         FinishButton.Visibility = StepPicker.SelectedIndex == 5 ? Visibility.Visible : Visibility.Collapsed;
         FinishButton.IsEnabled = Active && !_busy && !_pushing && _reviewMode;
@@ -287,12 +304,16 @@ public sealed partial class CalibrationWorkspace : UserControl
         PresetName.Visibility = undo ? Visibility.Collapsed : Visibility.Visible;
         ClearTypeOption.Visibility = undo ? Visibility.Collapsed : Visibility.Visible;
         SaveDraftButton.Visibility = Active ? Visibility.Collapsed : Visibility.Visible;
-        CountdownText.Visibility = Active ? Visibility.Visible : Visibility.Collapsed;
+        CountdownText.Visibility = Active && _reviewMode ? Visibility.Visible : Visibility.Collapsed;
+        if (CountdownText.Visibility == Visibility.Visible)
+            CountdownText.Text = string.Format(_model.Text[undo ? "UndoCountdown" : "PreviewCountdown"],
+                Math.Max(0, (int)Math.Ceiling((_session!.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds)));
         StepInstructions.Text = _model.Text[undo ? "UndoPreview" : "StepInstruction" + Math.Max(0, StepPicker.SelectedIndex)];
         ComparisonState.Text = _model.Text[undo ? "ShowingPreviousSavedCurve" : !Active ? "ComparisonRequiresPreview"
             : _session!.ShowingOriginal ? "ShowingOriginal" : "ShowingAdjusted"];
         UpdateDisplaySummary();
         ResetButton.Visibility = StepPicker.SelectedIndex is 1 or 4 ? Visibility.Visible : Visibility.Collapsed;
+        PreviewUiUpdated?.Invoke();
     }
     private void SaveDraftClicked(object sender, RoutedEventArgs e)
     {
@@ -312,7 +333,12 @@ public sealed partial class CalibrationWorkspace : UserControl
     private void ResetClicked(object sender, RoutedEventArgs e)
     { if (StepPicker.SelectedIndex == 1) GammaSlider.Value = 2.2; else { RedSlider.Value = GreenSlider.Value = BlueSlider.Value = 1; } }
     private void DisplayChanged(object sender, SelectionChangedEventArgs e)
-    { if (_model is not null && !_setting) { Outcome.IsOpen = false; UpdateUi(); } }
+    {
+        if (_model is null || _setting) return;
+        ClosePatternWindow();
+        Outcome.IsOpen = false;
+        UpdateUi();
+    }
     private void UpdateDisplaySummary()
     {
         var text = _model!.Text;
@@ -385,10 +411,14 @@ public sealed partial class CalibrationWorkspace : UserControl
         root.Children.Add(exit);
         var window = new Window { Title = text["CalibrationPattern"], Content = root };
         _patternWindow = window;
+        _fullScreenPattern = pattern;
         window.Closed += (_, _) =>
         {
             if (ReferenceEquals(_patternWindow, window))
+            {
                 _patternWindow = null;
+                _fullScreenPattern = null;
+            }
         };
         exit.Click += (_, _) => ClosePatternWindow();
         exit.Loaded += (_, _) => exit.Focus(FocusState.Programmatic);
@@ -419,6 +449,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     {
         var window = _patternWindow;
         _patternWindow = null;
+        _fullScreenPattern = null;
         window?.Close();
     }
     private void ReloadSession()
@@ -450,7 +481,15 @@ public sealed partial class CalibrationWorkspace : UserControl
     private void ShowState()
     {
         if (_session is null) return;
-        string key = _session.Status switch { "confirmed" => "CalibrationSaved", "reverted" => "CalibrationReverted", "superseded" => "CalibrationSuperseded", "recovery-pending" => "RecoveryMessage", _ => "PreviewActive" };
+        string key = _session.Status switch
+        {
+            "confirmed" => "CalibrationSaved",
+            "reverted" when _session.ReasonCode == "preview_expired" => "PreviewExpiredRestored",
+            "reverted" => "CalibrationReverted",
+            "superseded" => "CalibrationSuperseded",
+            "recovery-pending" => "RecoveryMessage",
+            _ => "PreviewActive"
+        };
         Show(key, _session.NeedsRecovery && !Active ? InfoBarSeverity.Warning : InfoBarSeverity.Informational);
     }
     private void Show(string key, InfoBarSeverity severity)

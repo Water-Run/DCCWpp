@@ -113,6 +113,19 @@ public static class SandboxIccProfile {
         if ($capabilities.contractVersion -ne 1) { throw 'The installed alias did not report the CLI v1 contract.' }
         $result.cliContractVersion = $capabilities.contractVersion
         $result.cliRequestIdCommands = @($capabilities.commands | Where-Object { $_.supportsRequestId } | ForEach-Object { $_.name })
+        if ($capabilities.commands.name -contains 'calibration compare') {
+            $result.step = 'cli_capture_comparison'
+            $capture = Invoke-PackagedCli $alias @('calibration', 'capture')
+            $capturePath = Join-Path $testRoot 'user\capture.json'
+            $capture | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $capturePath -Encoding UTF8
+            $comparison = Invoke-PackagedCli $alias @('calibration', 'compare', $capturePath, $capturePath)
+            if ($comparison.status -notin @('matched', 'inconclusive') -or $comparison.colorAccuracyVerified -or
+                $comparison.displays.Count -ne $capture.displays.Count) {
+                throw 'The packaged CLI did not compare its own capture correctly.'
+            }
+            $result.captureComparisonStatus = $comparison.status
+            $result.captureComparisonDisplays = $comparison.displays.Count
+        }
 
         $result.step = 'startup_status'
         $startup = & $alias startup status --json | ConvertFrom-Json
