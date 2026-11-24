@@ -44,7 +44,9 @@ python ./scripts/verify_package.py ./artifacts/packages/DccwPlus.App_0.2.0.0_x64
 
 加上 `-StandardUser` 可验证沙盒普通用户直接安装、CLI 别名、默认登录启动状态和卸载。可用 DCCW++ 的 `vcgt` 写入器生成临时 ICC，再通过 `-IccProfile` 验证普通用户安装该文件、校验安装后的摘要并移除。GUI 冷启动、登录触发及显示器关联在交互桌面和实机单独验收。
 
-GUI 冷启动验收需要已登录的交互桌面。用沙盒复测时，先通过 `wsb connect` 建立该次沙盒的交互会话。随后可用 `wsb exec --run-as ExistingLogin` 在同一会话中启动验收。200% 缩放的 x64 沙盒已检查默认页面、紧凑布局、从 CLI 创建的预设、语言切换及全屏图案。首发仍需在普通用户交互桌面重复验收，并在扩展桌面上核对移屏和全屏图案的位置。[Windows Sandbox CLI 的交互会话要求](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli#exec)
+GUI 冷启动验收需要已登录的交互桌面。用沙盒复测时，先通过 `wsb connect` 建立该次沙盒的交互会话。随后可用 `wsb exec --run-as ExistingLogin` 在同一会话中启动验收。200% 缩放的 x64 沙盒已检查默认页面、紧凑布局、从 CLI 创建的预设、语言切换及全屏图案。普通用户已验收 WinUI 冷启动和 GUI 导入后通过 CLI 查验。扩展桌面仍需核对移屏和全屏图案的位置。[Windows Sandbox CLI 的交互会话要求](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli#exec)
+
+登录启动复测从安装后的 `Disabled` 状态开始。在设置启用任务并关闭主窗口，注销测试用户并重新登录。先检查桌面是否弹出向导，再运行 `dccwpp startup last-restore --json`。报告应晚于新会话的登录时间，`trigger` 应为 `sign_in`，系统进程列表应有后台实例。没有启用绑定时检查 `no_bindings_enabled`。如有针对断开显示器的测试绑定，检查其状态为 `skipped`，原因为 `display_disconnected`。随后用设置关闭启动任务，确认后台退出；再次注销并登录，核对后台没有重启且报告时间未变化。[桌面应用 StartupTask](https://learn.microsoft.com/en-us/windows/uwp/porting/desktop-to-uwp-extensions#start-an-executable-file-when-users-log-into-windows)
 
 ```powershell
 $fixture = dotnet run --file ./scripts/New-IccTestFixture.cs -- ./artifacts/icc-test-fixtures

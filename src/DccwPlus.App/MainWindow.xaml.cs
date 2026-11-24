@@ -37,7 +37,7 @@ public sealed partial class MainWindow : Window
     }
     private void NavigationChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
-        if (CalibrationPanel is null || Workspace is null) return;
+        if (Workspace is null || PageScroll is null) return;
         string page = args.IsSettingsSelected ? "settings" : (args.SelectedItem as NavigationViewItem)?.Tag as string ?? "calibration";
         _headingKey = page switch
         {
@@ -47,7 +47,8 @@ public sealed partial class MainWindow : Window
             _ => "CalibrationTitle"
         };
         PageHeading.Text = Model.Text[_headingKey];
-        CalibrationPanel.Visibility = page == "calibration" ? Visibility.Visible : Visibility.Collapsed;
+        Workspace.Visibility = page == "calibration" ? Visibility.Visible : Visibility.Collapsed;
+        PageScroll.Visibility = page == "calibration" ? Visibility.Collapsed : Visibility.Visible;
         PresetsPanel.Visibility = page == "presets" ? Visibility.Visible : Visibility.Collapsed;
         ReferencesPanel.Visibility = page == "references" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPanel.Visibility = page == "settings" ? Visibility.Visible : Visibility.Collapsed;
@@ -61,7 +62,7 @@ public sealed partial class MainWindow : Window
     {
         CancelPreviewKey.IsEnabled = Workspace.CanCancelPreview;
         bool pending = Workspace.HasPendingPreviewRecovery;
-        bool show = CalibrationPanel.Visibility != Visibility.Visible && (Workspace.HasActivePreview || pending);
+        bool show = Workspace.Visibility != Visibility.Visible && (Workspace.HasActivePreview || pending);
         if (show)
         {
             BackgroundPreview.Message = Model.Text[pending ? "RecoveryMessage" : "PreviewOutsideWizard"];

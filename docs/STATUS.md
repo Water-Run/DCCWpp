@@ -1,9 +1,39 @@
 # 开发交接
 
+## 2026-11-24 · 已保存校准的实时核对
+
+- `calibration verify <calibration-id> --json` 用唯一的持久显示身份查找当前路径，将历史确认状态与 Windows 当前的默认 ICC、文件 SHA-256 和逻辑曲线分开报告。命令同时返回 Windows 校准加载器的开关状态，供 Agent 判断登录后需核对的项目。[CLI 核对契约](CLI.md)
+- Windows Sandbox build 26100 的普通用户通过 x64 装包 CLI 核对测试 ICC。样本使用合成的历史确认记录，实时状态来自 Windows。更换当前用户默认 ICC 后，选择匹配由 `true` 变为 `false`。恢复原 ICC 后，选择与文件摘要重新匹配。注销并登录到会话 2 后，Windows 返回新的虚拟显示器身份，命令给出 `inconclusive`，没有将新显示路径视为原目标。本地 SDR 曲线和重登录后的实际重载仍待实机验收。
+- 136 项核心测试、67 项 Windows 测试及 115 项 CLI 进程检查通过。x64 和 ARM64 开发 MSIX 通过内容检查。`verify-first.json`、`verify-second.json`、`relogin-after.json` 与 `capture-after-relogin.json` 位于本机 `artifacts/calibration-verification-sandbox/fde29374-b4fe-4d4d-bd03-d74ba48c668d/results/`。
+
+## 2026-11-24 · ICC 关联回退与采样会话
+
+- Windows Sandbox build 26100 的普通用户通过原生 Windows API 安装两个测试 ICC，将作用域切为当前用户并依次设为默认。随后恢复前一个默认值，移除两条测试关联并恢复最初的系统作用域。x64 装包 CLI 核对了每个阶段的 ICC 名称、作用域和 SHA-256。此次证据覆盖虚拟显示器的 ICC 关联及回退，实际校准曲线和物理显示效果仍待本地验收。[Windows ICC 关联文档](https://learn.microsoft.com/en-us/windows/win32/wcs/display-calibration-mhc#new-display-icc-profile-management-apis)
+- 采样新增 `isRemoteSession`。远程报告保留 ICC 证据，曲线状态为 `remote_session_blocked`。跨本地与远程会话的比对返回 `inconclusive`。旧报告继续可用。当前工作会话也是远程桌面，早期 `curve_read_failed` 记录无法判断物理驱动能力。[CLI 采样契约](CLI.md)
+- 136 项核心测试、61 项 Windows 测试和 113 项 CLI 进程检查通过。x64 和 ARM64 开发 MSIX 通过内容检查。沙盒原生和装包 CLI 报告位于 `artifacts/icc-association-sandbox/a675e1d8-f1ea-4e23-8f37-bee30cd9e588/results/`。
+
+## 2026-11-24 · 高缩放下的向导操作区
+
+- 步骤选择和全屏入口固定在上方，返回、前进、重置、跳过和校准事务操作固定在底部。较窄窗口中的底部操作分为两行。显示器选择位于准备步骤，图案高度随滚动区变化。Gamma 和 RGB 数值框按两位小数显示。[WinUI 响应式布局](https://learn.microsoft.com/en-us/windows/apps/develop/ui/layouts-with-xaml) · [NumberBox 数值格式](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/number-box#formatting-input)
+- Windows Sandbox build 26100 普通用户在 200% 缩放下验证了宽窗和窄窗、滚动时操作区位置不变、三语跳过入口可见、下一步可获键盘焦点、切换页面与退出全屏后保留进度。参考浏览的校准会话数保持为零。实际预览的倒计时、取消和保存仍需在本机交互桌面验收。
+- 135 项核心测试、59 项 Windows 测试、113 项 CLI 检查及 x64、ARM64 开发 MSIX 内容检查通过。包内交互测试报告与截图位于本机 `artifacts/wizard-navigation-sandbox/1e3512da-cb5a-4fc8-991a-885da5928655/results/`。
+
+## 2026-11-24 · 原版 DCCW 的远程会话行为
+
+- 在同一个 Windows Sandbox build 26100 普通用户会话运行原版 `dccw.exe` 和 DCCW++。原版版本 `10.0.26100.8875` 在打开向导前提示远程桌面无法校准。旧开发包在同一 SDR 目标上报告 `curve_read_failed`。新版在 GUI 禁用开始和撤回，保留参考图案及预设功能。装包 CLI 的 Gamma 诊断、Gamma 预演与 ICC 预演返回 `remote_session_blocked`。[Windows 远程会话检测](https://learn.microsoft.com/en-us/windows/win32/termserv/detecting-the-terminal-services-environment)
+- 200% 缩放下浏览了新版六个参考步骤，验证跳过硬件调整、返回后保留 Gamma 草稿值，以及重置回 2.2。审核页的 ClearType 选项可见，保存处于禁用状态。测试前后均为零个校准会话。原版逐页对照和实际保存仍需在本地交互会话进行。
+- 135 项核心测试、59 项 Windows 测试、113 项 CLI 检查及双架构开发 MSIX 内容检查通过。模拟测试覆盖预览切到远程后保留待恢复记录，以及回到原本地目标后恢复。`native-trace.json`、`remote-baseline.json`、`dccwpp-wizard-trace.json` 和截图位于本机 `artifacts/dccw-parity-sandbox/f28bf701-f080-4e07-acbc-64197b7cfdf5/results/`。
+
+## 2026-11-24 · 普通用户登录启动与预设互通
+
+- 在 Windows Sandbox build 26100 安装 x64 开发 MSIX `0.2.0.0`，输入 SHA-256 为 `74DECB3B075040F225F5039AE045D812533130BAB4B6B470939F3BE5D1EEA779`。同一普通用户在四个独立的交互会话中验证 WinUI 冷启动、设置页启停和实际重新登录。启用后的后台进程无可见窗口，CLI 先后读到 `sign_in` 的 `no_bindings_enabled` 和断开测试绑定的 `display_disconnected`。后者没有创建校准会话。
+- 后台运行期间仍可打开前台设置。关闭登录任务后，后台退出。再次注销并登录，后台未重启，最近报告的时间保持原值。此次覆盖登录触发和拒绝不匹配目标，实际曲线恢复、睡眠唤醒和热插拔仍待实机验证。[登录验收步骤](STORE.md)
+- 通过原生文件选择器导入示例预设，装包 CLI 核对新本地 UUID、Gamma、作者及说明。重复导入选中原条目，显式导入副本产生独立 UUID。导入前后都没有校准会话。`startup-summary.json` 与 `preset-import.json` 位于本机 `artifacts/gui-startup-sandbox/648ef88b-eafa-453b-a077-ad324ba4254a/results/`。
+
 ## 2026-11-24 · Agent 直接控制 SDR 预览
 
 - `calibration preview` 接受显示器 ID、Gamma 和 RGB 增益，支持预演和请求 ID。`calibration update` 支持单项调参及切换原始和候选视图。CLI 创建的预览沿用首次设定的截止时间。三语文案和 CLI v1 命令发现已更新。[CLI 参考](CLI.md)
-- 132 项核心测试、59 项 Windows 测试及 113 项 CLI 进程检查通过。模拟覆盖并发调参、请求重试、视图切换和取消后恢复。本机只读预演返回 `curve_read_failed`，没有生成事务。实际曲线写入及 ICC 保存仍待实机验证。
+- 133 项核心测试、59 项 Windows 测试及 113 项 CLI 进程检查通过。模拟覆盖并发调参、请求重试、视图切换和取消后恢复。修复了 Windows 在 CLI 读取会话文件时偶发拒绝替换的问题，并验证已打开的读取仍取得旧版本，新读取取得完整的新版本。本机只读预演返回 `curve_read_failed`，没有生成事务。实际曲线写入及 ICC 保存仍待实机验证。
 - x64 和 ARM64 开发 MSIX 通过内容检查。x64 包由 Windows Sandbox 普通用户安装，经 `dccwpp.exe` 别名发现新命令，并核对无目标预演返回 `not_found`，随后卸载。本机沙盒报告位于 `artifacts/sandbox-smoke/9c6ea1e8-9945-42e9-b76c-89d0f1f32550/results/result.json`。
 
 ## 2026-11-24 · WinUI 交互冷启动与 200% 缩放

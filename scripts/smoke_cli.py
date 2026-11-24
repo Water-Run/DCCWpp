@@ -47,6 +47,8 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         assert public_commands[name]["effect"] == "display-preview"
     assert public_commands["calibration confirm"]["effect"] == "display-change"
     assert public_commands["calibration confirm"]["supportsDryRun"] is False
+    assert public_commands["calibration verify"]["effect"] == "read"
+    assert call("calibration", "verify", str(uuid4()), expected=3)["code"] == "not_found"
     assert not data.exists(), "Help and capabilities must leave app data untouched"
 
     inline_preview = ("calibration", "preview", "--display", "missing-monitor", "--dry-run")
@@ -79,6 +81,7 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert public_commands["calibration compare"]["effect"] == "read"
     comparison = call(*compare_args)
     assert comparison["status"] == "matched" and comparison["colorAccuracyVerified"] is False
+    assert comparison["sameSessionType"] is None
     after_file.write_text(json.dumps(dict(capture, displays=[dict(sample, logicalRampSha256="C" * 64)])), encoding="utf-8")
     comparison = call(*compare_args)
     assert comparison["status"] == "changed" and comparison["topologyStatus"] == "matched"
@@ -189,6 +192,9 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert not (data / "calibration-sessions" / dry_undo_id.hex).exists()
     replay_args = ("apply", copy["id"], "--display", "0123456789abcdef", "--request-id", str(interrupted_id))
     prior = call("calibration", "status", str(interrupted_id))
+    verification = call("calibration", "verify", str(interrupted_id))
+    assert verification["savedStatus"] == "reverted" and verification["status"] == "inconclusive"
+    assert verification["reasonCode"] == "calibration_not_confirmed" and verification["capturedAt"] is None
     with ThreadPoolExecutor(max_workers=3) as pool:
         replays = list(pool.map(lambda _: call(*replay_args), range(3)))
     assert all(result == prior and result["status"] == "reverted" for result in replays)
@@ -347,19 +353,22 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         capture = call("calibration", "capture", "--display", display, expected=(0, 4))
         if "displays" in capture:
             assert capture["windowsBuild"] > 0
+            assert isinstance(capture["isRemoteSession"], bool)
             assert len(capture["displays"]) == 1 and capture["displays"][0]["displayId"] == display
             sample = capture["displays"][0]
             for key in ("profileSha256", "logicalRampSha256"):
                 value = sample[key]
                 assert value is None or (len(value) == 64 and int(value, 16) >= 0)
             assert (sample["curveStatus"] == "logical_ramp_readable") == (sample["logicalRampSha256"] is not None)
+            if capture["isRemoteSession"]:
+                assert sample["curveStatus"] == "remote_session_blocked"
         else:
             assert capture["code"] == "capture_state_changed"
         diagnostic = call("calibration", "diagnose", "--display", display)
         assert diagnostic["displayId"] == display
         for key in ("windowsCalibrationLoaderEnabled", "driverSupportsVcgt", "logicalRampReadable"):
             assert diagnostic[key] is None or isinstance(diagnostic[key], bool), diagnostic
-        if diagnostic["reasonCode"] in {"sdr_path_blocked", "display_identity_unavailable", "shared_source_blocked",
+        if diagnostic["reasonCode"] in {"remote_session_blocked", "sdr_path_blocked", "display_identity_unavailable", "shared_source_blocked",
                                         "mhc2_profile_blocked", "profile_state_unavailable"}:
             assert diagnostic["logicalRampReadable"] is None
         assert "profileQueryStatus" in diagnostic and "selectedProfileScope" in diagnostic
@@ -369,7 +378,7 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
         dry_id = uuid4()
         dry = call("apply", created["id"], "--display", display, "--dry-run", "--request-id", str(dry_id), expected=(0, 4))
         assert not (data / "calibration-sessions" / dry_id.hex).exists()
-        preflight_errors = {"curve_read_failed", "display_identity_unavailable", "shared_source_blocked",
+        preflight_errors = {"remote_session_blocked", "curve_read_failed", "display_identity_unavailable", "shared_source_blocked",
                             "mhc2_profile_blocked", "profile_state_unavailable", "profile_scope_unavailable",
                             "profile_device_unavailable", "profile_file_unavailable", "icc_base_unsupported",
                             "curve_candidate_invalid", "external_profile_change", "preview_busy", "recovery_required"}

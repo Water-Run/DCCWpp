@@ -77,6 +77,26 @@ public sealed class CalibrationCaptureComparisonTests
         Assert.Null(Assert.Single(result.Displays).ProfileStatus);
     }
 
+    [Fact]
+    public void LocalAndRemoteEvidenceRemainInconclusiveEvenWhenAPathIdMatches()
+    {
+        var local = Report(Sample) with { IsRemoteSession = false };
+        var remote = Report(Sample with { CurveStatus = "remote_session_blocked", LogicalRampSha256 = null,
+            ProfileSha256 = OtherHash }) with { TopologySha256 = OtherHash, IsRemoteSession = true };
+
+        var result = CalibrationCaptureComparison.Compare(local, remote);
+        Assert.False(result.SameSessionType);
+        Assert.Equal("inconclusive", result.TopologyStatus);
+        Assert.Equal("inconclusive", result.Status);
+        Assert.Null(Assert.Single(result.Displays).ProfileStatus);
+
+        var same = CalibrationCaptureComparison.Compare(remote, remote);
+        Assert.True(same.SameSessionType);
+        Assert.Equal("inconclusive", same.Status);
+        Assert.Equal("matched", Assert.Single(same.Displays).ProfileStatus);
+        Assert.Throws<InvalidDataException>(() => CalibrationCaptureComparison.Compare(local, local with { IsRemoteSession = true }));
+    }
+
     private static CalibrationCaptureReport Report(DisplayCalibrationCapture sample) =>
         new(1, new DateTimeOffset(2026, 11, 24, 0, 0, 0, TimeSpan.Zero), 26100, "x64", "extend", [sample], Hash);
 }

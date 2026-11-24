@@ -31,73 +31,75 @@
         <NavigationViewItem Content="{Binding Text[Presets]}" Tag="presets"><NavigationViewItem.Icon><FontIcon Glyph="&#xE8B7;" /></NavigationViewItem.Icon></NavigationViewItem>
         <NavigationViewItem Content="{Binding Text[References]}" Tag="references"><NavigationViewItem.Icon><FontIcon Glyph="&#xEB9F;" /></NavigationViewItem.Icon></NavigationViewItem>
       </NavigationView.MenuItems>
-      <ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="28,20,28,32">
-        <StackPanel Spacing="20" MaxWidth="1120" HorizontalAlignment="Stretch">
-          <StackPanel x:Name="CalibrationPanel"><local:CalibrationWorkspace x:Name="Workspace" /></StackPanel>
-          <StackPanel x:Name="PresetsPanel" Visibility="Collapsed" Spacing="20">
-            <TextBlock Text="{Binding Text[PresetsSubtitle]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
-            <StackPanel Orientation="Horizontal" Spacing="10">
-              <Button Content="{Binding Text[Import]}" Click="ImportClicked" Style="{ThemeResource AccentButtonStyle}" />
-              <Button Content="{Binding Text[ImportCopy]}" Click="ImportCopyClicked" />
-              <Button Content="{Binding Text[Refresh]}" Click="RefreshClicked" />
-            </StackPanel>
-            <StackPanel Orientation="Horizontal" Spacing="10">
-              <Button Content="{Binding Text[Export]}" Click="ExportClicked" />
-              <Button Content="{Binding Text[LoadDraft]}" Click="LoadClicked" />
-              <Button x:Name="RenamePresetButton" Content="{Binding Text[RenamePreset]}" Click="RenamePresetClicked" IsEnabled="False" />
-              <Button x:Name="DeletePresetButton" Content="{Binding Text[DeletePreset]}" Click="DeletePresetClicked" IsEnabled="False" />
-            </StackPanel>
-            <ListView x:Name="PresetList" ItemsSource="{Binding Presets}" SelectionMode="Single" MinHeight="180"
+      <Grid>
+        <local:CalibrationWorkspace x:Name="Workspace" />
+        <ScrollViewer x:Name="PageScroll" Visibility="Collapsed" HorizontalScrollBarVisibility="Disabled" Padding="28,20,28,32">
+          <StackPanel Spacing="20" MaxWidth="1120" HorizontalAlignment="Stretch">
+            <StackPanel x:Name="PresetsPanel" Visibility="Collapsed" Spacing="20">
+              <TextBlock Text="{Binding Text[PresetsSubtitle]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <Button Content="{Binding Text[Import]}" Click="ImportClicked" Style="{ThemeResource AccentButtonStyle}" />
+                <Button Content="{Binding Text[ImportCopy]}" Click="ImportCopyClicked" />
+                <Button Content="{Binding Text[Refresh]}" Click="RefreshClicked" />
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <Button Content="{Binding Text[Export]}" Click="ExportClicked" />
+                <Button Content="{Binding Text[LoadDraft]}" Click="LoadClicked" />
+                <Button x:Name="RenamePresetButton" Content="{Binding Text[RenamePreset]}" Click="RenamePresetClicked" IsEnabled="False" />
+                <Button x:Name="DeletePresetButton" Content="{Binding Text[DeletePreset]}" Click="DeletePresetClicked" IsEnabled="False" />
+              </StackPanel>
+              <ListView x:Name="PresetList" ItemsSource="{Binding Presets}" SelectionMode="Single" MinHeight="180"
                       SelectionChanged="PresetSelectionChanged" AutomationProperties.Name="{Binding Text[Presets]}">
-              <ListView.ItemTemplate><DataTemplate><StackPanel Padding="12" Spacing="6">
-                <TextBlock Text="{Binding Name}" Style="{ThemeResource BodyStrongTextBlockStyle}" />
-                <TextBlock Text="{Binding Description}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <TextBlock Text="{Binding Author}" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-              </StackPanel></DataTemplate></ListView.ItemTemplate>
-            </ListView>
-            <TextBlock x:Name="PresetBindingsText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" AutomationProperties.LiveSetting="Polite" />
-            <TextBlock Text="{Binding Text[PresetSafety]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-          </StackPanel>
-          <StackPanel x:Name="ReferencesPanel" Visibility="Collapsed" Spacing="20">
-            <Border Style="{StaticResource Card}"><StackPanel Spacing="16">
-              <TextBlock Text="{Binding Text[ReferenceTitle]}" Style="{ThemeResource SubtitleTextBlockStyle}" />
-              <TextBlock Text="{Binding Text[ReferenceMessage]}" TextWrapping="Wrap" />
-              <TextBlock Text="{Binding Text[ReferenceCategories]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-              <Button Content="{Binding Text[ChooseReferencePhotos]}" Click="ChoosePhotosClicked" />
-              <ComboBox x:Name="PhotoPicker" DisplayMemberPath="Name" SelectionChanged="PhotoChanged" HorizontalAlignment="Stretch" AutomationProperties.Name="{Binding Text[References]}" />
-              <Image x:Name="ReferencePhoto" MaxHeight="540" Stretch="Uniform" />
-            </StackPanel></Border>
-          </StackPanel>
-          <StackPanel x:Name="SettingsPanel" Visibility="Collapsed" Spacing="20">
-            <Border Style="{StaticResource Card}"><StackPanel Spacing="12">
-              <TextBlock Text="{Binding Text[Language]}" Style="{ThemeResource BodyStrongTextBlockStyle}" />
-              <ComboBox x:Name="LanguagePicker" DisplayMemberPath="Label" SelectionChanged="LanguageChanged"
+                <ListView.ItemTemplate><DataTemplate><StackPanel Padding="12" Spacing="6">
+                  <TextBlock Text="{Binding Name}" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                  <TextBlock Text="{Binding Description}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                  <TextBlock Text="{Binding Author}" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel></DataTemplate></ListView.ItemTemplate>
+              </ListView>
+              <TextBlock x:Name="PresetBindingsText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" AutomationProperties.LiveSetting="Polite" />
+              <TextBlock Text="{Binding Text[PresetSafety]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+            <StackPanel x:Name="ReferencesPanel" Visibility="Collapsed" Spacing="20">
+              <Border Style="{StaticResource Card}"><StackPanel Spacing="16">
+                <TextBlock Text="{Binding Text[ReferenceTitle]}" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                <TextBlock Text="{Binding Text[ReferenceMessage]}" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding Text[ReferenceCategories]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Button Content="{Binding Text[ChooseReferencePhotos]}" Click="ChoosePhotosClicked" />
+                <ComboBox x:Name="PhotoPicker" DisplayMemberPath="Name" SelectionChanged="PhotoChanged" HorizontalAlignment="Stretch" AutomationProperties.Name="{Binding Text[References]}" />
+                <Image x:Name="ReferencePhoto" MaxHeight="540" Stretch="Uniform" />
+              </StackPanel></Border>
+            </StackPanel>
+            <StackPanel x:Name="SettingsPanel" Visibility="Collapsed" Spacing="20">
+              <Border Style="{StaticResource Card}"><StackPanel Spacing="12">
+                <TextBlock Text="{Binding Text[Language]}" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                <ComboBox x:Name="LanguagePicker" DisplayMemberPath="Label" SelectionChanged="LanguageChanged"
                         MinWidth="220" AutomationProperties.Name="{Binding Text[Language]}" />
-              <TextBlock Text="{Binding Text[LanguageHint]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
-            </StackPanel></Border>
-            <Border Style="{StaticResource Card}"><StackPanel Spacing="12">
-              <ToggleSwitch x:Name="StartupToggle" Header="{Binding Text[Startup]}" OnContent="{Binding Text[On]}" OffContent="{Binding Text[Off]}" Toggled="StartupChanged" />
-              <TextBlock x:Name="StartupStateText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-              <TextBlock Text="{Binding Text[StartupHint]}" TextWrapping="Wrap" />
-              <ComboBox x:Name="BindingPicker" Header="{Binding Text[BindingDisplay]}" DisplayMemberPath="Label"
+                <TextBlock Text="{Binding Text[LanguageHint]}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+              </StackPanel></Border>
+              <Border Style="{StaticResource Card}"><StackPanel Spacing="12">
+                <ToggleSwitch x:Name="StartupToggle" Header="{Binding Text[Startup]}" OnContent="{Binding Text[On]}" OffContent="{Binding Text[Off]}" Toggled="StartupChanged" />
+                <TextBlock x:Name="StartupStateText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock Text="{Binding Text[StartupHint]}" TextWrapping="Wrap" />
+                <ComboBox x:Name="BindingPicker" Header="{Binding Text[BindingDisplay]}" DisplayMemberPath="Label"
                         HorizontalAlignment="Stretch" SelectionChanged="BindingSelectionChanged" />
-              <ToggleSwitch x:Name="BindingToggle" Header="{Binding Text[BindingRestore]}" IsEnabled="False"
+                <ToggleSwitch x:Name="BindingToggle" Header="{Binding Text[BindingRestore]}" IsEnabled="False"
                             OnContent="{Binding Text[On]}" OffContent="{Binding Text[Off]}" Toggled="BindingChanged" />
-              <Button x:Name="RemoveBindingButton" Content="{Binding Text[RemoveDisplayBinding]}" IsEnabled="False" Click="RemoveBindingClicked" />
-              <TextBlock x:Name="BindingStateText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                <Button x:Name="RemoveBindingButton" Content="{Binding Text[RemoveDisplayBinding]}" IsEnabled="False" Click="RemoveBindingClicked" />
+                <TextBlock x:Name="BindingStateText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                          AutomationProperties.LiveSetting="Polite" />
-            </StackPanel></Border>
-            <Border Style="{StaticResource Card}"><StackPanel Spacing="12">
-              <TextBlock Text="{Binding Text[AgentTitle]}" Style="{ThemeResource BodyStrongTextBlockStyle}" />
-              <TextBlock Text="dccwpp --help --json" FontFamily="Cascadia Mono, Consolas" IsTextSelectionEnabled="True" />
-              <TextBlock Text="{Binding Text[AgentHint]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-              <TextBlock Text="{Binding DataDirectory}" IsTextSelectionEnabled="True" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" />
-            </StackPanel></Border>
-            <HyperlinkButton Content="DCCW++ 0.2 · GPL-3.0-only" NavigateUri="https://www.gnu.org/licenses/gpl-3.0.html" />
+              </StackPanel></Border>
+              <Border Style="{StaticResource Card}"><StackPanel Spacing="12">
+                <TextBlock Text="{Binding Text[AgentTitle]}" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                <TextBlock Text="dccwpp --help --json" FontFamily="Cascadia Mono, Consolas" IsTextSelectionEnabled="True" />
+                <TextBlock Text="{Binding Text[AgentHint]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock Text="{Binding DataDirectory}" IsTextSelectionEnabled="True" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" />
+              </StackPanel></Border>
+              <HyperlinkButton Content="DCCW++ 0.2 · GPL-3.0-only" NavigateUri="https://www.gnu.org/licenses/gpl-3.0.html" />
+            </StackPanel>
+            <TextBlock Text="{Binding Status}" TextWrapping="Wrap" IsTextSelectionEnabled="True" AutomationProperties.LiveSetting="Polite" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
           </StackPanel>
-          <TextBlock Text="{Binding Status}" TextWrapping="Wrap" IsTextSelectionEnabled="True" AutomationProperties.LiveSetting="Polite" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-        </StackPanel>
-      </ScrollViewer>
+        </ScrollViewer>
+      </Grid>
     </NavigationView>
   </Grid>
 </Window>

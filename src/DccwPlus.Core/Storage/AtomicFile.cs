@@ -14,7 +14,14 @@ public static class AtomicFile
                 file.Write(contents);
                 file.Flush(flushToDisk: true);
             }
-            File.Move(temporary, path, overwrite);
+            try { File.Move(temporary, path, overwrite); }
+            catch (Exception ex) when (overwrite && OperatingSystem.IsWindows()
+                && (ex is UnauthorizedAccessException || ex is IOException && (ex.HResult & 0xFFFF) is 32 or 33)
+                && File.Exists(path))
+            {
+                // On Windows, Move can reject an existing destination even when its readers share delete access.
+                File.Replace(temporary, path, destinationBackupFileName: null);
+            }
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }

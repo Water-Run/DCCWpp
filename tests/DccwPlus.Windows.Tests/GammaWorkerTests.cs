@@ -226,7 +226,12 @@ public sealed class GammaWorkerTests : IDisposable
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         while (!worker.IsCompleted && store.Find(id) is not { Status: "previewing" })
             await Task.Delay(25, deadline.Token);
-        Assert.False(worker.IsCompleted, "The fake worker exited before previewing.");
+        if (worker.IsCompleted)
+        {
+            string[] errors = Directory.GetFiles(store.DirectoryFor(id), "*error.json");
+            string details = string.Join(Environment.NewLine, errors.Select(File.ReadAllText));
+            Assert.Fail($"The simulated gamma worker exited before previewing (exit {await worker}). {details}");
+        }
         return store.Load(id);
     }
 

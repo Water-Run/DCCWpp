@@ -48,7 +48,7 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
         }
         catch (ProfilePreviewException ex)
         {
-            return Result(ex.Code is "profile_selection_changed" or "profile_file_changed" ? "skipped" : "failed", ex.Code);
+            return Result(ex.Code is "profile_selection_changed" or "profile_file_changed" or "remote_session_blocked" ? "skipped" : "failed", ex.Code);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or KeyNotFoundException or InvalidDataException)
         {

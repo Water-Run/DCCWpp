@@ -12,14 +12,14 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 
 | 能力 | 0.2 状态 | 仍缺的证据或实现 |
 | --- | --- | --- |
-| WinUI 3 向导 | 已接入选屏、Gamma 参考图、亮度、对比度、灰阶、限时比较、保存和 ClearType，可跳过硬件调整。已在 x64 沙盒交互桌面验收 200% 缩放的初始布局、步骤标签和全屏图案 | 原版对照、实机多屏定位、其他 DPI 和无障碍验收 |
-| SDR 写入和 ICC | 已有曲线读回、`vcgt` 生成、默认关联提交和限时撤回预览。关联前后检查安装文件的摘要，回滚检查日志中的摘要 | 标准用户系统加载、撤回关联、退出和重连恢复的实机验收 |
+| WinUI 3 向导 | 已接入选屏、Gamma 参考图、亮度、对比度、灰阶、限时比较、保存和 ClearType，可跳过硬件调整。x64 沙盒已在 200% 缩放验收宽窄布局、固定步骤栏和操作区、三语导航及全屏图案，并核对原版拒绝远程校准时的入口行为 | 本地会话下的原版逐页对照、实机多屏定位、其他 DPI 和无障碍验收 |
+| SDR 写入和 ICC | 已有曲线读回、`vcgt` 生成、默认关联提交和限时撤回预览。关联前后检查安装文件的摘要，回滚检查日志中的摘要。x64 沙盒普通用户已通过 Windows API 验证虚拟显示器的 ICC 选择、替换和作用域回退 | 本地实机验证曲线写入、系统加载、应用内确认与撤回、退出和重连恢复 |
 | 多屏和重连 | 已探测活动拓扑和彩色模式，分开当前查询 ID 和持久身份 | 同型号/无序列号屏、扩展和复制切换、换端口的实机验证 |
 | HDR 与 Advanced Color 入口 | 区分 SDR、WCG 和 HDR，查询对应的默认 ICC，向导已接入 Windows 设置和 HDR 校准入口 | 核对实际 HDR、WCG 和 MHC2 的显示提示与跳转 |
-| 预设与 CLI | 已有草稿参数、绑定保护、重复导入和命令发现。直接预览、应用预设、撤回校准和试用 ICC 支持预演与请求 ID。Agent 可在限时预览中调整数值及切换原始与候选视图。已验证从 x64 包的 CLI 创建预设后可在该包 GUI 中查看 | 实机显示事务及从装包 GUI 导入预设后的 CLI 查验 |
-| 登录恢复 | StartupTask 与逐屏恢复开关已接通。x64 沙盒普通用户可通过装包 CLI 查询初始关闭状态 | 需验证装包后的后台启动、恢复、关闭和兼容性 |
+| 预设与 CLI | 已有草稿参数、绑定保护、重复导入和命令发现。直接预览、应用预设、撤回校准和试用 ICC 支持预演与请求 ID。Agent 可在限时预览中调整数值及切换原始与候选视图。x64 沙盒已验证 CLI 创建的预设在 GUI 可见，以及 GUI 导入、重复导入和显式副本的 CLI 查验 | 实机显示事务及跨版本兼容性 |
+| 登录恢复 | StartupTask 与逐屏恢复开关已接通。x64 沙盒普通用户已验证实际重新登录触发无窗口后台，断开测试目标被跳过，关闭后后台退出且下次登录不再触发 | 实机恢复匹配显示器、睡眠唤醒、热插拔及策略禁用 |
 | 语言和照片 | en-US、zh-Hans、zh-Hant，可打开本机照片。x64 沙盒中可切换三语并保留向导当前步骤 | 各页面文案和参考照片的实机验收，内置照片依赖项目所有者供片及许可 |
-| 商店包 | 双架构开发 MSIX、对应源码与依赖许可已验证。x64 已在沙盒验证 GUI 冷启动，并验证普通用户安装、CLI 执行、原地升级保留数据及卸载 | 普通用户交互启动、原生 ARM64 安装与运行、Store 签名包升级、DCCW++ 专属商店身份及认证 |
+| 商店包 | 双架构开发 MSIX、对应源码与依赖许可已验证。x64 已在沙盒验证普通用户安装、交互式 GUI 冷启动、CLI 执行、原地升级保留数据及卸载 | 原生 ARM64 安装与运行、Store 签名包升级、DCCW++ 专属商店身份及认证 |
 
 ## 开发顺序与交付物
 
@@ -49,9 +49,15 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 
 每个步骤前后都可用 `dccwpp calibration capture --json` 保存全屏幕的只读报告。用 `dccwpp calibration compare <before.json> <after.json> --json` 核对拓扑、ICC 摘要、作用域及逻辑曲线，同时检查未选屏。记录不可读或不支持的目标、会话原因码、Windows 设置所示配置及视觉观察。[采样与比对命令](CLI.md)
 
+开始实机验收前核对 `isRemoteSession: false`。远程采样可核对 Windows 读回的 ICC 关联和文件摘要。物理屏幕的曲线读回、显示效果和重新登录后加载使用本地交互会话验收。[Windows Gamma Ramp 读取条件](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getdevicegammaramp)
+
+确认后及重新登录后可对同一会话运行 `dccwpp calibration verify <calibration-id> --json`。分别检查当前 ICC 选择、文件摘要和逻辑曲线，并记录 Windows 加载器设置。多屏验收继续用全桌面采样核对其他目标。[实时核对命令](CLI.md)
+
 ## M2 · 0.4 · DCCW 行为对齐与 WinUI 体验
 
 在同一台测试机和同一目标屏对照 Windows 设置中的 `Calibrate display` 流程，记录 Windows build、入口、默认值、跳过行为和保存结果。Windows 设置会针对运行校准工具所在的显示器创建配置文件，多屏流程需明确选屏和移动画布。[Windows 显示颜色设置](https://support.microsoft.com/en-us/windows/hardware/display-graphics/change-display-brightness-and-color-in-windows)
+
+在本机交互桌面进行逐页对照。Windows Sandbox 的远程会话中，原版 `dccw.exe` 会在向导打开前拒绝校准。DCCW++ 在该会话中提示登录本机，暂缓显示状态写入，保留静态参考图案与预设编辑功能。[Windows 远程桌面会话检测](https://learn.microsoft.com/en-us/windows/win32/termserv/detecting-the-terminal-services-environment)
 
 | 原版任务 | DCCW++ 验收 |
 | --- | --- |
@@ -63,6 +69,8 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 | 完成、取消与 ClearType | 确认后可在 Windows 中识别新 ICC，取消恢复原状态。完成后可按用户选择打开 ClearType。 |
 
 依照 WinUI Gallery 的控件和交互习惯完善布局。实测浅色、深色、高对比度、窄窗口、键盘导航、Narrator、焦点和三种语言。新文案同步维护三个 catalog，CLI 的字段和原因码保持语言无关。[WinUI Gallery](https://github.com/microsoft/WinUI-Gallery)
+
+验证滚动参考内容时，步骤选择、全屏和底部操作始终可用。实际预览时另行确认窄窗口中的取消、确认和倒计时可见。通过上一步返回时应保留草稿值，切换页面后应回到原来的校准步骤。[Windows 响应式布局](https://learn.microsoft.com/en-us/windows/apps/develop/ui/layouts-with-xaml)
 
 数学图案优先用于校准。用户提供的照片作为视觉复核的补充，首批覆盖中性灰、肤色、暗部、高光、饱和色与渐变。每张图片记录色彩配置、作者、许可及署名。自带照片功能可独立验收。[选片要求](PHOTOGRAPHY.md)
 

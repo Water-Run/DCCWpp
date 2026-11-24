@@ -8,7 +8,7 @@ DCCW++ is a native WinUI 3 display color calibration app for Windows 11. It aims
 
 **0.2 is a development milestone.** The SDR wizard, timed preview and recovery, and ICC save flow are implemented. Physical display behavior, ICC installation and restoration on supported hardware, and packaged end-to-end behavior still need acceptance testing. The Microsoft Store release is pending.
 
-- Select a display and step through gamma, brightness, contrast, grayscale color balance, and before/after comparison. Inspect near-black and near-white patches, compare the curves in full screen, or skip hardware controls. The app can open Windows ClearType tuning after calibration.
+- Select a display and step through gamma, brightness, contrast, grayscale color balance, and before/after comparison. Step navigation and calibration actions stay visible as the reference content scrolls. Inspect near-black and near-white patches, compare the curves in full screen, or skip hardware controls. The app can open Windows ClearType tuning after calibration.
 - Preview an SDR curve with a bounded timer and an independent recovery process. Confirm to generate an ICC profile with the new curve, verify the installed file, and associate it with the selected display. Driver readback can verify the logical curve. Optical results require separate validation.
 - Undo a saved calibration on the selected display. A timed preview shows the previous curve before you confirm the change to the previous Windows profile and its scope.
 - Find and recover interrupted curve or ICC previews from the wizard or the CLI. If confirmation completed before the worker exited, recovery can finish the saved preset and automatic restore records after checking the current display and the recorded binding.
@@ -18,7 +18,11 @@ DCCW++ is a native WinUI 3 display color calibration app for Windows 11. It aims
 
 The SDR curve backend requires an independent display in SDR and checks for MHC2 hardware calibration before previewing. The wizard links to Windows display settings for Advanced Color and MHC2, and to Microsoft's HDR calibration tool for active HDR displays. In the installed MSIX, enable the Windows sign-in task and opt in for each calibrated display in Settings. The background monitor checks saved bindings at sign-in, on resume, and after a display change. Its periodic display check also detects layout and color mode changes when no notification arrives. If a preview is active, the monitor retries at 15-second intervals within a bounded wait.
 
-The x64 development MSIX has been exercised in an interactive Windows Sandbox at 200% scaling. The check covered cold launch, the compact layout, language switching, full-screen reference patterns, and viewing a preset created through the packaged CLI. Physical calibration and Store-signed builds still need acceptance testing.
+The x64 development MSIX has been exercised in an interactive Windows Sandbox at 200% scaling. The check covered cold launch, pinned step navigation in wide and compact windows, language switching, full-screen reference patterns, and viewing a preset created through the packaged CLI. Physical calibration and Store-signed builds still need acceptance testing.
+
+A separate standard-user Sandbox check covered WinUI launch, opt-in sign-in startup, a skipped disconnected display binding, and the next sign-in after disabling startup. The packaged CLI also read presets imported through the GUI. Repeated import reused the existing preset and importing a copy created a separate entry.
+
+Display calibration and ICC preview require a local Windows session. In Remote Desktop, DCCW++ keeps reference patterns and presets available and reports `remote_session_blocked` for display previews. Windows Display Color Calibration also requires a local session.
 
 ## Build from source
 
@@ -41,6 +45,7 @@ dccwpp.exe displays list --json
 dccwpp.exe presets validate examples/neutral.dccw.json --json
 dccwpp.exe calibration diagnose --display $displayId --json
 dccwpp.exe calibration capture --json
+dccwpp.exe calibration verify $calibrationId --json
 dccwpp.exe calibration preview --display $displayId --gamma 2.3 --red-gain 0.97 --dry-run --json
 dccwpp.exe apply $presetId --display $displayId --dry-run --json
 dccwpp.exe bindings restore --dry-run --json
@@ -56,7 +61,9 @@ If a confirmed session reports `bindingStatus: pending`, query it with `calibrat
 
 Generate a UUID before starting a preview with `calibration preview`, `apply`, `calibration undo`, or `profiles preview` and pass it as `--request-id`. If the response is lost, use that UUID to check the session or retry the same command and arguments. Check the exit code and JSON `ok` field, then read the outcome fields in `data`. The [CLI reference](docs/CLI.md) covers command effects, transaction states, and exit codes.
 
-Save `calibration capture --json` output before and after a test. Use `dccwpp.exe calibration compare before.json after.json --json` to compare the captured ICC, scope, logical curve, and display topology offline.
+Save `calibration capture --json` output before and after a test. Use `dccwpp.exe calibration compare before.json after.json --json` to compare the captured ICC, scope, logical curve, and display topology offline. Captures record whether the session is remote, and comparisons across known local and remote sessions report `inconclusive`.
+
+`calibration verify` takes the session ID of a previously confirmed calibration and reads its current state. It checks the selected ICC association, the saved ICC fingerprint, and the logical curve. It can locate a uniquely identifiable display after its active path changes. Check the result before and after signing in to distinguish a historical save from the state Windows reports now.
 
 ## Project layout
 

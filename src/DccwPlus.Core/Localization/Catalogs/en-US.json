@@ -75,6 +75,7 @@
   "StepInstruction3": "Note your monitor's contrast setting. Adjust it to keep the pale patches on the right distinguishable from the white background. If you cancel, restore the brightness and contrast on the monitor.",
   "StepInstruction4": "Adjust red, green and blue until the gray patches look neutral. Lower a channel to remove its color cast. Gains above 1 may clip highlights. Reset returns to the neutral parameters captured at the beginning.",
   "StepInstruction5": "Compare the original and adjusted curves, then name and save the result. The same countdown continues as you switch views. If it expires, the app restores the original curve.",
+  "RemoteCalibrationBlocked": "To calibrate this display, sign in directly on the PC. Remote Desktop supports viewing reference patterns and editing presets.",
   "DefaultPresetName": "Display calibration",
   "GammaAdjustment": "Gamma adjustment",
   "FullScreen": "Full screen",

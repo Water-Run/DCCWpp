@@ -49,6 +49,7 @@ internal static class CliDiscovery
             supportsDryRun: true, supportsRequestId: true),
         new("calibration sessions", Read),
         new("calibration status", Read, "<session-id>"),
+        new("calibration verify", Read, "<calibration-id>"),
         new("calibration confirm", DisplayChange, "<session-id>"),
         new("calibration revert", DisplayChange, "<session-id>"),
         new("calibration recover", DisplayChange, "<session-id>"),

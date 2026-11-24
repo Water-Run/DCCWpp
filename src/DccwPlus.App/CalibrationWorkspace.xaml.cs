@@ -6,6 +6,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Windows.Globalization.NumberFormatting;
 
 namespace DccwPlus.App;
 
@@ -38,6 +39,13 @@ public sealed partial class CalibrationWorkspace : UserControl
     {
         _setting = true; _model = model; _window = window; WorkspaceRoot.DataContext = model;
         _client = new(DataPaths.DefaultRoot, Path.Combine(AppContext.BaseDirectory, "Cli", "dccwpp.exe"));
+        var formatter = new DecimalFormatter
+        {
+            FractionDigits = 2,
+            NumberRounder = new IncrementNumberRounder { Increment = 0.01, RoundingAlgorithm = RoundingAlgorithm.RoundHalfToEven }
+        };
+        foreach (NumberBox number in new[] { GammaNumber, RedNumber, GreenNumber, BlueNumber })
+            number.NumberFormatter = formatter;
         GammaLowPattern.SetPattern(ReferencePatternKind.Gamma, GammaExample.TooLow);
         GammaTargetPattern.SetPattern(ReferencePatternKind.Gamma, GammaExample.Balanced);
         GammaHighPattern.SetPattern(ReferencePatternKind.Gamma, GammaExample.TooHigh);
@@ -51,7 +59,11 @@ public sealed partial class CalibrationWorkspace : UserControl
         window.Closed += (_, _) => ClosePatternWindow();
         window.Activated += (_, e) =>
         {
-            if (!_busy && e.WindowActivationState != WindowActivationState.Deactivated) RefreshRecovery();
+            if (!_busy && e.WindowActivationState != WindowActivationState.Deactivated)
+            {
+                UpdateUi();
+                RefreshRecovery();
+            }
         };
         _setting = false; UpdateStep(); UpdateUi(); RefreshRecovery();
     }
@@ -246,6 +258,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     {
         if (_setting || _model is null) return;
         UpdateStep();
+        StepScroll.ChangeView(null, 0, null, disableAnimation: true);
         bool reviewing = StepPicker.SelectedIndex == 5;
         if (Active && !_busy && _client is not null && reviewing != _reviewMode)
         {
@@ -271,6 +284,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (_model is null) return;
         int step = Math.Max(0, StepPicker.SelectedIndex);
         StepInstructions.Text = _model.Text["StepInstruction" + step];
+        PreparationControls.Visibility = step == 0 ? Visibility.Visible : Visibility.Collapsed;
         GammaControls.Visibility = step == 1 ? Visibility.Visible : Visibility.Collapsed;
         BalanceControls.Visibility = step == 4 ? Visibility.Visible : Visibility.Collapsed;
         ReviewControls.Visibility = step == 5 ? Visibility.Visible : Visibility.Collapsed;
@@ -278,6 +292,11 @@ public sealed partial class CalibrationWorkspace : UserControl
         var pattern = (ReferencePatternKind)step;
         Pattern.SetPattern(pattern);
         _fullScreenPattern?.SetPattern(pattern);
+    }
+    private void StepScrollSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (Pattern is not null && e.NewSize.Height > 0)
+            Pattern.Height = Math.Clamp(e.NewSize.Height * 0.45, 72, 242);
     }
     private void UpdateStepLabels()
     {
@@ -297,12 +316,13 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (_model is null) return;
         bool hasDisplay = DisplayPicker.SelectedItem is DisplayInfo;
         bool undo = UndoActive;
+        bool remote = WindowsDisplaySession.IsRemote();
         DisplayPicker.IsEnabled = !Active && !_busy;
         MoveDisplayButton.IsEnabled = hasDisplay && !Active && !_busy;
         RefreshDisplaysButton.IsEnabled = !Active && !_busy;
         RecoveryButton.IsEnabled = !Active && !_busy;
         FullScreenButton.IsEnabled = hasDisplay && !_busy;
-        StartButton.IsEnabled = !Active && !_busy && DisplayPicker.SelectedItem is DisplayInfo display
+        StartButton.IsEnabled = !Active && !_busy && !remote && DisplayPicker.SelectedItem is DisplayInfo display
             && CalibrationService.IsExplicitSdr(display) && display.Topology != "clone"
             && display.Profile?.Mhc2Present != true && display.ProfileQueryStatus != "unavailable";
         StartButton.Visibility = Active ? Visibility.Collapsed : Visibility.Visible;
@@ -330,7 +350,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         ComparisonState.Text = _model.Text[undo ? "ShowingPreviousSavedCurve" : !Active ? "ComparisonRequiresPreview"
             : _session!.ShowingOriginal ? "ShowingOriginal" : "ShowingAdjusted"];
         UpdateFullScreenControls();
-        UpdateDisplaySummary();
+        UpdateDisplaySummary(remote);
         ResetButton.Visibility = StepPicker.SelectedIndex is 1 or 4 ? Visibility.Visible : Visibility.Collapsed;
         PreviewUiUpdated?.Invoke();
     }
@@ -358,7 +378,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         Outcome.IsOpen = false;
         UpdateUi();
     }
-    private void UpdateDisplaySummary()
+    private void UpdateDisplaySummary(bool remote)
     {
         var text = _model!.Text;
         if (DisplayPicker.SelectedItem is not DisplayInfo display)
@@ -366,7 +386,8 @@ public sealed partial class CalibrationWorkspace : UserControl
             DisplaySummary.Text = text["SelectDisplay"];
             DisplaySettingsLink.Visibility = Visibility.Collapsed;
             HdrCalibrationLink.Visibility = Visibility.Collapsed;
-            DisplayGuidance.Visibility = Visibility.Collapsed;
+            DisplayGuidance.Text = remote ? text["RemoteCalibrationBlocked"] : "";
+            DisplayGuidance.Visibility = remote ? Visibility.Visible : Visibility.Collapsed;
             return;
         }
         string mode = display.ColorState switch
@@ -384,6 +405,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         DisplaySummary.Text = details;
         string? guidance = mode switch
         {
+            _ when remote => "RemoteCalibrationBlocked",
             "DisplayModeHdr" => "HdrCalibrationGuidance",
             "DisplayModeAdvanced" => "AdvancedColorGuidance",
             _ when display.Profile?.Mhc2Present == true => "Mhc2ProfileBlocked",
@@ -392,7 +414,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         };
         DisplayGuidance.Text = guidance is null ? "" : text[guidance];
         DisplayGuidance.Visibility = guidance is not null ? Visibility.Visible : Visibility.Collapsed;
-        DisplaySettingsLink.Visibility = mode != "DisplayModeSdr" || display.Topology == "clone" || guidance is not null
+        DisplaySettingsLink.Visibility = !remote && (mode != "DisplayModeSdr" || display.Topology == "clone" || guidance is not null)
             ? Visibility.Visible : Visibility.Collapsed;
         HdrCalibrationLink.Visibility = mode == "DisplayModeHdr" ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -579,6 +601,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         {
             string? guidance = preview.Code switch
             {
+                "remote_session_blocked" => "RemoteCalibrationBlocked",
                 "mhc2_profile_blocked" => "Mhc2ProfileBlocked",
                 "profile_state_unavailable" or "profile_scope_unavailable" => "ProfileStateUnavailable",
                 "profile_device_unavailable" => "ProfileDeviceUnavailable",

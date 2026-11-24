@@ -5,7 +5,7 @@ public sealed record DisplayCaptureDifference(string DisplayId, string Status, s
 
 public sealed record CaptureComparisonResult(int SchemaVersion, string Status, string TopologyStatus,
     bool SameOsBuildAndArchitecture, DateTimeOffset BeforeCapturedAt, DateTimeOffset AfterCapturedAt,
-    IReadOnlyList<DisplayCaptureDifference> Displays)
+    IReadOnlyList<DisplayCaptureDifference> Displays, bool? SameSessionType = null)
 {
     public bool ColorAccuracyVerified => false;
 }
@@ -20,23 +20,27 @@ public static class CalibrationCaptureComparison
     {
         CalibrationCaptureCodec.Validate(before);
         CalibrationCaptureCodec.Validate(after);
+        bool? sameSessionType = before.IsRemoteSession.HasValue && after.IsRemoteSession.HasValue
+            ? before.IsRemoteSession == after.IsRemoteSession : null;
         var oldDisplays = before.Displays.ToDictionary(display => display.DisplayId, StringComparer.Ordinal);
         var newDisplays = after.Displays.ToDictionary(display => display.DisplayId, StringComparer.Ordinal);
         var displays = oldDisplays.Keys.Union(newDisplays.Keys, StringComparer.Ordinal).Order(StringComparer.Ordinal)
-            .Select(id => CompareDisplay(id, oldDisplays.GetValueOrDefault(id), newDisplays.GetValueOrDefault(id))).ToArray();
-        string topologyStatus = before.Topology == "unknown" || after.Topology == "unknown" ? Inconclusive
+            .Select(id => CompareDisplay(id, oldDisplays.GetValueOrDefault(id), newDisplays.GetValueOrDefault(id), sameSessionType != false)).ToArray();
+        string topologyStatus = sameSessionType == false || before.Topology == "unknown" || after.Topology == "unknown" ? Inconclusive
             : before.Topology != after.Topology ? Changed : CompareHashes(before.TopologySha256, after.TopologySha256);
         bool sameOs = before.WindowsBuild == after.WindowsBuild && before.OsArchitecture == after.OsArchitecture;
         string status = topologyStatus == Changed || displays.Any(display => display.Status is Changed or "identity-changed") ? Changed
             : topologyStatus == Matched && sameOs && displays.Length > 0 && displays.All(display => display.Status == Matched)
                 ? Matched : Inconclusive;
-        return new(1, status, topologyStatus, sameOs, before.CapturedAt, after.CapturedAt, displays);
+        return new(1, status, topologyStatus, sameOs, before.CapturedAt, after.CapturedAt, displays, sameSessionType);
     }
 
-    private static DisplayCaptureDifference CompareDisplay(string id, DisplayCalibrationCapture? before, DisplayCalibrationCapture? after)
+    private static DisplayCaptureDifference CompareDisplay(string id, DisplayCalibrationCapture? before, DisplayCalibrationCapture? after,
+        bool canCompareSessionTypes)
     {
         if (before is null) return new(id, "after-only", null, null, null, after);
         if (after is null) return new(id, "before-only", null, null, before, null);
+        if (!canCompareSessionTypes) return new(id, Inconclusive, null, null, before, after);
         if (before.PersistenceKey is not null && after.PersistenceKey is not null
             && !string.Equals(before.PersistenceKey, after.PersistenceKey, StringComparison.OrdinalIgnoreCase))
             return new(id, "identity-changed", null, null, before, after);

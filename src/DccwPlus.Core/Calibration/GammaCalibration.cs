@@ -49,7 +49,7 @@ public interface IGammaCalibrationJournal { void Save(GammaCalibrationSession se
 public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend, IGammaCalibrationJournal journal,
     TimeProvider? timeProvider = null)
 {
-    private const int ReadbackTolerance = 257;
+    public const int ReadbackTolerance = 257;
     public static TimeSpan WindowPreviewLimit { get; } = TimeSpan.FromMinutes(30);
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private long _deadlineStart;
@@ -193,7 +193,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
             Persist("reverted", reason, true);
         }
         catch (ProfilePreviewException ex) when (ex.Code == "external_profile_change") { return Superseded(ex.Code); }
-        catch (ProfilePreviewException ex) when (ex.Code == "display_disconnected") { return Pending(ex.Code); }
+        catch (ProfilePreviewException ex) when (ex.Code is "display_disconnected" or "remote_session_blocked") { return Pending(ex.Code); }
         catch (ProfilePreviewException ex) when (ex.Code is "profile_state_unavailable" or "profile_scope_unavailable"
             or "profile_file_changed" or "profile_file_unavailable" or "previous_system_profile_changed")
         { return Pending(ex.Code); }

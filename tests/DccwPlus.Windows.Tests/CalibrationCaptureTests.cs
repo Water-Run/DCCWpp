@@ -47,6 +47,31 @@ public sealed class CalibrationCaptureTests
     }
 
     [Fact]
+    public void RemoteCaptureKeepsProfileEvidenceWithoutReadingTheLogicalCurve()
+    {
+        var capture = new CalibrationCapture(() => new("extend", [Display()]),
+            _ => throw new InvalidOperationException("Remote captures must not read a gamma ramp."),
+            _ => [1, 2, 3], () => true);
+
+        var report = capture.Read();
+        var sample = Assert.Single(report.Displays);
+        Assert.True(report.IsRemoteSession);
+        Assert.Equal("remote_session_blocked", sample.CurveStatus);
+        Assert.Null(sample.LogicalRampSha256);
+        Assert.NotNull(sample.ProfileSha256);
+    }
+
+    [Fact]
+    public void CaptureRejectsAChangedSessionTypeEvenWhenTheDisplayListMatches()
+    {
+        int reads = 0;
+        var capture = new CalibrationCapture(() => new("extend", [Display()]), _ => GammaRamp.Identity(),
+            _ => [1], () => reads++ == 0);
+
+        Assert.Equal("capture_state_changed", Assert.Throws<ProfilePreviewException>(() => capture.Read()).Code);
+    }
+
+    [Fact]
     public void CaptureRejectsTopologyChangesEvenWhenRestrictedToOneDisplay()
     {
         var display = Display();

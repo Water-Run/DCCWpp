@@ -108,6 +108,24 @@ public sealed class ProfilePreviewTests
         Assert.Equal("original.icc", setup.Backend.State.CurrentProfile);
     }
 
+    [Fact] public void RemoteSessionDefersProfileRecoveryUntilTheLocalDisplayReturns()
+    {
+        var setup = new Fixture();
+        setup.Start();
+        setup.Backend.State = setup.Backend.State with { IsRemoteSession = true };
+
+        Assert.Equal("remote_session_blocked", ProfilePreviewPolicy.Plan(setup.Backend.State, "original.icc").ReasonCode);
+        var pending = setup.Transaction.Tick();
+        Assert.Equal("recovery-pending", pending.Status);
+        Assert.Equal("remote_session_blocked", pending.ReasonCode);
+        Assert.Single(setup.Backend.Writes);
+
+        setup.Backend.State = setup.Backend.State with { IsRemoteSession = false };
+        var restored = new ProfilePreviewTransaction(setup.Backend, setup.Journal).Recover(pending);
+        Assert.Equal("reverted", restored.Status);
+        Assert.Equal(new[] { "candidate.icc", "original.icc" }, setup.Backend.Writes);
+    }
+
     [Theory]
     [InlineData("identity")]
     [InlineData("identity-unavailable")]

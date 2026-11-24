@@ -253,6 +253,7 @@ public sealed class GammaCalibrationTests
     }
     [Theory]
     [InlineData("disconnected")]
+    [InlineData("remote_session_blocked")]
     [InlineData("source-reused")]
     [InlineData("different-monitor")]
     [InlineData("mirrored")]
@@ -263,6 +264,8 @@ public sealed class GammaCalibrationTests
         fixture.Begin();
         var active = fixture.Backend.State with { TopologyFingerprint = new string('B', 64) };
         fixture.Backend.Disconnected = change == "disconnected";
+        if (change == "remote_session_blocked")
+            fixture.Backend.BeforeRead = () => throw new ProfilePreviewException(change, "Remote calibration is unavailable.");
         fixture.Backend.State = change switch
         {
             "source-reused" => active with { SourceId = 9 },
@@ -274,9 +277,11 @@ public sealed class GammaCalibrationTests
 
         var pending = fixture.Engine.Tick();
         Assert.Equal("recovery-pending", pending.Status);
+        if (change == "remote_session_blocked") Assert.Equal(change, pending.ReasonCode);
         Assert.True(fixture.Backend.State.Ramp.Matches(active.Ramp));
 
         fixture.Backend.Disconnected = false;
+        fixture.Backend.BeforeRead = null;
         fixture.Backend.State = active;
         var recovered = new GammaCalibrationTransaction(fixture.Backend, fixture.Journal).Recover(pending);
         Assert.Equal("reverted", recovered.Status);

@@ -50,7 +50,8 @@ internal sealed class CalibrationCompletionService(string root, IDisplayService 
         }
         catch (ProfilePreviewException ex)
         {
-            result = (ex.Code is "display_disconnected" or "profile_state_unavailable" or "profile_file_unavailable" ? "pending" : "failed", ex.Code);
+            result = (ex.Code is "display_disconnected" or "profile_state_unavailable" or "profile_file_unavailable"
+                or "remote_session_blocked" ? "pending" : "failed", ex.Code);
         }
         catch (PresetOperationException ex)
         {

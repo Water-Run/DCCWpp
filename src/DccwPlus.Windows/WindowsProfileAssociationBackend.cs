@@ -29,11 +29,13 @@ public sealed class WindowsProfileAssociationBackend : IProfileAssociationBacken
         return new(display.Id, display.TargetKey, display.SourceId.Value,
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(topology))), current,
             scope == CurrentUser ? "current-user" : "system-wide", CalibrationService.IsExplicitSdr(display),
-            display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1, profiles, persistence);
+            display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1, profiles, persistence,
+            WindowsDisplaySession.IsRemote());
     }
 
     public void SetDefault(ProfileAssociationState expected, string profile, string sha256)
     {
+        WindowsDisplaySession.RequireLocal();
         IccProfileInspector.ValidateFileName(profile);
         var now = Read(expected.DisplayId);
         if (!ProfilePreviewPolicy.SameTarget(expected, now)

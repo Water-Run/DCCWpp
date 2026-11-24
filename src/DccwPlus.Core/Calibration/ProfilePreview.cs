@@ -6,7 +6,8 @@ public sealed record AssociatedProfile(string FileName, string? Sha256, bool Can
 public sealed record ProfileAssociationState(string DisplayId, string TargetKey, uint SourceId,
     string TopologyFingerprint, string? CurrentProfile, string Scope, bool ExplicitSdr,
     bool SharedSource, IReadOnlyList<AssociatedProfile> Profiles,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PersistenceKey = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PersistenceKey = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool IsRemoteSession = false);
 public sealed record ProfilePreviewPlan(bool CanPreview, string ReasonCode, ProfileAssociationState State,
     string CandidateProfile, string? CandidateSha256);
 
@@ -27,7 +28,8 @@ public static class ProfilePreviewPolicy
     public static ProfilePreviewPlan Plan(ProfileAssociationState state, string candidate)
     {
         IccProfileInspector.ValidateFileName(candidate);
-        string reason = !state.ExplicitSdr ? "sdr_path_blocked"
+        string reason = state.IsRemoteSession ? "remote_session_blocked"
+            : !state.ExplicitSdr ? "sdr_path_blocked"
             : state.SharedSource ? "shared_source_blocked"
             : state.Scope != "current-user" ? "user_scope_required"
             : string.IsNullOrWhiteSpace(state.TargetKey) || string.IsNullOrWhiteSpace(state.TopologyFingerprint) ? "display_identity_unavailable"
@@ -48,7 +50,7 @@ public static class ProfilePreviewPolicy
     private static bool SamePath(ProfileAssociationState before, ProfileAssociationState now) =>
         before.DisplayId == now.DisplayId && before.TargetKey == now.TargetKey && before.SourceId == now.SourceId
         && (before.PersistenceKey is null || before.PersistenceKey == now.PersistenceKey)
-        && now.ExplicitSdr && !now.SharedSource
+        && now.ExplicitSdr && !now.SharedSource && !now.IsRemoteSession
         && before.Scope == now.Scope && now.Scope == "current-user";
 }
 
@@ -138,6 +140,7 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
             // A journal failure must not prevent an already-required rollback.
             try { Persist("recovering", reason); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
             var current = backend.Read(Session.Original.DisplayId);
+            if (current.IsRemoteSession) return Pending("remote_session_blocked");
             if (!ProfilePreviewPolicy.SameRecoveryTarget(Session.Original, current))
                 return Pending("recovery_target_changed");
             var original = ProfilePreviewPolicy.ValidProfile(Session.Original, Session.Original.CurrentProfile)!;
@@ -166,7 +169,7 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
             Persist("reverted", reason, true);
         }
         catch (ProfilePreviewException ex) when (ex.Code is "display_disconnected" or "profile_scope_unavailable"
-            or "profile_state_unavailable" or "profile_file_changed") { return Pending(ex.Code); }
+            or "profile_state_unavailable" or "profile_file_changed" or "remote_session_blocked") { return Pending(ex.Code); }
         catch (Exception) { return Pending("restore_failed"); }
         return Session!;
     }

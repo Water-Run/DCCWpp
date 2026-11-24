@@ -14,6 +14,20 @@ public sealed class CoreTests : IDisposable
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 
     [Fact]
+    public void AtomicOverwriteLetsAnOpenReaderFinishReadingThePreviousVersion()
+    {
+        string path = Path.Combine(_root, "state.json");
+        AtomicFile.Write(path, "previous"u8.ToArray());
+        using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        using var reader = new StreamReader(stream);
+
+        AtomicFile.Write(path, "current"u8.ToArray());
+
+        Assert.Equal("previous", reader.ReadToEnd());
+        Assert.Equal("current", File.ReadAllText(path));
+    }
+
+    [Fact]
     public void ImportKeepsIntentAndCreatesANewIdentity()
     {
         var original = CalibrationPreset.Create("夜间 / Night", new() { Gamma = 2.35, RedGain = 0.9 });

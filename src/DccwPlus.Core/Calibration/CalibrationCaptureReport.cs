@@ -9,7 +9,8 @@ public sealed record DisplayCalibrationCapture(string DisplayId, string Name, bo
     string? ProfileQueryStatus, string? ProfileSha256, string CurveStatus, string? LogicalRampSha256);
 
 public sealed record CalibrationCaptureReport(int SchemaVersion, DateTimeOffset CapturedAt, int WindowsBuild,
-    string OsArchitecture, string Topology, IReadOnlyList<DisplayCalibrationCapture> Displays, string? TopologySha256 = null);
+    string OsArchitecture, string Topology, IReadOnlyList<DisplayCalibrationCapture> Displays, string? TopologySha256 = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? IsRemoteSession = null);
 
 public static class CalibrationCaptureCodec
 {
@@ -73,6 +74,8 @@ public static class CalibrationCaptureCodec
                 || !display.DisplayId.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f') || !ids.Add(display.DisplayId)
                 || string.IsNullOrWhiteSpace(display.Name) || display.Name.Length > 128 || display.Name.Any(char.IsControl)
                 || !DisplayObservationCodec.ColorStates.Contains(display.ColorState) || !IsToken(display.CurveStatus)
+                || (report.IsRemoteSession == true && display.CurveStatus != "remote_session_blocked")
+                || (report.IsRemoteSession == false && display.CurveStatus == "remote_session_blocked")
                 || (display.PersistenceKey is { } key && (key.Length != 69 || key[..5] is not ("edid:" or "path:")
                     || !ProfilePreviewPolicy.IsHash(key[5..]))))
                 throw InvalidCapture();

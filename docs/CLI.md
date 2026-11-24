@@ -30,6 +30,7 @@ dccwpp displays restore-plan --display <display-id> --json
 dccwpp calibration diagnose --display <display-id> --json
 dccwpp calibration capture [--display <display-id>] --json
 dccwpp calibration compare <before.json> <after.json> --json
+dccwpp calibration verify <calibration-id> --json
 dccwpp presets list --json
 dccwpp presets create "Daylight" --json
 dccwpp presets create "Daylight edited" --gamma 2.35 --red-gain 0.92 --author "Studio" --json
@@ -59,6 +60,8 @@ dccwpp bindings restore --dry-run --json
 
 `calibration diagnose` 只读取指定显示器和 Windows 校准加载器状态。输出包含 `windowsCalibrationLoaderEnabled`、`driverSupportsVcgt`、`logicalRampReadable`、`profileMhc2Present` 和 `reasonCode`。无法查询或不适用时对应字段为 `null`。能读取逻辑曲线表是实机验收的前置证据，实际写入及登录后加载需要分别验证。[Windows 校准加载器](https://learn.microsoft.com/en-us/windows/win32/wcs/display-calibration-mhc#enhanced-windows-display-calibration-loader)
 
+当 Windows 报告当前会话为远程桌面时，`calibration diagnose` 返回 `remote_session_blocked`，逻辑曲线可读性为 `null`。Gamma 预演返回退出码 4 及相同原因码，ICC 预演计划返回 `canPreview: false`。在远程会话中发现中断的显示事务时，保留恢复记录供本地会话继续处理。显示列表、ICC 查询、采样和预设操作仍可调用。[Windows 远程桌面会话检测](https://learn.microsoft.com/en-us/windows/win32/termserv/detecting-the-terminal-services-environment)
+
 `displays list` 对明确的 SDR、WCG 和 HDR 查询对应模式的默认 ICC。HDR 使用扩展关联，SDR 和 WCG 使用标准关联。对无法区分 SDR 与 HDR 的模式，配置文件字段为 `null`。可读配置的 `profile.mhc2Present` 表示标签存在，标签目录无法读取时为 `null`。如果当前 SDR 配置检测到 MHC2，`apply --dry-run` 返回 `canApply: false` 和 `mhc2_profile_blocked`，实际预览在写入曲线前返回相同原因码。[Windows Advanced Color 配置关联](https://learn.microsoft.com/en-us/windows/win32/wcs/advanced-color-icc-profiles)
 
 `displays list` 和 `calibration diagnose` 同时报告 `selectedProfileScope` 和 `profileQueryStatus`。前者是 Windows 选用的作用域，`profileScope` 是实际返回的 ICC 所在作用域。后者可以是 `read`、`not-found` 或 `unavailable`。系统明确无默认关联时使用 `not-found`；查询未执行时用 `null`。读取失败会以 `profile_state_unavailable` 阻止 SDR 预览或暂缓恢复。[Windows 作用域查询](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-colorprofilegetdisplayuserscope)
@@ -66,6 +69,8 @@ dccwpp bindings restore --dry-run --json
 `calibration capture` 只读采集当前显示状态并输出到 stdout。默认采集全部活动显示器，可用 `--display` 只返回指定目标。报告记录 Windows build、架构、拓扑、每屏 ICC 和作用域。可读取时，`profileSha256` 是 ICC 文件的 SHA-256，`logicalRampSha256` 是按 `vcgt` 编码的逻辑 Gamma 曲线的 SHA-256。摘要可用于核对前后是否逐项相同。即使摘要相同，光学结果和驱动行为仍需单独验收。采集期间检测到状态变化时返回 `capture_state_changed`，待状态稳定后可重试。不可读的曲线用 `curveStatus` 解释，摘要为 `null`。[Windows 逻辑曲线读回](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getdevicegammaramp)
 
 Windows 提供足够的活动路径和桌面几何信息时，采样还会记录 `topologySha256`。摘要涵盖全桌面的目标和源、分辨率、位置、刷新率及色彩模式，即使只返回某一屏的采样。旧采样没有该字段时仍可比较逐屏证据。
+
+采样的 `isRemoteSession` 记录 Windows 是否将当前会话识别为远程桌面。远程采样保留可读取的 ICC 关联、作用域及文件摘要，曲线状态为 `remote_session_blocked`，曲线摘要为 `null`。如果采样期间会话类型改变，命令返回 `capture_state_changed`。
 
 `calibration compare` 只读取两份采样文件。它支持 `--json` 输出的成功封装和未封装的采样，单个文件上限为 256 KiB，接受 UTF-8 和带 BOM 的 UTF-16 LE。无效采样返回退出码 2 和 `invalid_capture`。可按以下方式保存样本并比对。
 
@@ -78,7 +83,11 @@ dccwpp.exe calibration compare before.json after.json --json
 
 比对按 `displayId` 配对，逐屏返回 `profileStatus`、`logicalRampStatus` 和前后原始条目。只有一侧有条目时报告 `before-only` 或 `after-only`。检测到持久显示身份变化时报告 `identity-changed`。色彩模式或身份变化时不比较该屏的 ICC 和曲线。两次都明确无默认关联且作用域一致时，ICC 状态可以匹配。仅缺少摘要或无法查询时返回 `inconclusive`。
 
-退出码 0 表示成功生成比较报告。`status: matched` 需要拓扑摘要、Windows build 与架构一致，并且两侧采样的显示器均有匹配的 ICC 和曲线证据。`changed` 表示采样发现明确变化，其余情况为 `inconclusive`。用同一 Windows 用户和桌面采样。检查未选中屏幕时保存两份全屏幕报告。`colorAccuracyVerified` 固定为 false。
+退出码 0 表示成功生成比较报告。`status: matched` 需要拓扑摘要、Windows build 与架构一致，并且两侧采样的显示器均有匹配的 ICC 和曲线证据。`changed` 表示采样发现明确变化，其余情况为 `inconclusive`。若一份报告来自远程桌面而另一份来自本地，`sameSessionType` 为 `false`，整体比较为 `inconclusive`。旧报告缺少会话字段时，`sameSessionType` 为 `null`，其余字段沿用原比较规则。用同一 Windows 用户和桌面采样。检查未选中屏幕时保存两份全屏幕报告。`colorAccuracyVerified` 固定为 false。
+
+`calibration verify <calibration-id>` 只读核对已确认的 SDR 校准。`calibration-id` 是已确认会话的 `sessionId`。命令将历史 `savedStatus` 与实时 `status` 分开报告。保存记录含持久显示身份时，命令用唯一匹配的当前路径进行核对。没有持久身份的旧记录继续要求原显示路径。
+
+实时报告分别给出 `profileSelectionMatches`、`profileFileMatches` 和 `logicalCurveMatches`。`null` 表示该项缺少证据或不可比较。`matched` 需要三项均为 `true`，其中逻辑曲线使用与保存验证相同的读回容差。在本地独立 SDR 路径发现差异时报告 `changed`。证据不足时报告 `inconclusive`，通过 `reasonCode` 指明远程会话、显示器断开、身份不唯一或缺失的证据。远程匹配的 ICC 关联和文件摘要仍可单独报告。`windowsCalibrationLoaderEnabled` 是当前 Windows 加载器设置，`colorAccuracyVerified` 固定为 `false`。退出码 0 表示已生成实时报告，仍需读取 `status`。
 
 已确认校准的逐屏绑定可在设置或 `bindings` 命令中启用。启用绑定仅保存偏好。Windows 登录任务由设置页单独管理。确认会话的 `bindingStatus` 表示本机绑定保存情况。旧日志中该字段可能为空。
 

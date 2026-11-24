@@ -19,13 +19,14 @@ public sealed record SdrCalibrationDiagnostics(string DisplayId, string ColorSta
     bool? WindowsCalibrationLoaderEnabled, bool? DriverSupportsVcgt, bool? LogicalRampReadable, string ReasonCode,
     bool? ProfileMhc2Present = null, string? SelectedProfileScope = null, string? ProfileQueryStatus = null);
 
-// SDR compatibility backend. Never used for HDR/ACM, mirrored sources, or an unknown display.
+// SDR compatibility backend for local sessions, independent display paths, and identified displays.
 // Readback verifies the driver's logical gamma table, not optical color accuracy.
 public sealed partial class WindowsGammaCalibrationBackend(string root) : IGammaCalibrationBackend
 {
     private readonly GammaCalibrationStore _store = new(root);
     public GammaDeviceState Read(string displayId)
     {
+        WindowsDisplaySession.RequireLocal();
         var displays = new WindowsDisplayService().Enumerate();
         var display = displays.SingleOrDefault(d => d.Id == displayId)
             ?? throw new ProfilePreviewException("display_disconnected", "The display is not connected.");
@@ -53,6 +54,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         var displays = new WindowsDisplayService().Enumerate();
         var device = displays.SingleOrDefault(d => d.Id == displayId)
             ?? throw new ProfilePreviewException("display_disconnected", new LocalizationService()["DisplayUnavailable"]);
+        WindowsDisplaySession.RequireLocal();
         if (SdrBlockReason(device, displays) is { } blocked)
             throw new ProfilePreviewException(blocked, new LocalizationService()[blocked switch
             {
@@ -85,10 +87,10 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         var displays = new WindowsDisplayService().Enumerate();
         var display = displays.SingleOrDefault(d => d.Id == displayId)
             ?? throw new KeyNotFoundException("The requested display is not connected.");
-        bool? loader = WcsGetCalibrationManagementState(out int enabled) ? enabled != 0 : null;
+        bool? loader = ReadCalibrationLoader();
         bool? vcgt = null;
         bool? readable = null;
-        string? blocked = SdrBlockReason(display, displays);
+        string? blocked = WindowsDisplaySession.IsRemote() ? "remote_session_blocked" : SdrBlockReason(display, displays);
         string reason = blocked ?? "logical_ramp_readable";
         if (blocked is null)
         {
@@ -119,6 +121,8 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             display.Profile?.Mhc2Present, display.SelectedProfileScope, display.ProfileQueryStatus);
     }
 
+    internal static bool? ReadCalibrationLoader() => WcsGetCalibrationManagementState(out int enabled) ? enabled != 0 : null;
+
     internal static string? SdrBlockReason(DisplayInfo display, IReadOnlyList<DisplayInfo> displays)
     {
         if (!CalibrationService.IsExplicitSdr(display)) return "sdr_path_blocked";
@@ -144,6 +148,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
     }
     public string? Commit(GammaCalibrationSession session)
     {
+        WindowsDisplaySession.RequireLocal();
         if (session.UndoOf is Guid calibrationId) return CommitUndo(session, calibrationId);
         var displays = new WindowsDisplayService().Enumerate();
         var device = displays.SingleOrDefault(d => d.Id == session.Original.DisplayId)
@@ -223,12 +228,15 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         }
     }
 
-    internal string ReadConfirmedProfileHash(GammaCalibrationSession session)
+    internal string ReadConfirmedProfileHash(GammaCalibrationSession session) =>
+        VerifyProfileFingerprint(session.InstalledProfile, ReadSavedProfileFingerprint(session), InstalledProfileReader.ReadSha256);
+
+    internal string? ReadSavedProfileFingerprint(GammaCalibrationSession session)
     {
         var backup = ReadAssociationBackup(session);
         if (!ProfilePreviewPolicy.EqualName(backup.CandidateName, session.InstalledProfile))
             throw new InvalidDataException("Invalid ICC association recovery record.");
-        return VerifyProfileFingerprint(backup.CandidateName, backup.CandidateHash, InstalledProfileReader.ReadSha256);
+        return backup.CandidateHash;
     }
 
     public void RestoreProfile(GammaCalibrationSession session)

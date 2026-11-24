@@ -21,7 +21,11 @@ public sealed class WindowsDisplayService : IDisplayService
     }
 
     public IReadOnlyList<DisplayInfo> Enumerate() => Probe().Displays;
-    public string? ReadActivePathStamp() => DisplayConfigurationQuery.ReadActivePathStamp();
+    public string? ReadActivePathStamp()
+    {
+        string? stamp = DisplayConfigurationQuery.ReadActivePathStamp();
+        return stamp is null ? null : (WindowsDisplaySession.IsRemote() ? "remote:" : "local:") + stamp;
+    }
 
     private IReadOnlyList<DisplayInfo> EnumerateGdi(string colorState)
     {
