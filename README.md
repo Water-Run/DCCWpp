@@ -6,7 +6,7 @@ DCCW++ is a native WinUI 3 display color calibration app for Windows 11. It aims
 
 ## Development status
 
-**0.2 is a development milestone.** The SDR wizard, timed preview and recovery, and ICC save flow are implemented. Physical display behavior, ICC installation and restoration on supported hardware, and packaged end-to-end behavior still need acceptance testing. The Microsoft Store release is pending.
+**0.2 is the current development milestone.** The SDR wizard, timed preview and recovery, ICC save and undo, preset exchange, sign-in restoration, and Agent CLI are implemented. The Microsoft Store release is pending.
 
 - Select a display and step through gamma, brightness, contrast, grayscale color balance, and before/after comparison. When the wizard is idle, it refreshes the display list after a Windows display notification or when you return to it. It keeps a verifiable selection or prompts you to choose again. Step navigation and calibration actions stay visible as the reference content scrolls. Inspect near-black and near-white patches, compare the curves in full screen, or skip hardware controls. The app can open Windows ClearType tuning after calibration.
 - Use **Identify display** to briefly show the selected monitor’s name and the display ID reported by the CLI. The marker leaves keyboard focus where it was. Identification is available for independent display paths while the wizard has no active preview.
@@ -22,15 +22,21 @@ DCCW++ is a native WinUI 3 display color calibration app for Windows 11. It aims
 
 The SDR curve backend requires an independent display in SDR and checks for MHC2 hardware calibration before previewing. ICC association previews also check the current and candidate profiles for MHC2. The wizard links to Windows display settings for Advanced Color and MHC2, and to Microsoft's HDR calibration tool for active HDR displays. In the installed MSIX, enable the Windows sign-in task and opt in for each calibrated display in Settings. The background monitor checks saved bindings at sign-in, on resume, and when the display layout, color mode, or path availability changes. It retries briefly when Windows cannot yet read the selected ICC or logical curve. If a preview is active, the monitor retries at 15-second intervals within a bounded wait.
 
-The x64 development MSIX has been exercised in an interactive Windows Sandbox at 200% scaling. The check covered cold launch, pinned step navigation in wide and compact windows, language switching, full-screen reference patterns, and viewing a preset created through the packaged CLI. Physical calibration and Store-signed builds still need acceptance testing.
-
-A separate standard-user Sandbox check covered WinUI launch, opt-in sign-in startup, a skipped disconnected display binding, and the next sign-in after disabling startup. The packaged CLI also read presets imported through the GUI. Repeated import reused the existing preset and importing a copy created a separate entry.
-
-GitHub Actions installs and removes each development MSIX on its native architecture. The x64 runner uses Windows Server 2025 and the ARM64 runner uses Windows 11. Both verify that the installed CLI alias opens the native WinUI wizard on the requested display with the selected preset. The hosted checks run with elevated accounts. The same check passed on a non-elevated Windows 11 x64 desktop using a registered development layout. Standard-user handoff after signed MSIX installation on x64 and standard-user deployment on ARM64 remain acceptance items. [Development package checks](docs/STORE.md)
-
 Settings shows when the last automatic restore check ran, what triggered it, and why the selected display was skipped or still needs recovery. If Windows cannot read the sign-in task state, the monitor waits for Windows to confirm permission before processing the queued event. Refresh restore results to read the latest report.
 
 Display calibration and ICC preview require a local Windows session. In Remote Desktop, DCCW++ keeps reference patterns and presets available and reports `remote_session_blocked` for display previews. Windows Display Color Calibration also requires a local session.
+
+### Verified development checkpoint
+
+Build `55edaa4` produced the x64 and ARM64 development MSIX packages at version `0.2.0.0`. Local validation passed 457 unit and simulated-backend tests and 174 CLI process checks. GitHub Actions archives the packages, corresponding source, and runtime reports. [Build and artifacts](https://github.com/Water-Run/DCCWpp/actions/runs/45569812210)
+
+| Validation environment | Verified behavior |
+| --- | --- |
+| Hosted Windows Server 2025 x64 and Windows 11 ARM64, elevated accounts | Both signed development packages installed and uninstalled successfully. Each passed 171 installed-CLI checks. The alias opened native WinUI with the requested display and preset. Sign-in startup began disabled, and opening the draft created zero calibration sessions. |
+| Earlier x64 Windows Sandbox development builds, standard-user accounts | Verified MSIX installation, uninstallation, CLI alias use, in-place upgrade with preset retention, and interactive WinUI cold launch. Separate interactive checks covered the wizard at 200% scaling, preset import, and opt-in sign-in startup. |
+| Windows 11 x64 desktop, non-elevated process in an administrator account | A registered development layout passed CLI-to-WinUI handoff on a secondary display. Read-only checks on the three connected SDR paths reported matching display state before and after the checks. |
+
+The release still requires a physical SDR acceptance pass covering preview, save, cancellation, undo, and sign-in or reconnect restoration. Other open items include comparison with the original DCCW workflow on a local desktop, signed-MSIX CLI handoff on a standard-user Windows 11 x64 desktop, standard-user deployment and upgrade on ARM64, and DCCW++'s own Partner Center identity, Store-signed testing, and certification. [Acceptance criteria](docs/ROADMAP.md) · [Store runbook](docs/STORE.md) · [Test history](docs/STATUS.md)
 
 ## Build from source
 
