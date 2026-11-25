@@ -460,11 +460,15 @@ public sealed class GammaWorkerTests : IDisposable
         Assert.Empty(Directory.EnumerateFiles(directory, "state.json.*.tmp"));
     }
 
-    [Fact]
-    public void ProfileWorkerRejectsMhc2BeforeCreatingACalibrationJournal()
+    [Theory]
+    [InlineData("mhc2_profile_blocked")]
+    [InlineData("profile_device_unavailable")]
+    public void ProfileWorkerRejectsAnUnsupportedAssociationBeforeCreatingAJournal(string reason)
     {
         var backend = new SimulatedProfileBackend();
-        backend.State = backend.State with { Profiles = [backend.State.Profiles[0], backend.State.Profiles[1] with { Mhc2Present = true }] };
+        backend.State = reason == "mhc2_profile_blocked"
+            ? backend.State with { Profiles = [backend.State.Profiles[0], backend.State.Profiles[1] with { Mhc2Present = true }] }
+            : backend.State with { ProfileDeviceSha256 = null };
         var store = new ProfilePreviewStore(_root);
         var id = Guid.NewGuid();
         var attempt = Guid.NewGuid();
@@ -475,10 +479,11 @@ public sealed class GammaWorkerTests : IDisposable
         Assert.Equal(4, ProfilePreviewHost.Run(_root, id, attempt, () => backend));
 
         var error = ProfilePreviewStore.Read<ProfileWorkerError>(PreviewWorkerFiles.ErrorPath(directory, attempt));
-        Assert.Equal("mhc2_profile_blocked", error.Code);
-        Assert.Contains("MHC2", error.Message);
+        Assert.Equal(reason, error.Code);
+        if (reason == "mhc2_profile_blocked") Assert.Contains("MHC2", error.Message);
         Assert.Null(store.Find(id));
         Assert.Equal("original.icc", backend.State.CurrentProfile);
+        Assert.Equal(0, backend.Writes);
     }
 
     [Fact]
@@ -871,7 +876,7 @@ public sealed class GammaWorkerTests : IDisposable
         public ProfileAssociationState State { get; set; } = new("0123456789abcdef", "simulated-profile-target",
             1, new string('A', 64), "original.icc", "current-user", true, false,
             [new("original.icc", new string('B', 64), true), new("candidate.icc", new string('C', 64), true)],
-            PersistenceKey: "path:" + new string('D', 64));
+            PersistenceKey: "path:" + new string('D', 64), ProfileDeviceSha256: new string('E', 64));
 
         public bool Disconnected { get; set; }
         public Action? BeforeRead { get; set; }

@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using DccwPlus.Core.Calibration;
+using DccwPlus.Core.Localization;
 using static DccwPlus.Windows.WindowsColorProfileQuery;
 using Luid = DccwPlus.Windows.WindowsColorProfileQuery.Luid;
 
@@ -35,17 +36,23 @@ public sealed class WindowsProfileAssociationBackend : IProfileAssociationBacken
         // A profile preview requires a rollback destination in the same association scope.
         string? current = ReadDefault(adapter, display.SourceId.Value, scope);
         var profiles = List(adapter, display.SourceId.Value, scope).Select(Inspect).ToArray();
+        return DescribeAssociation(display, displays, current, scope, profiles, WindowsDisplaySession.IsRemote());
+    }
+
+    internal static ProfileAssociationState DescribeAssociation(DisplayInfo display, IReadOnlyList<DisplayInfo> displays,
+        string? current, int scope, IReadOnlyList<AssociatedProfile> profiles, bool isRemote)
+    {
         // Older ICC journals only contain this fingerprint.
         string topology = string.Join('\n', displays.OrderBy(d => d.Id, StringComparer.Ordinal).Select(d =>
             FormattableString.Invariant($"{d.Id}|{d.TargetKey}|{d.SourceId}|{d.Topology}|{d.ColorState}|{d.HdrActive}|{d.AdvancedColorActive}|{d.Width}|{d.Height}|{d.PositionX}|{d.PositionY}")));
         string? persistence = display.PersistenceKey;
         if (persistence is not null && displays.Count(other => other.PersistenceKey == persistence) != 1) persistence = null;
-        return new(display.Id, display.TargetKey, display.SourceId.Value,
+        return new(display.Id, display.TargetKey!, display.SourceId!.Value,
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(topology))), current,
             scope == CurrentUser ? "current-user" : "system-wide", CalibrationService.IsExplicitSdr(display),
             display.Topology == "clone" || displays.Count(d => d.DeviceName == display.DeviceName) > 1, profiles, persistence,
-            WindowsDisplaySession.IsRemote(), ActiveTopologySha256: WindowsDisplayService.ComputeTopologyHash(display.Topology, displays),
-            ProfileDeviceSha256: WindowsDisplayService.HashProfileDeviceKey(display.ProfileDeviceKey));
+            isRemote, ActiveTopologySha256: WindowsDisplayService.ComputeTopologyHash(display.Topology, displays),
+            ProfileDeviceSha256: WindowsDisplayService.HashProfileDeviceKey(WindowsDisplayService.GetUniqueProfileDeviceKey(display, displays)));
     }
 
     public bool TrySetDefault(ProfileAssociationState expected, string profile, string sha256, Func<bool>? canWrite = null)
@@ -53,6 +60,8 @@ public sealed class WindowsProfileAssociationBackend : IProfileAssociationBacken
         WindowsDisplaySession.RequireLocal();
         IccProfileInspector.ValidateFileName(profile);
         var now = Read(expected.DisplayId);
+        if (!ProfilePreviewPolicy.MatchesProfileDevice(expected, now))
+            throw new ProfilePreviewException("profile_device_unavailable", new LocalizationService()["ProfileDeviceUnavailable"]);
         if (!ProfilePreviewPolicy.SameTarget(expected, now)
             || !ProfilePreviewPolicy.EqualName(expected.CurrentProfile, now.CurrentProfile))
             throw new ProfilePreviewException("display_state_changed", "The display changed before the profile could be selected.");

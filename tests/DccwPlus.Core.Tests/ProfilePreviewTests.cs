@@ -397,6 +397,47 @@ public sealed class ProfilePreviewTests
         Assert.Single(setup.Backend.Writes);
     }
 
+    [Fact]
+    public void NewPreviewRequiresEvidenceOfAnIndependentProfileDevice()
+    {
+        var setup = new Fixture();
+        setup.Backend.State = setup.Backend.State with { ProfileDeviceSha256 = null };
+
+        var plan = ProfilePreviewPolicy.Plan(setup.Backend.State, "candidate.icc");
+        Assert.False(plan.CanPreview);
+        Assert.Equal("profile_device_unavailable", plan.ReasonCode);
+        Assert.Equal(plan.ReasonCode, Assert.Throws<ProfilePreviewException>(() => setup.Start()).Code);
+        Assert.Null(setup.Journal.Last);
+        Assert.Empty(setup.Backend.Writes);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void RecoveryWaitsForTheOriginalIndependentProfileDevice(bool legacy, bool changedDevice)
+    {
+        var setup = new Fixture();
+        var preview = setup.Start();
+        var independent = setup.Backend.State;
+        setup.Backend.State = independent with { ProfileDeviceSha256 = changedDevice ? new string('E', 64) : null };
+        if (legacy) preview = preview with { Original = preview.Original with { ProfileDeviceSha256 = null } };
+
+        var first = legacy ? new ProfilePreviewTransaction(setup.Backend, setup.Journal).Recover(preview)
+            : setup.Transaction.Confirm();
+
+        Assert.Equal("recovery-pending", first.Status);
+        Assert.Equal("profile_device_unavailable", first.ReasonCode);
+        Assert.Equal("candidate.icc", setup.Backend.State.CurrentProfile);
+        Assert.Single(setup.Backend.Writes);
+
+        setup.Backend.State = independent;
+        var recovered = new ProfilePreviewTransaction(setup.Backend, setup.Journal).Recover(first);
+        Assert.Equal("reverted", recovered.Status);
+        Assert.Equal("original.icc", setup.Backend.State.CurrentProfile);
+        Assert.Equal(new[] { "candidate.icc", "original.icc" }, setup.Backend.Writes);
+    }
+
     [Fact] public void NativeFailureAfterPartialWriteStillRollsBack()
     {
         var setup = new Fixture(); setup.Backend.FailFirstAfterWrite = true;
@@ -555,7 +596,8 @@ public sealed class ProfilePreviewTests
     {
         public ProfileAssociationState State { get; set; } = new("0123456789abcdef", "00000000:00000001:256", 0,
             new string('A', 64), "original.icc", "current-user", true, false,
-            [new("original.icc", new string('B', 64), true), new("candidate.icc", new string('C', 64), true)]);
+            [new("original.icc", new string('B', 64), true), new("candidate.icc", new string('C', 64), true)],
+            ProfileDeviceSha256: new string('F', 64));
         public List<string> Writes { get; } = []; public Action? BeforeWrite { get; set; }
         public Action? AfterWrite { get; set; }
         public bool FailFirstAfterWrite { get; set; }

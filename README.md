@@ -75,7 +75,7 @@ For direct numeric control, use `calibration preview` with a display ID and Gamm
 
 Confirming a calibration or an undo keeps the current preview deadline. DCCW++ checks it before each Windows write and just before publishing the confirmed result. At publication it rechecks the ICC file, Windows selection and scope, and the logical curve. A failed check sends the session through the same recovery path as an expired preview. Use `calibration status` to check the result, including any pending recovery.
 
-Standalone ICC association previews also recheck the selected display, scope, active ICC, file fingerprint, and deadline just before publishing the ready or confirmed state. Use `profiles status` to read the resulting association or recovery state.
+Standalone ICC association previews require a unique Windows color profile device. They recheck the selected display, scope, active ICC, file fingerprint, and deadline just before publishing the ready or confirmed state. Use `profiles status` to read the resulting association or recovery state.
 
 Use `calibration observe <session-id> --json` or `profiles observe <session-id> --json` to check whether the preview worker is still handling an unfinished session. Add `--wait-seconds 15` to wait up to 15 seconds for a final outcome. Read `data.outcome` alongside `data.session.status`. The observation leaves the display and the original preview deadline untouched.
 

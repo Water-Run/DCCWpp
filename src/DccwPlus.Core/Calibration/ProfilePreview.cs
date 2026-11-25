@@ -37,9 +37,10 @@ public static class ProfilePreviewPolicy
         IccProfileInspector.ValidateFileName(candidate);
         var original = ValidProfile(state, state.CurrentProfile);
         var proposed = ValidProfile(state, candidate);
-        string reason = AssociationBlockReason(state, candidate, original, proposed)
-            ?? (original?.Mhc2Present == true || proposed?.Mhc2Present == true ? "mhc2_profile_blocked" : "ready");
-        return new(reason == "ready", reason, state, candidate, proposed?.Sha256);
+        string? reason = AssociationBlockReason(state, candidate, original, proposed);
+        if (reason is null && (original?.Mhc2Present == true || proposed?.Mhc2Present == true)) reason = "mhc2_profile_blocked";
+        if (reason is null && !IsHash(state.ProfileDeviceSha256)) reason = "profile_device_unavailable";
+        return new(reason is null, reason ?? "ready", state, candidate, proposed?.Sha256);
     }
 
     // Recorded rollback evidence remains usable when a profile is outside the current preview policy.
@@ -65,6 +66,9 @@ public static class ProfilePreviewPolicy
         state.Profiles.FirstOrDefault(p => EqualName(p.FileName, name) && p.CanSelect && IsHash(p.Sha256));
     public static bool IsHash(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
     public static bool EqualName(string? left, string? right) => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+    public static bool MatchesProfileDevice(ProfileAssociationState before, ProfileAssociationState now) =>
+        IsHash(now.ProfileDeviceSha256) && (before.ProfileDeviceSha256 is null
+            || string.Equals(before.ProfileDeviceSha256, now.ProfileDeviceSha256, StringComparison.OrdinalIgnoreCase));
     public static bool SameTarget(ProfileAssociationState before, ProfileAssociationState now) =>
         SamePath(before, now) && before.TopologyFingerprint == now.TopologyFingerprint
         && (before.ActiveTopologySha256 is null || before.ActiveTopologySha256 == now.ActiveTopologySha256);
@@ -76,8 +80,7 @@ public static class ProfilePreviewPolicy
     private static bool SamePath(ProfileAssociationState before, ProfileAssociationState now) =>
         before.DisplayId == now.DisplayId && before.TargetKey == now.TargetKey && before.SourceId == now.SourceId
         && (before.PersistenceKey is null || before.PersistenceKey == now.PersistenceKey)
-        && (before.ProfileDeviceSha256 is null || string.Equals(before.ProfileDeviceSha256, now.ProfileDeviceSha256, StringComparison.OrdinalIgnoreCase))
-        && SameUserSdrScope(before, now);
+        && MatchesProfileDevice(before, now) && SameUserSdrScope(before, now);
     private static bool SameUserSdrScope(ProfileAssociationState before, ProfileAssociationState now) =>
         now.ExplicitSdr && !now.SharedSource && !now.IsRemoteSession
         && before.Scope == now.Scope && now.Scope == "current-user";
@@ -116,8 +119,12 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
         if (id == Guid.Empty || seconds is < 10 or > 60) throw new ArgumentException("Preview timeout must be 10–60 seconds.");
         var plan = ProfilePreviewPolicy.Plan(backend.Read(displayId), candidate);
         if (!plan.CanPreview)
-            throw new ProfilePreviewException(plan.ReasonCode, plan.ReasonCode == "mhc2_profile_blocked"
-                ? new LocalizationService()["Mhc2AssociationPreviewBlocked"] : "This profile cannot be previewed with a verified recovery path.");
+            throw new ProfilePreviewException(plan.ReasonCode, plan.ReasonCode switch
+            {
+                "mhc2_profile_blocked" => new LocalizationService()["Mhc2AssociationPreviewBlocked"],
+                "profile_device_unavailable" => new LocalizationService()["ProfileDeviceUnavailable"],
+                _ => "This profile cannot be previewed with a verified recovery path."
+            });
         _duration = TimeSpan.FromSeconds(seconds);
         _started = _clock.GetTimestamp();
         Session = new() { Id = id, Original = plan.State, CandidateProfile = candidate,
@@ -214,6 +221,7 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
             try { Persist("recovering", reason); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
             var current = interrupted ? backend.ReadRecoveryTarget(Session.Original) : backend.Read(Session.Original.DisplayId);
             if (current.IsRemoteSession) return Pending("remote_session_blocked");
+            if (!ProfilePreviewPolicy.MatchesProfileDevice(Session.Original, current)) return Pending("profile_device_unavailable");
             if (!ProfilePreviewPolicy.SameRecoveryTarget(Session.Original, current)
                 && !(interrupted && ProfilePreviewPolicy.SameRelocatedTarget(Session.Original, current)))
                 return Pending("recovery_target_changed");

@@ -269,6 +269,8 @@ dccwpp profiles recover <session-id> --json
 
 这条路径限于已关联的、可验证原默认配置的当前用户 SDR 显示器。它试用默认 ICC 关联，不生成新的校准曲线。
 
+目标屏须独占其 Windows 配置设备。若其他活动路径共用同一设备，或 Windows 无法读出设备标识，预演报告 `canPreview: false` 和 `profile_device_unavailable`，实际预览在建立会话日志前返回退出码 4。`profiles list` 仍列出可读的配置。`profileDeviceSha256` 只在该设备可唯一匹配时提供。预览中丢失设备匹配时，恢复等待设备再次可核对。缺少设备摘要的旧日志仍可在原路径恢复，前提是当前目标的配置设备可唯一匹配。[Windows WCS 配置作用域](https://learn.microsoft.com/en-us/windows/win32/wcs/wcs-registry-keys)
+
 `profiles list` 中的 `profiles[].mhc2Present` 表示是否检测到 MHC2 标签。读不到标签目录或记录来自旧版本时可能缺少该字段。`canSelect` 表示文件满足结构检查，实际预览还会检查显示器、作用域和 MHC2。当前或候选 ICC 含 MHC2 时，`--dry-run` 给出 `canPreview: false` 和 `mhc2_profile_blocked`，实际预览在建立日志和写入默认关联前返回退出码 4。旧会话仍可核对原配置、候选文件摘要和目标后回滚。[Windows 硬件色彩校准加载器](https://learn.microsoft.com/en-us/windows/win32/wcs/display-calibration-mhc#enhanced-windows-display-calibration-loader)
 
 工作进程写完临时日志后，在发布预览就绪或确认状态前重新核对目标、作用域、当前默认 ICC 及文件摘要，并在读回前后复核原截止时间和所有者状态。核对失败时继续走原回退流程。因超时而回退成功时记录 `preview_expired`。`profiles confirm` 和 `profiles revert` 分别在日志为 `confirmed` 或 `reverted` 时返回成功。重复提交同一操作可读取同一结果。其他状态返回退出码 4 和记录的 `error.code`。若工作进程已经退出且日志仍处于进行状态，原因是 `recovery_required`。用 `profiles status` 或 `profiles observe` 查看完整会话。

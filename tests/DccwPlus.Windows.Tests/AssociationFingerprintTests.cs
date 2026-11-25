@@ -328,6 +328,32 @@ public sealed class AssociationFingerprintTests
     }
 
     [Theory]
+    [InlineData("unique", true)]
+    [InlineData("shared", false)]
+    [InlineData("unavailable", false)]
+    public void IccPreviewSnapshotOnlyRecordsAUniqueProfileDevice(string configuration, bool canPreview)
+    {
+        var sdr = Display with { Topology = "extend", HdrActive = false, AdvancedColorActive = false };
+        var target = configuration == "unavailable" ? sdr with { ProfileDeviceKey = null } : sdr;
+        var other = Display with
+        {
+            Id = "fedcba9876543210", DeviceName = @"\\.\DISPLAY2", TargetKey = "00000000:00000002:2", SourceId = 2,
+            ProfileDeviceKey = configuration == "shared" ? Display.ProfileDeviceKey!.ToUpperInvariant() : Display.ProfileDeviceKey + "2"
+        };
+        AssociatedProfile[] profiles = [new("original.icc", ProfileHash, true), new("candidate.icc", OtherHash, true)];
+        var snapshot = WindowsProfileAssociationBackend.DescribeAssociation(target, [target, other], "original.icc",
+            WindowsColorProfileQuery.CurrentUser, profiles, isRemote: false);
+
+        Assert.False(snapshot.SharedSource);
+        Assert.Equal(canPreview ? WindowsDisplayService.HashProfileDeviceKey(target.ProfileDeviceKey) : null,
+            snapshot.ProfileDeviceSha256);
+        Assert.Equal(profiles, snapshot.Profiles);
+        var plan = ProfilePreviewPolicy.Plan(snapshot, "candidate.icc");
+        Assert.Equal(canPreview, plan.CanPreview);
+        Assert.Equal(canPreview ? "ready" : "profile_device_unavailable", plan.ReasonCode);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void InstalledProfileInspectionReportsMhc2InTheAssociatedProfile(bool hasMhc2)
