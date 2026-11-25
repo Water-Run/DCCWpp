@@ -1,15 +1,17 @@
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory)][ValidateSet('x64', 'arm64')][string]$Architecture,
     [Parameter(Mandatory)][string]$EvidenceDirectory,
     [Parameter(Mandatory)][string]$ReportPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$architectureName = $Architecture.ToLowerInvariant()
+$osArchitecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
-    $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'ARM64' -or
-    [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64') {
-    throw 'This installation check requires an isolated GitHub-hosted Windows ARM64 runner.'
+    $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne $architectureName -or $osArchitecture -ne $architectureName) {
+    throw "This installation check requires an isolated GitHub-hosted Windows $architectureName runner."
 }
 
 $reportFile = [IO.Path]::GetFullPath($ReportPath)
@@ -19,8 +21,10 @@ $report = [ordered]@{
     success = $false
     step = 'verify_evidence'
     sourceCommit = $env:GITHUB_SHA
-    osArchitecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+    osArchitecture = $osArchitecture
     windowsBuild = [Environment]::OSVersion.Version.Build
+    windowsInstallationType = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name InstallationType
+    runnerInteractive = [Environment]::UserInteractive
 }
 $name = 'DCCWPlus.Development'
 $publisher = 'CN=DCCWPlus-Development'
@@ -61,16 +65,18 @@ function Invoke-AgentCli([string]$Executable, [string[]]$Command, [int]$Expected
 }
 
 try {
+    $user = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    $report.runnerElevated = $user.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     $evidence = Get-Content -LiteralPath (Join-Path $EvidenceDirectory 'evidence.json') -Raw | ConvertFrom-Json
-    $packages = @($evidence.packages | Where-Object architecture -EQ 'arm64')
+    $packages = @($evidence.packages | Where-Object architecture -CEQ $architectureName)
     if ($evidence.schemaVersion -ne 1 -or $evidence.channel -ne 'development' -or
         $evidence.builtFrom -ne 'git-commit' -or $evidence.sourceCommit -cne $env:GITHUB_SHA -or $packages.Count -ne 1) {
-        throw 'Expected the ARM64 development package for this workflow commit.'
+        throw "Expected the $architectureName development package for this workflow commit."
     }
     $package = $packages[0]
     if ($package.identity -ne $name -or $package.publisher -cne $publisher -or
-        $package.file -cnotmatch '^packages/[A-Za-z0-9._-]+_arm64\.msix$') {
-        throw 'Unexpected ARM64 development package identity or path.'
+        $package.file -cnotmatch "^packages/[A-Za-z0-9._-]+_${architectureName}\.msix$") {
+        throw "Unexpected $architectureName development package identity or path."
     }
     $unsigned = Join-Path $EvidenceDirectory $package.file
     $report.unsignedSha256 = (Get-FileHash -LiteralPath $unsigned -Algorithm SHA256).Hash
@@ -80,12 +86,12 @@ try {
     Import-Module Appx -UseWindowsPowerShell
     if (Get-AppxPackage -Name $name) { throw 'Expected a clean development package identity.' }
     $null = New-Item -Path $scratch -ItemType Directory
-    $signed = Join-Path $scratch 'DccwPlus-arm64.msix'
+    $signed = Join-Path $scratch "DccwPlus-$architectureName.msix"
     Copy-Item -LiteralPath $unsigned -Destination $signed
     $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
-    $signTool = Get-ChildItem -Path (Join-Path $sdkBin '10.*/arm64/signtool.exe') -File -ErrorAction SilentlyContinue |
+    $signTool = Get-ChildItem -Path (Join-Path $sdkBin "10.*/$architectureName/signtool.exe") -File -ErrorAction SilentlyContinue |
         Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
-    if (!$signTool) { throw 'Windows SDK ARM64 SignTool was not found.' }
+    if (!$signTool) { throw "Windows SDK $architectureName SignTool was not found." }
     $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject $publisher `
         -CertStoreLocation 'Cert:\LocalMachine\My' -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddDays(1)
     $cerFile = Join-Path $scratch 'development.cer'
@@ -96,8 +102,8 @@ try {
     $attemptedInstall = $true
     Add-AppxPackage -Path $signed
     $installed = Get-AppxPackage -Name $name
-    if (!$installed -or $installed.Architecture.ToString() -ne 'Arm64' -or $installed.Version.ToString() -ne $package.version) {
-        throw 'Windows did not register the expected ARM64 package version.'
+    if (!$installed -or $installed.Architecture.ToString() -ne $architectureName -or $installed.Version.ToString() -ne $package.version) {
+        throw "Windows did not register the expected $architectureName package version."
     }
     $report.packageVersion = $package.version
     $report.packageArchitecture = $installed.Architecture.ToString()
@@ -120,12 +126,11 @@ try {
     $report.step = 'cli_smoke'
     $smoke = & python (Join-Path $PSScriptRoot 'smoke_cli.py') $alias
     $smoke | Write-Host
-    if ($LASTEXITCODE -or ($smoke -join "`n") -notmatch 'PASS: (\d+) CLI process checks') { throw 'The ARM64 CLI smoke suite failed.' }
+    if ($LASTEXITCODE -or ($smoke -join "`n") -notmatch 'PASS: (\d+) CLI process checks') { throw "The $architectureName CLI smoke suite failed." }
     $report.cliProcessChecks = [int]$Matches[1]
 
     $report.step = 'wizard_handoff'
-    $report.runnerInteractive = [Environment]::UserInteractive
-    $preset = (Invoke-AgentCli $alias @('presets', 'create', 'ARM64 review', '--gamma', '2.4') -UseDefaultData).data
+    $preset = (Invoke-AgentCli $alias @('presets', 'create', 'Packaged review', '--gamma', '2.4') -UseDefaultData).data
     $wizardArguments = @('wizard', 'open', '--preset', $preset.id)
     $display = (Invoke-AgentCli $alias @('displays', 'list')).data |
         Where-Object { $_.deviceName.StartsWith('\\.\DISPLAY', [StringComparison]::OrdinalIgnoreCase) } |
@@ -133,7 +138,7 @@ try {
     if ($display) { $wizardArguments += @('--display', $display.id) }
     $plan = (Invoke-AgentCli $alias ($wizardArguments + '--dry-run') -UseDefaultData).data
     if (!$plan.canOpen -or $plan.reasonCode -ne 'wizard_ready' -or $plan.changesDisplay) {
-        throw 'The packaged wizard preflight did not confirm the available draft.'
+        throw "The packaged wizard preflight did not confirm the available draft ($($plan.reasonCode))."
     }
     $opened = (Invoke-AgentCli $alias $wizardArguments -UseDefaultData).data
     if ($opened.status -ne 'opened' -or $opened.changesDisplay -or $opened.presetId -ne $preset.id -or
@@ -152,17 +157,17 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
 
-public static class Arm64ReleaseProcess {
+public static class DevelopmentPackageProcess {
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool IsWow64Process2(IntPtr process, out ushort processMachine, out ushort nativeMachine);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     static extern int GetPackageFullName(IntPtr process, ref uint length, StringBuilder name);
 
-    public static bool IsNativeArm64(IntPtr process) {
+    public static bool IsNativeMachine(IntPtr process, ushort expectedMachine) {
         ushort processMachine, nativeMachine;
         if (!IsWow64Process2(process, out processMachine, out nativeMachine))
             throw new Win32Exception(Marshal.GetLastWin32Error());
-        return processMachine == 0 && nativeMachine == 0xaa64;
+        return processMachine == 0 && nativeMachine == expectedMachine;
     }
 
     public static string ReadPackageFullName(IntPtr process) {
@@ -173,12 +178,13 @@ public static class Arm64ReleaseProcess {
     }
 }
 '@
+    $expectedMachine = if ($architectureName -eq 'arm64') { 0xaa64 } else { 0x8664 }
     $gui = Get-Process -Id $opened.processId
     try {
         if ($gui.MainModule.FileName -ne (Join-Path $installed.InstallLocation 'DccwPlus.App.exe') -or
-            ![Arm64ReleaseProcess]::IsNativeArm64($gui.Handle) -or
-            [Arm64ReleaseProcess]::ReadPackageFullName($gui.Handle) -cne $installed.PackageFullName) {
-            throw 'WinUI activation did not start the installed native ARM64 executable.'
+            ![DevelopmentPackageProcess]::IsNativeMachine($gui.Handle, $expectedMachine) -or
+            [DevelopmentPackageProcess]::ReadPackageFullName($gui.Handle) -cne $installed.PackageFullName) {
+            throw "WinUI activation did not start the installed native $architectureName executable."
         }
         $timer = [Diagnostics.Stopwatch]::StartNew()
         do {
@@ -187,7 +193,7 @@ public static class Arm64ReleaseProcess {
             if ($gui.HasExited) { throw 'DCCW++ exited before opening its window.' }
         } until ($gui.MainWindowHandle -ne 0 -or $timer.Elapsed.TotalSeconds -ge 25)
         if ($gui.MainWindowHandle -eq 0 -or $gui.MainWindowTitle -ne 'DCCW++') { throw 'The WinUI main window did not open.' }
-        $report.winUiNativeArm64 = $true
+        $report.winUiNativeArchitecture = $architectureName
     }
     finally {
         if (!$gui.HasExited -and $gui.MainModule.FileName -eq (Join-Path $installed.InstallLocation 'DccwPlus.App.exe')) {
@@ -209,7 +215,7 @@ catch {
 }
 finally {
     try {
-        if ($attemptedInstall -and !$report.Contains('packageRemoved')) {
+        if ($attemptedInstall -and (!$report.Contains('packageRemoved') -or !$report.packageRemoved)) {
             Get-AppxPackage -Name $name | ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName }
         }
         if ($certificate) {

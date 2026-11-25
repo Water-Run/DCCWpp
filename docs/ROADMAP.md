@@ -19,7 +19,7 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 | 预设与 CLI | 已有草稿参数、绑定保护、重复导入和命令发现。直接预览、应用预设、撤回校准和试用 ICC 支持预演与请求 ID。Agent 可在限时预览中调整数值及切换原始与候选视图，也可查询或限时等待会话结果。x64 沙盒已验证 CLI 创建的预设在 GUI 可见，以及 GUI 导入、重复导入和显式副本的 CLI 查验 | 实机显示事务及跨版本兼容性 |
 | 登录恢复 | StartupTask 与逐屏恢复开关已接通。x64 沙盒普通用户已验证实际重新登录触发无窗口后台，断开测试目标被跳过。用户禁用或设备策略禁用后，后台退出且下次登录不再触发。撤销测试策略后恢复原先的用户偏好 | 实机恢复匹配显示器、睡眠唤醒与热插拔 |
 | 语言和照片 | en-US、zh-Hans、zh-Hant，可打开本机照片。x64 沙盒中可切换三语并保留向导当前步骤 | 各页面文案和参考照片的实机验收，内置照片依赖项目所有者供片及许可 |
-| 商店包 | 双架构开发 MSIX、对应源码与依赖许可已验证。x64 已在沙盒验证普通用户安装、交互式 GUI 冷启动、CLI 执行、原地升级保留数据及卸载。GitHub 托管 ARM64 虚拟机已验证开发包装卸、原生 WinUI 冷启动和 CLI 别名 | 已登录 ARM64 普通用户安装、登录启动和升级，Store 签名包升级、DCCW++ 专属商店身份及认证 |
+| 商店包 | 双架构开发 MSIX、对应源码与依赖许可已验证。x64 已在沙盒验证普通用户安装、交互式 GUI 冷启动、CLI 执行、原地升级保留数据及卸载。GitHub 托管 x64 和 ARM64 分别验证开发包装卸、CLI 别名以及带目标和预设的原生 WinUI 冷启动 | Windows 11 x64 普通用户的装包 CLI 交接。ARM64 普通用户的交互安装、登录启动和升级。Store 签名包升级、DCCW++ 专属商店身份及认证 |
 
 ## 开发顺序与交付物
 
@@ -154,7 +154,7 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 4. 审阅已起草的英文、简中和繁中商店说明，补充实际应用截图。根据验收更新 SDR 范围和已知限制。归档相同版本完整对应源码、构建方式、依赖许可和照片许可。[商店文案及认证说明](STORE_LISTING.md)
 5. 首次发布可用 Private audience 做 Store 签名包的安装验证。已有正式版本后，评估使用 package flights 验证更新。跟踪 Partner Center 认证和 Store 签名安装结果，公开发布后再增加 README 的正式商店入口。[Private audience](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/visibility-options) · [Package flights](https://learn.microsoft.com/en-us/windows/apps/publish/package-flights)
 
-在本地 ARM64 设备验收之前，CI 使用原生 Windows 11 ARM64 虚拟机测试该次构建的开发包。核对运行报告中的提交、包摘要、CLI 别名、WinUI 进程架构和卸载状态。[ARM64 运行记录](STORE.md)
+CI 在托管 Windows Server 2025 x64 和 Windows 11 ARM64 上分别测试该次构建的开发包。核对运行报告中的提交、包摘要、CLI 别名、WinUI 进程架构和卸载状态。在 Windows 11 x64 普通用户交互会话中验收从 CLI 交接到向导。[运行记录](STORE.md)
 
 ## 发布后的 HDR 与 Advanced Color
 

@@ -25,7 +25,7 @@ The x64 development MSIX has been exercised in an interactive Windows Sandbox at
 
 A separate standard-user Sandbox check covered WinUI launch, opt-in sign-in startup, a skipped disconnected display binding, and the next sign-in after disabling startup. The packaged CLI also read presets imported through the GUI. Repeated import reused the existing preset and importing a copy created a separate entry.
 
-The ARM64 development MSIX passed installation, native WinUI cold launch, CLI alias, and removal in a GitHub-hosted Windows 11 ARM64 session. Standard-user deployment on ARM64 remains an acceptance item. [ARM64 development package checks](docs/STORE.md)
+GitHub Actions installs and removes each development MSIX on its native architecture. The x64 runner uses Windows Server 2025 and the ARM64 runner uses Windows 11. Both verify that the installed CLI alias opens the native WinUI wizard on the requested display with the selected preset. The hosted checks run with elevated accounts. Windows 11 x64 standard-user wizard handoff and ARM64 standard-user deployment remain acceptance items. [Development package checks](docs/STORE.md)
 
 Settings shows when the last automatic restore check ran, what triggered it, and why the selected display was skipped or still needs recovery. If Windows cannot read the sign-in task state, the monitor waits for Windows to confirm permission before processing the queued event. Refresh restore results to read the latest report.
 

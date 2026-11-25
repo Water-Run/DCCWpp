@@ -71,7 +71,7 @@ python ./scripts/build_release_evidence.py review-01 --commit HEAD
 
 GitHub Actions 的 **Build** 使用触发构建的 Git 提交生成 `DCCWPlus-development-evidence`。该工件包含 x64 和 ARM64 MSIX、对应源码压缩包和 `evidence.json`。`DCCWPlus-build-logs` 包含构建及校验日志。可在 Actions 中用 **Run workflow** 重建所选分支上的开发工件。
 
-同一次构建的 **Windows ARM64 package runtime** 作业获取 ARM64 开发 MSIX，核对提交和未签名包的 SHA-256。它用托管 Windows 11 ARM64 虚拟机中的临时证书签名测试副本，再检查安装、`dccwpp.exe` 别名、JSON 和退出码、禁用的初始登录启动状态及卸载。WinUI 冷启动通过装包别名的 `wizard open` 完成，核对草稿交接回执和原生进程，并检查是否有新校准会话。`DCCWPlus-arm64-runtime` 工件记录运行结果。商店签名、普通用户部署和物理显示效果在发布设备上单独验收。[GitHub Windows ARM64 runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) · [MSIX 开发签名](https://learn.microsoft.com/en-us/windows/msix/package/sign-msix-package-guide)
+同一次构建的 **Windows x64 package runtime** 和 **Windows ARM64 package runtime** 分别在托管 Windows Server 2025 x64 和 Windows 11 ARM64 上运行。两个作业核对提交和未签名 MSIX 的 SHA-256，用隔离虚拟机中的临时证书签名测试副本，再检查安装、`dccwpp.exe` 别名、JSON 和退出码、禁用的初始登录启动状态及卸载。WinUI 冷启动通过装包别名 `wizard open` 完成，核对草稿交接回执、MSIX 身份和原生进程架构，并检查是否有新校准会话。`DCCWPlus-x64-runtime` 和 `DCCWPlus-arm64-runtime` 工件记录安装类型、用户是否提升权限及运行结果。Windows 11 普通用户的完整交互流程、商店签名和物理显示效果在发布设备上单独验收。[GitHub 托管运行器](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) · [MSIX 开发签名](https://learn.microsoft.com/en-us/windows/msix/package/sign-msix-package-guide)
 
 ## 生成提交包
 

@@ -30,10 +30,20 @@ jobs:
         with:
           name: DCCWPlus-build-logs
           path: artifacts/release-evidence/ci/logs/*.log
-  arm64:
-    name: Windows ARM64 package runtime
+  runtime:
+    name: Windows ${{ matrix.label }} package runtime
     needs: windows
-    runs-on: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            label: x64
+            runner: windows-2025
+          - architecture: arm64
+            label: ARM64
+            runner: windows-11-arm
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,15 +52,16 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: DCCWPlus-development-evidence
-          path: artifacts/release-evidence/arm64-input
-      - name: Install and run the ARM64 development package
+          path: artifacts/release-evidence/runtime-input
+      - name: Install and run the development package
         shell: pwsh
         run: >-
-          ./scripts/Test-Arm64Release.ps1
-          -EvidenceDirectory artifacts/release-evidence/arm64-input
-          -ReportPath artifacts/release-evidence/arm64-runtime.json
+          ./scripts/Test-DevelopmentPackage.ps1
+          -Architecture '${{ matrix.architecture }}'
+          -EvidenceDirectory artifacts/release-evidence/runtime-input
+          -ReportPath artifacts/release-evidence/${{ matrix.architecture }}-runtime.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: DCCWPlus-arm64-runtime
-          path: artifacts/release-evidence/arm64-runtime.json
+          name: DCCWPlus-${{ matrix.architecture }}-runtime
+          path: artifacts/release-evidence/${{ matrix.architecture }}-runtime.json
