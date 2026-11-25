@@ -96,6 +96,8 @@ internal static class Cli
                 case ["presets", "export", var id, var path]:
                     store.Export(ParseId(id), path); return Success(new { path = Path.GetFullPath(path) }, json);
                 case ["startup", "status"]: return Success(await new StartupService().GetAsync(), json);
+                case ["startup", "enable" or "disable"]:
+                    return await SetStartupAsync(remaining[1] == "enable", json);
                 case ["startup", "last-restore"]:
                     return Success(new { report = new CalibrationBindingService(root).LastStartupReport() }, json);
                 case ["recovery", "status"]:
@@ -284,6 +286,22 @@ internal static class Cli
         catch (UnauthorizedAccessException ex) { return Failure("access_denied", ex.Message, 5, json); }
         catch (IOException ex) { return Failure("io_error", ex.Message, 5, json); }
         catch (Exception ex) { return Failure("internal_error", ex.Message, 1, json); }
+    }
+
+    private static async Task<int> SetStartupAsync(bool enabled, bool json)
+    {
+        var status = await new StartupService().SetEnabledAsync(enabled);
+        bool reached = enabled ? status.IsEnabled : status.State is "Disabled" or "DisabledByUser" or "DisabledByPolicy";
+        if (reached) return Success(status, json);
+
+        var (code, messageKey) = status.State switch
+        {
+            "unpackaged" or "unavailable" => ("startup_unavailable", "StartupState_" + status.State),
+            "DisabledByUser" => ("startup_disabled_by_user", "StartupState_DisabledByUser"),
+            "DisabledByPolicy" or "EnabledByPolicy" => ("startup_managed_by_policy", "StartupState_" + status.State),
+            _ => ("startup_state_unchanged", "StartupStateChangeUnconfirmed")
+        };
+        return Failure(code, new LocalizationService()[messageKey], 4, json);
     }
 
     private static async Task<int> PreviewAsync(GammaPreviewClient client, string displayId, CalibrationPreset preset,

@@ -9,13 +9,14 @@ public sealed record BindingRestoreResult(string PersistenceKey, string? Display
 public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaCalibrationBackend backend,
     IGammaCalibrationJournal journal, Func<string, string> hashInstalledProfile, Func<Guid, CalibrationPreset> readPreset)
 {
-    public BindingRestoreResult Restore(CalibrationBinding binding, bool dryRun)
+    public BindingRestoreResult Restore(CalibrationBinding binding, bool dryRun, Func<string?>? getCancellationReason = null)
     {
         string? displayId = null;
         BindingRestoreResult Result(string status, string reason) => new(binding.PersistenceKey, displayId, status, reason);
         if (!binding.RestoreEnabled) return Result("skipped", "binding_disabled");
         try
         {
+            if (getCancellationReason?.Invoke() is { } canceled) return Result("skipped", canceled);
             CalibrationBindingStore.Validate(binding);
             var connected = displays.Enumerate();
             var matches = connected.Where(d => d.PersistenceKey == binding.PersistenceKey).ToArray();
@@ -42,10 +43,16 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
             var preset = readPreset(binding.PresetId);
             if (dryRun) return Result("planned", "restore_ready");
 
-            var transaction = new GammaCalibrationTransaction(checkedBackend, journal);
+            var transaction = new GammaCalibrationTransaction(checkedBackend, journal, getCancellationReason: getCancellationReason);
             transaction.Begin(Guid.NewGuid(), preset, display.Id, 30, binding.Ramp, state);
             var result = transaction.Confirm();
-            return Result(result.Status == "confirmed" ? "restored" : result.Status, result.ReasonCode);
+            string status = result.Status switch
+            {
+                "confirmed" => "restored",
+                "reverted" when result.ReasonCode is "startup_disabled" or "startup_unavailable" => "skipped",
+                _ => result.Status
+            };
+            return Result(status, result.ReasonCode);
         }
         catch (ProfilePreviewException ex)
         {
@@ -91,6 +98,6 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
             return _selection;
         }
 
-        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected) => false;
+        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null) => false;
     }
 }

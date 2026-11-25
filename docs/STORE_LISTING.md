@@ -83,15 +83,20 @@ DCCW++ 是一款 Windows 11 顯示器色彩校準工具。選取顯示器後，�
 
 ## Screenshots
 
-Capture the installed candidate on a clean Windows 11 desktop in each listing language. Use desktop PNGs at 1366 × 768 or larger. At least one current screenshot is required. Use the build's actual UI and a neutral preset name or the built-in calibration patterns. [Screenshot requirements](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/screenshots-and-images)
+Capture the installed candidate on a clean Windows 11 desktop in each listing language. Submit desktop PNGs at 1366 × 768 or larger and at most 50 MB each. Upload each language's images and captions to its listing. Keep captions within 200 characters. Use the build's actual UI, the built-in calibration patterns, and a neutral preset name. Keep the package version, commit, and screenshot hashes with the source record. [Screenshot requirements](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/screenshots-and-images)
 
 | View | en-US caption | zh-CN caption | zh-TW caption |
 | --- | --- | --- | --- |
 | Gamma | Match the gamma reference pattern | 按参考图调整 Gamma | 依參考圖調整 Gamma |
+| Brightness | Check near-black detail before adjusting your monitor | 调整显示器前检查近黑细节 | 調整顯示器前檢查近黑細節 |
 | Gray balance | Use the RGB controls to balance neutral grays | 用 RGB 控件调整中性灰阶 | 使用 RGB 控制項調整中性灰階 |
 | Comparison | Compare the original and adjusted curves before saving | 保存前比较原始和调整后的曲线 | 儲存前比較原始與調整後的曲線 |
 | Presets | Import and export presets from your library | 在预设库导入和导出预设 | 在預設庫匯入及匯出預設 |
 | Sign-in settings | Choose which displays may restore a saved calibration | 选择登录时可恢复校准的显示器 | 選擇登入時可回復校準的顯示器 |
+
+Use the existing 300 × 300 Win11-style app mark as the optional Store tile. The PNG is also a packaged asset, and its source SVG is tracked with the project. [300 × 300 tile](../src/DccwPlus.App/Assets/Square150x150Logo.scale-200.png) · [Store tile guidance](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/screenshots-and-images#11-app-tile-icon-300-x-300-pixels)
+
+Capture the active comparison view on an independent SDR display in a local Windows session. Capture the final listing set from the Store release candidate after acceptance. Use development sandbox captures for layout and caption review.
 
 ## Notes for certification
 

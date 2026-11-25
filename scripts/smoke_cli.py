@@ -48,6 +48,8 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert public_commands["calibration confirm"]["effect"] == "display-change"
     assert public_commands["calibration confirm"]["supportsDryRun"] is False
     assert public_commands["calibration verify"]["effect"] == "read"
+    for action in ("enable", "disable"):
+        assert public_commands[f"startup {action}"]["effect"] == "local-write"
     assert call("calibration", "verify", str(uuid4()), expected=3)["code"] == "not_found"
     for group in ("calibration", "profiles"):
         assert public_commands[f"{group} observe"]["effect"] == "read"
@@ -153,7 +155,11 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     call("presets", "import", str(Path(directory) / "missing.json"), expected=3)
     call("nonsense", expected=2)
     call("status", "--unknown-option", expected=2)
-    call("startup", "status")
+    startup = call("startup", "status")
+    if startup["state"] == "unpackaged":
+        for action in ("enable", "disable"):
+            assert call("startup", action, expected=4)["code"] == "startup_unavailable"
+        assert call("startup", "status") == startup
     assert call("startup", "last-restore")["report"] is None
     assert call("bindings", "list") == []
     plan = call("bindings", "restore", "--dry-run")

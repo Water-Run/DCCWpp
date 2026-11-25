@@ -30,11 +30,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         RefreshDisplays();
         RefreshPresets();
     }
-    public void RefreshDisplays()
+    public bool RefreshDisplays()
     {
         var connected = new WindowsDisplayService().Enumerate();
+        if (Displays.SequenceEqual(connected)) return false;
         Displays.Clear();
         foreach (var display in connected) Displays.Add(display);
+        return true;
     }
     public void RefreshPresets()
     {

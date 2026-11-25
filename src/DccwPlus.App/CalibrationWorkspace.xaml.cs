@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using DccwPlus.Core.Calibration;
 using DccwPlus.Core.Presets;
 using DccwPlus.Core.Storage;
@@ -10,6 +11,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.Win32;
 using Windows.Globalization.NumberFormatting;
 
 namespace DccwPlus.App;
@@ -27,8 +29,9 @@ public sealed partial class CalibrationWorkspace : UserControl
     private readonly PreviewRecoveryService _recovery = new(DataPaths.DefaultRoot);
     private GammaCalibrationSession? _session;
     private CalibrationPreset _draft = CalibrationPreset.Create("Calibration");
-    private DispatcherQueueTimer? _timer, _debounce;
+    private DispatcherQueueTimer? _timer, _debounce, _displayRefresh;
     private bool _setting, _busy, _pushing, _dirty, _timerBusy;
+    private bool _displayRefreshPending, _closed;
     private bool _workerExited;
     private bool _calibrationPageVisible = true;
     private DateTimeOffset _lastHeartbeat;
@@ -65,15 +68,36 @@ public sealed partial class CalibrationWorkspace : UserControl
         _timer = DispatcherQueue.CreateTimer(); _timer.Interval = TimeSpan.FromSeconds(1); _timer.Tick += TimerTick;
         _debounce = DispatcherQueue.CreateTimer(); _debounce.Interval = TimeSpan.FromMilliseconds(180); _debounce.IsRepeating = false;
         _debounce.Tick += async (_, _) => await PushAsync();
+        var dispatcher = DispatcherQueue;
+        _displayRefresh = dispatcher.CreateTimer();
+        _displayRefresh.Interval = TimeSpan.FromMilliseconds(350);
+        _displayRefresh.IsRepeating = false;
+        _displayRefresh.Tick += RefreshDisplaysWhenIdle;
+        DisplayPicker.DropDownClosed += (_, _) => ScheduleDisplayRefresh();
+        EventHandler displaySettingsChanged = (_, _) => dispatcher.TryEnqueue(RequestDisplayRefresh);
+        bool watchingDisplay = false;
+        try
+        {
+            SystemEvents.DisplaySettingsChanged += displaySettingsChanged;
+            watchingDisplay = true;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ExternalException) { Debug.WriteLine(ex); }
         model.Text.LanguageChanged += (_, _) =>
         {
             UpdateDisplayOptions(SelectedDisplay);
             UpdateStepLabels(); UpdateStep(); UpdateUi(); RefreshRecovery();
         };
-        window.Closed += (_, _) => ClosePatternWindow();
+        window.Closed += (_, _) =>
+        {
+            _closed = true;
+            if (watchingDisplay) SystemEvents.DisplaySettingsChanged -= displaySettingsChanged;
+            _displayRefresh?.Stop();
+            ClosePatternWindow();
+        };
         window.Activated += (_, e) =>
         {
             TrackActiveWindow(window, e.WindowActivationState);
+            if (e.WindowActivationState != WindowActivationState.Deactivated) RequestDisplayRefresh();
             if (!_busy && e.WindowActivationState != WindowActivationState.Deactivated)
             {
                 UpdateUi();
@@ -92,7 +116,11 @@ public sealed partial class CalibrationWorkspace : UserControl
             _debounce?.Stop();
             ClosePatternWindow();
         }
-        else if (PreviewUpdatePending) _debounce?.Start();
+        else
+        {
+            RequestDisplayRefresh();
+            if (PreviewUpdatePending) _debounce?.Start();
+        }
     }
 
     internal Task CancelPreviewAsync() => CancelAsync();
@@ -404,6 +432,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         UpdateFullScreenControls();
         UpdateDisplaySummary(remote);
         ResetButton.Visibility = StepPicker.SelectedIndex is 1 or 4 ? Visibility.Visible : Visibility.Collapsed;
+        ScheduleDisplayRefresh();
         PreviewUiUpdated?.Invoke();
     }
 
@@ -537,23 +566,59 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
     private void RefreshClicked(object sender, RoutedEventArgs e)
     {
-        if (_model is null || Active) return;
-        var selected = SelectedDisplay;
-        try
-        {
-            _model.RefreshDisplays();
-            var current = MonitorIdentity.ResolveSelectedDisplay(selected, _model.Displays);
-            UpdateDisplayOptions(current);
-            UpdateDisplaySelection();
-            if (selected is not null && current is null) Show("DisplayUnavailable", InfoBarSeverity.Warning);
-        }
+        if (_model is null || Active || _busy) return;
+        _displayRefreshPending = false;
+        _displayRefresh?.Stop();
+        try { RefreshDisplayOptions(manual: true); }
         catch (Exception ex) { ShowError(ex); }
         RefreshRecovery();
     }
+
+    private bool CanRefreshDisplays => !_closed && _calibrationPageVisible && !Active && !_busy && !_pushing
+        && !DisplayPicker.IsDropDownOpen;
+
+    private void RequestDisplayRefresh()
+    {
+        _displayRefreshPending = true;
+        ScheduleDisplayRefresh();
+    }
+
+    private void ScheduleDisplayRefresh()
+    {
+        if (_displayRefreshPending && CanRefreshDisplays && _displayRefresh is { IsRunning: false } timer)
+            timer.Start();
+    }
+
+    private void RefreshDisplaysWhenIdle(DispatcherQueueTimer sender, object args)
+    {
+        if (!_displayRefreshPending || !CanRefreshDisplays) return;
+        _displayRefreshPending = false;
+        try { RefreshDisplayOptions(manual: false); }
+        catch (Exception ex) { Debug.WriteLine(ex); }
+    }
+
+    private void RefreshDisplayOptions(bool manual)
+    {
+        var selected = SelectedDisplay;
+        if (!_model!.RefreshDisplays() && !manual) return;
+
+        var current = MonitorIdentity.ResolveSelectedDisplay(selected, _model.Displays);
+        UpdateDisplayOptions(current);
+        bool lostSelection = selected is not null && current is null;
+        if (manual || lostSelection) UpdateDisplaySelection();
+        else
+        {
+            if (selected != current) ClosePatternWindow();
+            UpdateUi();
+        }
+        if (lostSelection) Show("DisplaySelectionLost", InfoBarSeverity.Warning);
+    }
+
     private DisplayInfo? CheckSelectedDisplay(DisplayInfo selected, IReadOnlyList<DisplayInfo> connected)
     {
         var current = MonitorIdentity.ResolveSelectedDisplay(selected, connected);
         if (current?.Id == selected.Id) return current;
+        RequestDisplayRefresh();
         Show("DisplayUnavailable", InfoBarSeverity.Warning);
         return null;
     }

@@ -81,6 +81,8 @@
               <Border Style="{StaticResource Card}"><StackPanel Spacing="12">
                 <ToggleSwitch x:Name="StartupToggle" Header="{Binding Text[Startup]}" OnContent="{Binding Text[On]}" OffContent="{Binding Text[Off]}" Toggled="StartupChanged" />
                 <TextBlock x:Name="StartupStateText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <HyperlinkButton x:Name="StartupSettingsLink" Content="{Binding Text[OpenWindowsStartupSettings]}"
+                                 Click="OpenWindowsStartupSettingsClicked" Visibility="Collapsed" />
                 <TextBlock Text="{Binding Text[StartupHint]}" TextWrapping="Wrap" />
                 <TextBlock x:Name="RestoreReportText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                            AutomationProperties.LiveSetting="Polite" />

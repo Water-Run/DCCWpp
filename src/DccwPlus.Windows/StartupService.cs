@@ -10,20 +10,26 @@ public sealed class StartupService
     public async Task<StartupStatus> GetAsync()
     {
         if (!HasPackageIdentity()) return new("unpackaged", false, false);
-        var tasks = await StartupTask.GetForCurrentPackageAsync();
-        var task = tasks.SingleOrDefault(task => task.TaskId == TaskId);
+        var task = await FindTaskAsync();
         return task is null ? new("unavailable", false, false) : Map(task.State);
     }
 
-    // Called only from the settings page on the UI thread.
     public async Task<StartupStatus> SetEnabledAsync(bool enabled)
     {
         if (!HasPackageIdentity()) return new("unpackaged", false, false);
-        var task = await StartupTask.GetAsync(TaskId);
-        if (enabled) return Map(await task.RequestEnableAsync());
-        task.Disable();
+        var task = await FindTaskAsync();
+        if (task is null) return new("unavailable", false, false);
+
+        var state = task.State;
+        if (enabled && state == StartupTaskState.Disabled)
+            return Map(await task.RequestEnableAsync());
+        if (!enabled && state == StartupTaskState.Enabled)
+            task.Disable();
         return Map(task.State);
     }
+
+    private static async Task<StartupTask?> FindTaskAsync() =>
+        (await StartupTask.GetForCurrentPackageAsync()).SingleOrDefault(task => task.TaskId == TaskId);
 
     public static bool HasPackageIdentity()
     {

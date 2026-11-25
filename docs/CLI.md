@@ -23,7 +23,7 @@ $cli = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\dccwpp.exe'
 | `effect` | 执行命令时可能产生的效果 |
 | --- | --- |
 | `read` | 查询数据或验证输入 |
-| `local-write` | 保存或修改本地文件、预设、显示观察或恢复偏好 |
+| `local-write` | 保存或修改本地文件、预设、显示观察、恢复偏好或 Windows 登录启动设置 |
 | `display-preview` | 开始或更新限时预览 |
 | `display-change` | 确认、取消或恢复显示状态 |
 
@@ -68,6 +68,8 @@ dccwpp presets bindings <preset-uuid> --json
 dccwpp presets delete <preset-uuid> --json
 dccwpp presets export <preset-uuid> ./export.dccw.json --json
 dccwpp startup status --json
+dccwpp startup enable --json
+dccwpp startup disable --json
 dccwpp startup last-restore --json
 dccwpp recovery status --json
 dccwpp bindings list --json
@@ -132,6 +134,14 @@ Windows 重新分配活动路径后，本地记录恢复按唯一的持久显示
 
 `startup status` 从当前 MSIX 包查询登录任务。未安装版返回 `unpackaged`，Windows 未报告任务时返回 `unavailable`。[Windows 包范围的 StartupTask 查询](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptask.getforcurrentpackageasync)
 
+`startup enable` 和 `startup disable` 显式启停当前 Windows 用户的 DCCW++ 登录任务。成功返回与 `startup status` 相同的字段，可重复调用。命令使用 Windows 的包任务接口，作用域由当前用户和包标识决定。逐屏恢复开关通过 `bindings enable` 和 `bindings disable` 控制。`--data-dir` 只影响应用数据目录。[Windows StartupTask](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptask?view=winrt-26100)
+
+若所请求状态未达成，命令返回退出码 4 和原因码。`startup_unavailable` 表示未装包或 Windows 未报告任务。`startup_disabled_by_user` 表示需通过 Windows 的启动应用设置重新启用。`startup_managed_by_policy` 表示组织策略控制，`startup_state_unchanged` 表示 Windows 未确认请求。用 `startup status` 可查看当前状态。[Windows 启动任务启用限制](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptask.requestenableasync?view=winrt-26100)
+
+成功响应反映查询时有效的 Windows 状态。管理员禁用任务时，`startup disable` 成功返回 `DisabledByPolicy`，原有用户偏好仍由 Windows 保留。若策略随后解除，请用 `startup status` 重新查询。[Windows StartupTask 状态](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptaskstate?view=winrt-26100)
+
+DCCW++ 设置页在状态为 `DisabledByUser` 时提供直达 Windows 启动应用设置的链接。返回 DCCW++ 时可查看更新后的任务状态。[Windows 设置入口](https://learn.microsoft.com/en-us/windows/apps/develop/launch/launch-settings)
+
 `bindings restore --dry-run` 生成恢复报告。去掉 `--dry-run` 会先尝试恢复中断预览，再为已启用且符合条件的绑定写回已确认的绝对曲线。只有原目标可唯一识别、当前为独立 SDR 路径、已确认的用户 ICC 仍被选用且摘要一致、当前曲线匹配已知基线时才写入。最后一次读回若发现 ICC 或作用域变化，所选显示器报告 `skipped` 和 `profile_selection_changed`。报告通过 `reason` 和每屏 `status` 表示结果，退出码 0 表示已生成报告。Windows 登录任务使用同一路径。`startup last-restore` 返回后台最近一次报告及触发原因，尚无报告时为 `null`。
 
 后台定期只读检查活动路径、分辨率、桌面位置、刷新率和色彩模式。即使系统未发通知，检测到变化也会触发 `display_changed` 并重新核对绑定。路径查询短暂不可用后重新可读时，原布局也会重新检查。SDR 路径检测到 MHC2 时，预演和实际恢复都会报告 `mhc2_profile_blocked`。[Windows 显示路径与模式](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/relationship-of-mode-information-to-path-information)
@@ -139,6 +149,8 @@ Windows 重新分配活动路径后，本地记录恢复按唯一的持久显示
 逐屏报告以 `profile_file_unavailable` 标识 ICC 文件无法读取，以 `restore_data_unavailable` 标识预设等本机数据无法读取。后台遇到 ICC 文件、关联状态或逻辑曲线暂时不可读时，每隔 3 秒重试，最多两次。确认摘要不匹配后保留 `profile_file_changed`，等待后续显示事件或手动操作。
 
 后台收到 `preview_busy` 后每 15 秒重试，同一批请求最多等待 31 分钟。等待期间合并显示通知，保留 `resume` 作为优先触发原因。每次尝试前重新读取 Windows 自启动状态和当前绑定。关闭自启动会结束待处理请求，最近一条后台报告可显示 `startup_disabled`。手动执行 `bindings restore` 仍立即返回本次结果。[Windows 登录任务状态](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptaskstate?view=winrt-26100)
+
+登录恢复在驱动写入前和最终读回后复核 Windows 权限。发现自启动关闭时停止当前批次并报告 `startup_disabled`。若复核超时或 Windows 的任务状态暂不可读，报告 `startup_unavailable`，后台按短间隔规则重试。在处理显示器期间停止时，尚未写入的显示器报告 `skipped`，已写入且仍由当前事务持有的曲线按原日志回滚。回滚未完成时，恢复报告仍显示 `recovery_required`。手动 `bindings restore` 使用逐屏恢复开关。
 
 校准操作：
 
@@ -209,6 +221,10 @@ Windows 提供完整活动路径与桌面几何信息时，Gamma 和 ICC 预览�
 保存时会在设置默认关联前后比对新 ICC 的安装摘要。回滚会检查事务已记录的 ICC 摘要和将要恢复的系统默认关联。`profile_file_changed` 表示同名文件的内容有变化，`profile_file_unavailable` 表示无法读取，`previous_system_profile_changed` 表示原来的系统默认关联已更改。无法核对的回滚保留为 `recovery-pending`，可通过 `recovery status` 查看。旧中断日志仍使用其中已有的证据恢复。
 
 切换 ICC 后，保存或撤回只会从已记录的原曲线或线性曲线重新写入候选曲线。发现未知曲线会返回 `external_curve_change` 或 `undo_curve_changed`。回滚时，如果验证了事务的 ICC 关联回退且原显示路径与拓扑始终一致，也可恢复在回滚开始前已重置为线性的曲线。如果曲线在 ICC 回退时才变为线性，则切换前必须能确认曲线归属，且切换过程中显示路径与拓扑要保持一致。写回前，日志会记录此前未登记的线性回滚起点。发现无法确认归属的曲线时会停止曲线写入，并在日志记录 `superseded`。恢复完成仍以读回为准。
+
+如果回滚在确认了原路径、已知曲线和事务 ICC 后即将切换关联，工作进程会先记录切换可能导致线性重置。若切换后读回前中断，重试会核对原路径、拓扑和原 ICC 选择，再判断是否可从线性曲线继续恢复。原路径不匹配或读到未知曲线时，仍按现有恢复规则处理。
+
+关联回滚在写入前再次读取活动路径、有效 ICC、选用的作用域和每用户默认 ICC。路径或拓扑在本次恢复期间变化时保留待恢复状态。检测到外部选用的 ICC 或作用域改变时，保留新的关联并记录 `external_profile_change`。若回退依赖原系统默认 ICC，也会再次核对该默认配置。若最后核对确认本次未写入，因目标或系统默认配置变化而待恢复的日志只保留更早尝试的线性重置依据。
 
 Gamma 参数的中性位置为 2.2，曲线按 `x^(2.2/gamma)` 和通道增益调整后，再与开始时捕获的曲线组合。这是视觉调整参数，不是对面板物理 Gamma 的测量。确认的绝对曲线保存在 ICC `vcgt` 中；再次恢复已确认曲线不能重复叠加预设。
 

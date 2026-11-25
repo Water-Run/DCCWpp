@@ -43,10 +43,13 @@ public sealed class CalibrationBindingService(string root)
         return updated;
     }
 
-    public CalibrationRestoreReport Restore(bool dryRun)
+    public CalibrationRestoreReport Restore(bool dryRun) => Restore(dryRun, getCancellationReason: null);
+
+    private CalibrationRestoreReport Restore(bool dryRun, Func<string?>? getCancellationReason)
     {
         using var gate = DisplayMutationLock.TryAcquire();
         if (gate is null) return Report("preview_busy");
+        if (getCancellationReason?.Invoke() is { } canceled) return Report(canceled);
 
         var recovery = new PreviewRecoveryService(root);
         if (dryRun && recovery.List().Any(item => item.Kind != "binding")) return Report("recovery_required");
@@ -64,18 +67,21 @@ public sealed class CalibrationBindingService(string root)
         var results = new List<BindingRestoreResult>(bindings.Length);
         foreach (var binding in bindings)
         {
-            results.Add(restorer.Restore(binding, dryRun));
+            var result = restorer.Restore(binding, dryRun, getCancellationReason);
+            results.Add(result);
             // Stop if a restore created a new incomplete transaction.
             if (!dryRun && gammaStore.Sessions().Any(s => s.NeedsRecovery))
                 return Report("recovery_required", results, recoveries);
+            if (result.ReasonCode is "startup_disabled" or "startup_unavailable")
+                return Report(result.ReasonCode, results, recoveries);
         }
         return Report(dryRun ? "restore_plan" : "restore_finished", results, recoveries);
     }
 
-    public CalibrationRestoreReport RunStartup(bool enabled, string trigger)
+    internal CalibrationRestoreReport RunStartup(bool enabled, string trigger, Func<string?> getCancellationReason)
     {
         CalibrationRestoreReport report;
-        try { report = enabled ? Restore(dryRun: false) : Report("startup_disabled"); }
+        try { report = enabled ? Restore(dryRun: false, getCancellationReason) : Report("startup_disabled"); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ProfilePreviewException or JsonException or InvalidDataException)
         {
             report = Report(ex is ProfilePreviewException p ? p.Code : "restore_data_unavailable");

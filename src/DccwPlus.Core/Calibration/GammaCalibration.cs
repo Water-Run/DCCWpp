@@ -43,6 +43,8 @@ public sealed record GammaCalibrationSession
     public bool IsBindingRestore { get; init; }
     public Guid? UndoOf { get; init; }
     public bool ProfileCommitStarted { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ProfileRollbackMayResetCurve { get; init; }
     public bool ColorAccuracyVerified => false;
     public bool NeedsRecovery => Status is "prepared" or "applying" or "previewing" or "committing" or "recovering" or "recovery-pending";
     [JsonIgnore]
@@ -58,12 +60,14 @@ public interface IGammaCalibrationBackend
     // Return the intended ICC selection for the transaction's final readback.
     GammaProfileSelection Commit(GammaCalibrationSession session);
     // Returns true for a verified reversal of the session's ICC selection from the expected pre-restore state.
-    bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected);
+    // Call beforeSelectionRestore after validating that state and before changing the effective selection.
+    // recovery_target_changed and previous_system_profile_changed reject the operation before an ICC write.
+    bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null);
 }
 public interface IGammaCalibrationJournal { void Save(GammaCalibrationSession session); }
 
 public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend, IGammaCalibrationJournal journal,
-    TimeProvider? timeProvider = null, Func<bool>? isOwnerAlive = null)
+    TimeProvider? timeProvider = null, Func<bool>? isOwnerAlive = null, Func<string?>? getCancellationReason = null)
 {
     public const int ReadbackTolerance = 257;
     public static TimeSpan WindowPreviewLimit { get; } = TimeSpan.FromMinutes(30);
@@ -184,6 +188,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
                 throw new IOException("Calibration curve changed while saving the profile.");
             if (!selection.Matches(current))
                 throw new ProfilePreviewException("profile_selection_changed", new LocalizationService()["ProfileChangedBeforeSave"]);
+            if (Session.IsBindingRestore && getCancellationReason?.Invoke() is { } canceled) return Revert(canceled);
             if (!Session.IsBindingRestore) Session = Session with { BindingStatus = "pending" };
             Persist("confirmed", "confirmed", true);
         }
@@ -200,7 +205,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         // The applying journal must exist before any curve write can begin.
         if (Session.Status == "prepared")
         {
-            Persist("reverted", reason is "preview_expired" or "owner_exited" ? reason : "preview_not_applied");
+            Persist("reverted", reason is "preview_expired" or "owner_exited" or "startup_disabled" or "startup_unavailable" ? reason : "preview_not_applied");
             return Session;
         }
         try
@@ -220,14 +225,26 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
             if (profileCommit)
             {
                 // Even if the curve has changed, remove an association created by an interrupted commit.
-                selectionRestored = backend.RestoreProfile(Session, current);
+                bool canRecordReset = SameTarget(original, current) && !SameProfile(original, current)
+                    && (ownsCurve || GammaRamp.Identity().Matches(current.Ramp, ReadbackTolerance));
+                bool previousResetIntent = Session.ProfileRollbackMayResetCurve;
+                try { selectionRestored = backend.RestoreProfile(Session, current, canRecordReset ? RecordProfileRollback : null); }
+                catch (ProfilePreviewException ex) when (!previousResetIntent && Session!.ProfileRollbackMayResetCurve
+                    && ex.Code is "recovery_target_changed" or "previous_system_profile_changed")
+                {
+                    // The final check refused this attempt before a native write. Keep evidence from earlier attempts only.
+                    Session = Session with { ProfileRollbackMayResetCurve = false };
+                    throw;
+                }
                 current = backend.Read(target.DisplayId);
             }
             if (!SameRecoveryTarget(target, current)) return Pending("recovery_target_changed");
             if (!SameProfile(Session.Original, current)) return Pending("profile_restore_not_verified");
             if (!current.Ramp.Matches(Session.Original.Ramp, ReadbackTolerance))
             {
-                var linear = selectionRestored && SameTarget(beforeProfileRestore, current) ? GammaRamp.Identity() : null;
+                bool mayHaveReset = SameTarget(beforeProfileRestore, current)
+                    && (selectionRestored || (Session.ProfileRollbackMayResetCurve && SameTarget(original, beforeProfileRestore)));
+                var linear = mayHaveReset ? GammaRamp.Identity() : null;
                 // The original ICC switch may already have reset the curve before rollback began.
                 bool resetBeforeRestore = linear?.Matches(beforeProfileRestore.Ramp, ReadbackTolerance) == true
                     && SameTarget(original, beforeProfileRestore);
@@ -258,6 +275,16 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
         catch { return Pending("restore_failed"); }
         return Session;
     }
+
+    private void RecordProfileRollback()
+    {
+        if (Session!.ProfileRollbackMayResetCurve) return;
+        // Keep the authorization if the process stops after switching ICC and before reading the curve.
+        var intent = Session with { ProfileRollbackMayResetCurve = true };
+        journal.Save(intent);
+        Session = intent;
+    }
+
     public GammaCalibrationSession Recover(GammaCalibrationSession saved)
     {
         if (Session is not null) throw new InvalidOperationException("This transaction already has a session.");
@@ -273,9 +300,11 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
     private string? StopReason(out long now, out DateTimeOffset utcNow)
     {
         bool ownerExited = isOwnerAlive?.Invoke() == false;
+        string? canceled = getCancellationReason?.Invoke();
         now = _time.GetTimestamp();
         utcNow = _time.GetUtcNow();
         if (ownerExited) return "owner_exited";
+        if (canceled is not null) return canceled;
         return _time.GetElapsedTime(_deadlineStart, now) >= _deadlineDuration || utcNow >= Session!.ExpiresAt ? "preview_expired" : null;
     }
     private void Apply(GammaRamp ramp)

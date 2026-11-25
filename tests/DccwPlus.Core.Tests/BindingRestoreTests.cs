@@ -25,6 +25,49 @@ public sealed class BindingRestoreTests
         Assert.Equal(writes, test.Backend.Writes);
     }
 
+    [Fact]
+    public void StartupAlreadyDisabledDoesNotPrepareARestore()
+    {
+        var test = new Fixture();
+
+        var result = test.Restorer.Restore(test.Binding, dryRun: false, getCancellationReason: () => "startup_disabled");
+
+        Assert.Equal("skipped", result.Status);
+        Assert.Equal("startup_disabled", result.ReasonCode);
+        Assert.Equal(0, test.Backend.Writes);
+        Assert.Empty(test.Journal.Sessions);
+    }
+
+    [Theory]
+    [InlineData("before_write", "startup_disabled", 0)]
+    [InlineData("after_write", "startup_disabled", 2)]
+    [InlineData("final_readback", "startup_disabled", 3)]
+    [InlineData("after_write", "startup_unavailable", 2)]
+    public void StartupPermissionLostDuringRestoreCannotLeaveTheSavedCurveActive(string when, string reason, int expectedWrites)
+    {
+        var test = new Fixture();
+        var original = test.Backend.State.Ramp;
+        bool startupEnabled = true;
+        if (when == "before_write") test.Backend.BeforeWrite = () => startupEnabled = false;
+        if (when == "after_write") test.Backend.AfterWrite = () => startupEnabled = false;
+        if (when == "final_readback") test.ReadHash = () =>
+        {
+            if (test.Journal.Sessions.LastOrDefault()?.Status == "committing") startupEnabled = false;
+            return test.ProfileHash;
+        };
+
+        var result = test.Restorer.Restore(test.Binding, dryRun: false, getCancellationReason: () => startupEnabled ? null : reason);
+
+        Assert.False(startupEnabled);
+        Assert.Equal("skipped", result.Status);
+        Assert.Equal(reason, result.ReasonCode);
+        Assert.Equal(expectedWrites, test.Backend.Writes);
+        Assert.True(test.Backend.State.Ramp.Matches(original));
+        Assert.Equal("reverted", test.Journal.Sessions[^1].Status);
+        Assert.Equal(reason, test.Journal.Sessions[^1].ReasonCode);
+        Assert.Equal(expectedWrites > 0, test.Journal.Sessions[^1].CurveReadbackVerified);
+    }
+
     [Theory]
     [InlineData("binding_disabled")]
     [InlineData("display_disconnected")]
@@ -183,16 +226,20 @@ public sealed class BindingRestoreTests
         public int Writes { get; private set; }
         public GammaDeviceState State { get; set; } = initial;
         public Func<int, GammaDeviceState>? OnRead { get; set; }
+        public Action? BeforeWrite { get; set; }
+        public Action? AfterWrite { get; set; }
         public GammaDeviceState Read(string displayId) => OnRead?.Invoke(++_reads) ?? State;
         public bool TryWrite(GammaDeviceState expected, GammaRamp ramp, Func<bool>? canWrite = null)
         {
+            BeforeWrite?.Invoke();
             if (canWrite?.Invoke() == false) return false;
             Writes++;
             State = State with { Ramp = ramp.Copy() };
+            AfterWrite?.Invoke();
             return true;
         }
         public GammaProfileSelection Commit(GammaCalibrationSession session) => throw new InvalidOperationException("The restore must reuse the selected profile.");
-        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected) =>
+        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null) =>
             throw new InvalidOperationException("The restore must not change the profile.");
     }
 

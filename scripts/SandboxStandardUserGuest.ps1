@@ -192,6 +192,28 @@ public static class SandboxIccProfile {
             $startup.data.state -ne 'Disabled') {
             throw 'The packaged startup task did not report the clean-install default of Disabled.'
         }
+        if ($capabilities.commands.name -contains 'startup enable') {
+            $result.step = 'cli_startup_controls'
+            try {
+                foreach ($command in 'enable', 'enable', 'status') {
+                    $state = Invoke-PackagedCli $alias @('startup', $command)
+                    if (!$state.isEnabled -or $state.state -ne 'Enabled' -or $state.canEnable) {
+                        throw "Packaged startup $command did not report Enabled."
+                    }
+                }
+            }
+            finally {
+                $disabled = Invoke-PackagedCli $alias @('startup', 'disable')
+            }
+            $disabledAgain = Invoke-PackagedCli $alias @('startup', 'disable')
+            $statusAfter = Invoke-PackagedCli $alias @('startup', 'status')
+            foreach ($state in @($disabled, $disabledAgain, $statusAfter)) {
+                if ($state.isEnabled -or $state.state -ne 'Disabled' -or !$state.canEnable) {
+                    throw 'Packaged startup did not return to Disabled.'
+                }
+            }
+            $result.cliStartupControls = $true
+        }
         $result.step = 'package_remove'
     }
     finally {

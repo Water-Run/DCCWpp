@@ -205,9 +205,10 @@ public sealed class CalibrationUndoTests
             AfterCommit?.Invoke();
             return new(saved.Original.ProfileName, saved.Original.ProfileScope, saved.Original.SelectedProfileScope);
         }
-        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected)
+        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null)
         {
             bool changed = !GammaCalibrationTransaction.SameProfile(session.Original, Current);
+            if (changed) beforeSelectionRestore?.Invoke();
             Current = Current with { ProfileName = session.Original.ProfileName, ProfileScope = session.Original.ProfileScope,
                 SelectedProfileScope = session.Original.SelectedProfileScope };
             ProfileWrites++;

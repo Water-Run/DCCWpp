@@ -8,7 +8,7 @@ DCCW++ is a native WinUI 3 display color calibration app for Windows 11. It aims
 
 **0.2 is a development milestone.** The SDR wizard, timed preview and recovery, and ICC save flow are implemented. Physical display behavior, ICC installation and restoration on supported hardware, and packaged end-to-end behavior still need acceptance testing. The Microsoft Store release is pending.
 
-- Select a display and step through gamma, brightness, contrast, grayscale color balance, and before/after comparison. Refreshing the display list keeps a verifiable selection or prompts you to choose again. Step navigation and calibration actions stay visible as the reference content scrolls. Inspect near-black and near-white patches, compare the curves in full screen, or skip hardware controls. The app can open Windows ClearType tuning after calibration.
+- Select a display and step through gamma, brightness, contrast, grayscale color balance, and before/after comparison. When the wizard is idle, it refreshes the display list after a Windows display notification or when you return to it. It keeps a verifiable selection or prompts you to choose again. Step navigation and calibration actions stay visible as the reference content scrolls. Inspect near-black and near-white patches, compare the curves in full screen, or skip hardware controls. The app can open Windows ClearType tuning after calibration.
 - Preview an SDR curve with a bounded timer and an independent recovery process. Confirm to generate an ICC profile with the new curve, verify the installed file, and associate it with the selected display. Driver readback can verify the logical curve. Optical results require separate validation.
 - Undo a saved calibration on the selected display. A timed preview shows the previous curve before you confirm the change to the previous Windows profile and its scope. Undo can follow a changed active path when Windows reports the same unique display and profile device.
 - Find and recover interrupted curve or ICC previews from the wizard or the CLI. Recovery can follow a reassigned display path when the journal identifies the same unique display and Windows profile device. If confirmation completed before the worker exited, recovery can finish the saved preset and automatic restore records after checking the current display and the recorded binding.
@@ -53,6 +53,7 @@ dccwpp.exe calibration verify $calibrationId --json
 dccwpp.exe calibration preview --display $displayId --gamma 2.3 --red-gain 0.97 --dry-run --json
 dccwpp.exe apply $presetId --display $displayId --dry-run --json
 dccwpp.exe bindings restore --dry-run --json
+dccwpp.exe startup status --json
 dccwpp.exe startup last-restore --json
 dccwpp.exe recovery status --json
 ```
@@ -68,6 +69,10 @@ If `confirm` or `revert` returns exit code 4 with `error.code` set to `recovery_
 A late `calibration update`, an ICC confirmation or revert that did not reach the requested state, and an ICC recovery that remains pending return exit code 4. Read `error.code` for the reason and use the corresponding `status` command for the full session.
 
 `calibration confirm` uses the recorded display outcome if the worker encounters a later error writing local records. If a confirmed session reports `bindingStatus: pending`, query it with `calibration status <session-id> --json` and try `calibration recover <session-id> --json` to finish the local records. Use `recovery status --json` to find outstanding work across sessions.
+
+In the installed MSIX, `startup enable --json` and `startup disable --json` control the current user's DCCW++ sign-in task. Use `startup status --json` to read the Windows state and `bindings list --json` to inspect the separate per-display restore preferences. If the user turned DCCW++ off in Windows Startup apps, `startup enable` returns exit code 4 and `startup_disabled_by_user`. DCCW++ Settings links to the Windows page where the user can re-enable it.
+
+If Windows disables the task by policy, `startup status` returns `DisabledByPolicy` and `startup enable` returns exit code 4 and `startup_managed_by_policy`. In that state, `startup disable` returns the current effective state and leaves the prior user preference in place.
 
 Generate a UUID before starting a preview with `calibration preview`, `apply`, `calibration undo`, or `profiles preview` and pass it as `--request-id`. If the response is lost, use that UUID to check the session or retry the same command and arguments. Check the exit code and JSON `ok` field, then read the outcome fields in `data`. The [CLI reference](docs/CLI.md) covers command effects, transaction states, and exit codes.
 

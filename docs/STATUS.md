@@ -1,5 +1,47 @@
 # 开发交接
 
+## 2026-11-25 · 在登录恢复写入前复核 Windows 权限
+
+- 后台在恢复事务开始时、曲线写入前和最终读回之后重新查询 Windows 登录任务。禁用时停止当前批次。任务状态暂不可读或查询超时时，以 `startup_unavailable` 暂缓恢复。已经写入的曲线按现有事务回滚规则处理，未完成的回滚继续留在恢复报告中。[CLI 契约](CLI.md)
+- 新增七项模拟用例，覆盖未获许可即开始、写入前后禁用、最终读回时禁用、查询临时失败及后台停止与重试。353 项单元及模拟测试、166 项本机 CLI 进程检查和 x64 开发 MSIX 内容校验通过。实机驱动写入与回滚仍待验收。
+- Windows Sandbox build 26100 用普通用户登录新版 x64 开发包，观察到断开显示器报告 `display_disconnected`。设备策略禁用后后台退出且下次登录未启动。关闭逐屏开关后，手动预演报告 `no_bindings_enabled`。校准会话数为零，测试结束后移除绑定并卸载开发包。记录位于 `artifacts/startup-restore-permission-lab/d6807c18-3e2d-4c6f-87e6-bb434d51b1f9/results/startup-restore-permission-summary.json`。
+
+## 2026-11-25 · Windows 设备策略禁用登录启动
+
+- 用 `e4eb44f` 的 x64 开发 MSIX 在 Windows Sandbox build 26100 验收。普通用户原先启用任务，重新登录启动无窗口后台。由沙盒管理员设置 Windows 设备策略后，`startup status` 返回 `DisabledByPolicy`，`startup enable` 返回退出码 4 与 `startup_managed_by_policy`，`startup disable` 返回当前有效状态。设置页显示组织策略提示和关闭的开关。[Windows 策略配置参考](https://learn.microsoft.com/en-us/microsoftteams/teams-client-vdi-requirements-deploy#teams-autostart) · [CLI 契约](CLI.md)
+- 后台在策略生效后退出。再次登录未启动后台，上次恢复报告保持原样。还原沙盒策略后，Windows 重新报告原有的 `Enabled` 用户偏好。最后通过 CLI 关闭任务并卸载开发包，测试创建的显示绑定和校准会话均为零。验收记录位于 `artifacts/startup-admin-policy/a14aa7dd-a949-44fe-93b0-6737e9b791f2/results/startup-admin-policy-summary.json`。
+
+## 2026-11-25 · Windows 启动应用禁用后的 CLI 与设置页
+
+- Windows 报告 `DisabledByUser` 时，CLI 用 `startup_disabled_by_user` 和退出码 4 报告启用请求结果。DCCW++ 设置页显示直达 Windows「启动应用」的三语链接，返回应用时刷新任务状态。[CLI 契约](CLI.md)
+- Windows Sandbox build 26100 的普通用户用装包别名启用登录任务，经重新登录观察到无窗口后台进程，再从 Windows「启动应用」关闭。已核对 CLI 原因码、DCCW++ 设置页链接确实打开 Windows 页面，以及后台进程退出。禁用后再次登录，禁用状态和上次恢复报告都保持原样。沙盒中无显示绑定或校准会话，检查完毕后卸载开发包。记录位于 `artifacts/startup-user-settings/9e792179-53a7-4a4b-a315-07e4c8b15ece/results/startup-user-settings-summary.json`。
+- 346 项单元及模拟测试、166 项本机 CLI 进程检查和 x64 开发 MSIX 内容校验通过。实机 SDR、组织策略和商店签名包仍待验收。
+
+## 2026-11-25 · CLI 启停 Windows 登录任务
+
+- 装包 CLI 新增 `startup enable` 和 `startup disable`，与设置页使用同一个 Windows 包启动任务。命令报告实际读到的状态并尊重 Windows 用户禁用及组织策略。返回设置页或重新激活窗口时刷新任务状态。[CLI 契约](CLI.md)
+- 346 项单元及模拟测试、160 项本机 CLI 进程检查和 x64 开发 MSIX 内容校验通过。Windows Sandbox build 26100 的普通用户通过装包别名重复启停，读回状态一致，测试结束恢复为关闭并卸载开发包。实机恢复和组织策略仍待验收。
+
+## 2026-11-25 · ICC 回滚写入前复核
+
+- 在恢复意图落盘和 ICC 文件核验之后，再次读取活动路径、有效配置、选用作用域及每用户默认配置。需要回退到系统默认时再核对系统默认。记录因目标或系统默认变化而拒写的结果时，移除本次尝试的线性重置依据。[CLI 契约](CLI.md)
+- 两个回归用例复现被拒绝的回滚仍保留本次重置依据。修正后核对了重试、保留早先的恢复依据、目标或模式变化及有效或未使用的每用户配置变化。346 项单元及模拟测试、157 项本机 CLI 进程检查和 x64 开发 MSIX 内容校验通过。实机回滚仍待验收。
+
+## 2026-11-25 · ICC 关联回滚在曲线读回前中断
+
+- 保存或撤回的回滚在确认原显示路径与曲线归属后，先记录 ICC 切换可能引起线性重置，再执行关联写入。切换后中断时，重试会重新核对原拓扑、ICC 和作用域。读到其他曲线或拓扑变化时继续按现有恢复规则处理。[CLI 契约](CLI.md)
+- 用实际持久日志模拟切换后丢失读回。同一拓扑恢复非线性原曲线，外部曲线和拓扑变动时保留当前曲线。意图日志写入失败时保留待恢复状态。336 项单元及模拟测试、157 项本机 CLI 进程检查和 x64 开发 MSIX 内容校验通过。实机回滚及驱动行为仍待验收。
+
+## 2026-11-25 · 商店素材草稿更新
+
+- 用 GitHub 构建 `5605774` 的 x64 `0.2.0.0` 开发包，在 Windows Sandbox build 26100 的普通用户桌面采集英语、简体中文和繁体中文截图。每种语言覆盖 Gamma、亮度、灰阶、预设和登录设置。15 张 PNG 均为 2338 × 1197。采集期间校准会话数为零，采集后已卸载开发包。[构建记录](https://github.com/Water-Run/DCCWpp/actions/runs/45506030579)
+- 草稿归档位于 `artifacts/store-screenshots/current-capture/5605774/DCCWPlus-Store-assets-draft-5605774.zip`。归档包括三语字幕、300 × 300 商店图标、商店文案与来源记录。已核对开发包、源码归档及每项图像的 SHA-256。活动对比图和正式发布候选截图仍待本地 SDR 会话采集。[商店素材](STORE_LISTING.md)
+
+## 2026-11-25 · 向导自动刷新显示列表
+
+- 向导空闲时，在 Windows 显示设置通知、重新激活窗口或返回校准页后刷新。显示操作进行中或选屏下拉菜单打开时延后刷新。只有原显示器仍可识别时才保留选择。无法匹配时清空并提示重新选择。[向导验收项](ROADMAP.md)
+- 332 项单元及模拟测试、157 项本机 CLI 进程检查和 x64 开发 MSIX 内容校验通过。物理屏幕热插拔和 HDR 切换仍待实机验收。
+
 ## 2026-11-25 · ICC 与撤回预演的显示协调
 
 - Gamma、ICC 和撤回预演使用同一个显示操作锁及待恢复检查。实际工作进程再次检查。向导的撤回操作可显示本地化的忙碌或待恢复提示。[CLI 契约](CLI.md)

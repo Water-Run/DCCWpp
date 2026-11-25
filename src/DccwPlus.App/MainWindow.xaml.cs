@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using DccwPlus.Core.Presets;
 using DccwPlus.Core.Storage;
@@ -36,6 +37,11 @@ public sealed partial class MainWindow : Window
         Navigation.SelectedItem = CalibrationNav;
         UpdateLanguage(); _updating = false;
         Root.Loaded += async (_, _) => await RefreshStartupAsync();
+        Activated += async (_, e) =>
+        {
+            if (e.WindowActivationState != WindowActivationState.Deactivated && SettingsPanel.Visibility == Visibility.Visible)
+                await RefreshStartupAsync();
+        };
     }
     private void NavigationChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
@@ -57,7 +63,11 @@ public sealed partial class MainWindow : Window
         Workspace.SetCalibrationPageVisible(page == "calibration");
         UpdateBackgroundPreview();
         Model.Status = "";
-        if (page == "settings") RefreshBindings();
+        if (page == "settings")
+        {
+            RefreshBindings();
+            _ = RefreshStartupAsync();
+        }
         if (page == "presets") UpdatePresetSelection();
     }
     private void UpdateBackgroundPreview()
@@ -263,22 +273,36 @@ public sealed partial class MainWindow : Window
         }
         finally { _updatingLanguage = false; }
     }
-    private async Task RefreshStartupAsync()
+    private async Task RefreshStartupAsync(bool? enabled = null)
+    {
+        if (_updating) return;
+        _updating = true;
+        StartupToggle.IsEnabled = false;
+        try
+        {
+            if (enabled is bool request)
+            {
+                try { await _startup.SetEnabledAsync(request); }
+                catch (Exception ex) { ShowError(ex); }
+            }
+            var state = await _startup.GetAsync();
+            StartupToggle.IsOn = state.IsEnabled;
+            StartupToggle.IsEnabled = (state.CanEnable || state.IsEnabled) && !state.State.Contains("Policy", StringComparison.Ordinal);
+            StartupStateText.Text = Model.Text["StartupState_" + state.State];
+            StartupSettingsLink.Visibility = state.State == "DisabledByUser" ? Visibility.Visible : Visibility.Collapsed;
+        }
+        catch (Exception ex) { ShowError(ex); StartupSettingsLink.Visibility = Visibility.Collapsed; }
+        finally { _updating = false; }
+    }
+    private async void StartupChanged(object sender, RoutedEventArgs e) => await RefreshStartupAsync(StartupToggle.IsOn);
+
+    private void OpenWindowsStartupSettingsClicked(object sender, RoutedEventArgs e)
     {
         try
         {
-            var state = await _startup.GetAsync(); _updating = true; StartupToggle.IsOn = state.IsEnabled;
-            StartupToggle.IsEnabled = (state.CanEnable || state.IsEnabled) && !state.State.Contains("Policy", StringComparison.Ordinal);
-            StartupStateText.Text = Model.Text["StartupState_" + state.State];
+            using var process = Process.Start(new ProcessStartInfo("ms-settings:startupapps") { UseShellExecute = true });
         }
-        catch (Exception ex) { ShowError(ex); StartupToggle.IsEnabled = false; }
-        finally { _updating = false; }
-    }
-    private async void StartupChanged(object sender, RoutedEventArgs e)
-    {
-        if (_updating) return;
-        try { await _startup.SetEnabledAsync(StartupToggle.IsOn); } catch (Exception ex) { ShowError(ex); }
-        await RefreshStartupAsync();
+        catch (Exception ex) { ShowError(ex); }
     }
 
     private void RefreshRestoreResultsClicked(object sender, RoutedEventArgs e) => RefreshBindings();
@@ -341,6 +365,7 @@ public sealed partial class MainWindow : Window
         {
             "no_bindings_enabled" => "RestoreNoBindings",
             "startup_disabled" => "RestoreStartupDisabled",
+            "startup_unavailable" => "StartupState_unavailable",
             "preview_busy" => "RestorePreviewBusy",
             "recovery_required" => "RecoveryMessage",
             "binding_disabled" => "RestoreBindingDisabled",

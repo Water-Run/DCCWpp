@@ -91,7 +91,8 @@ public sealed partial class WindowsGammaCalibrationBackend
         return selection;
     }
 
-    private bool RestoreUndoProfile(GammaCalibrationSession undo, Guid calibrationId, GammaDeviceState expected, GammaDeviceState current)
+    private bool RestoreUndoProfile(GammaCalibrationSession undo, Guid calibrationId, GammaDeviceState expected, GammaDeviceState current,
+        Action? beforeSelectionRestore)
     {
         var saved = _store.Load(calibrationId);
         CalibrationUndoPolicy.VerifySource(saved);
@@ -120,8 +121,12 @@ public sealed partial class WindowsGammaCalibrationBackend
 
         VerifyProfileHash(backup.EffectiveDefault, backup.EffectiveDefaultHash);
         VerifyProfileHash(backup.UserDefault, backup.UserDefaultHash);
-        if (WindowsProfileAssociationBackend.List(backup.TargetKey, backup.SourceId, 1)
-            .Contains(backup.CandidateName, StringComparer.OrdinalIgnoreCase))
+        bool alreadyAssociated = WindowsProfileAssociationBackend.List(backup.TargetKey, backup.SourceId, 1)
+            .Contains(backup.CandidateName, StringComparer.OrdinalIgnoreCase);
+        beforeSelectionRestore?.Invoke();
+        VerifyAssociationWriteState(current, Read(current.DisplayId), scope, ReadScope(adapter, backup.SourceId),
+            userDefault, ReadDefault(adapter, backup.SourceId, CurrentUser));
+        if (alreadyAssociated)
             Check(ColorProfileSetDisplayDefaultAssociation(1, backup.CandidateName, 0, 4, adapter, backup.SourceId));
         else
             Check(ColorProfileAddDisplayAssociation(1, backup.CandidateName, adapter, backup.SourceId, true, false));

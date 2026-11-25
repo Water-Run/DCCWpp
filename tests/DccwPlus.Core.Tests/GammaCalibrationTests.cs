@@ -110,6 +110,97 @@ public sealed class GammaCalibrationTests
     }
 
     [Theory]
+    [InlineData("same-path", "reverted")]
+    [InlineData("different-topology", "superseded")]
+    [InlineData("external-curve", "superseded")]
+    public void IccRollbackRechecksItsRecordedLinearResetAfterTheReadbackIsInterrupted(string condition, string expected)
+    {
+        string root = Directory.CreateTempSubdirectory("dccwpp-icc-rollback-").FullName;
+        try { VerifyInterruptedIccRollback(root, condition, expected); }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private static void VerifyInterruptedIccRollback(string root, string condition, string expected)
+    {
+        var fixture = new Fixture();
+        var interrupted = BeginInterruptedCommit(fixture);
+        var store = new GammaCalibrationStore(root);
+        GammaCalibrationSession? beforeReadback = null;
+        fixture.Backend.RestoredProfileRamp = GammaRamp.Identity();
+        fixture.Backend.AfterRestoreProfile = () =>
+        {
+            beforeReadback = store.Load(interrupted.Id);
+            fixture.Backend.BeforeRead = () => throw new IOException("Simulated lost readback immediately after the ICC switch.");
+        };
+        store.Save(interrupted);
+        var pending = new GammaCalibrationTransaction(fixture.Backend, store).Recover(interrupted);
+        Assert.Equal("recovery-pending", pending.Status);
+        Assert.True(GammaCalibrationTransaction.SameProfile(interrupted.Original, fixture.Backend.State));
+        var saved = Assert.IsType<GammaCalibrationSession>(beforeReadback);
+        Assert.True(saved.ProfileRollbackMayResetCurve);
+        Assert.Equal("recovering", saved.Status);
+
+        fixture.Backend.AfterRestoreProfile = null;
+        fixture.Backend.BeforeRead = null;
+        if (condition == "different-topology")
+            fixture.Backend.State = fixture.Backend.State with { TopologyFingerprint = new string('B', 64) };
+        if (condition == "external-curve")
+            fixture.Backend.State = fixture.Backend.State with
+            { Ramp = GammaRampMath.Compose(GammaRamp.Identity(), new() { BlueGain = .8 }) };
+        var observedRamp = fixture.Backend.State.Ramp;
+
+        var recovered = new GammaCalibrationTransaction(fixture.Backend, store).Recover(saved);
+
+        Assert.Equal(expected, recovered.Status);
+        Assert.Equal(expected == "reverted", recovered.CurveReadbackVerified);
+        Assert.True(fixture.Backend.State.Ramp.Matches(expected == "reverted" ? interrupted.Original.Ramp : observedRamp));
+    }
+
+    [Fact]
+    public void IccRollbackWaitsWhenItCannotRecordThePossibleLinearReset()
+    {
+        var fixture = new Fixture();
+        var interrupted = BeginInterruptedCommit(fixture);
+        var before = fixture.Backend.State;
+        fixture.Journal.BeforeSave = session =>
+        {
+            if (session.ProfileRollbackMayResetCurve) throw new IOException("Could not save before the ICC switch.");
+        };
+
+        var pending = new GammaCalibrationTransaction(fixture.Backend, fixture.Journal).Recover(interrupted);
+
+        Assert.Equal("recovery-pending", pending.Status);
+        Assert.False(pending.ProfileRollbackMayResetCurve);
+        Assert.Equal(before, fixture.Backend.State);
+    }
+
+    [Theory]
+    [InlineData("recovery_target_changed", false, "superseded")]
+    [InlineData("previous_system_profile_changed", false, "superseded")]
+    [InlineData("recovery_target_changed", true, "reverted")]
+    public void ARejectedIccRollbackRetainsOnlyEvidenceFromAnEarlierAttempt(string reason, bool earlierIntent, string expected)
+    {
+        var fixture = new Fixture();
+        var interrupted = BeginInterruptedCommit(fixture) with { ProfileRollbackMayResetCurve = earlierIntent };
+        bool observedIntent = false;
+        fixture.Journal.BeforeSave = session => observedIntent |= session.ProfileRollbackMayResetCurve;
+        fixture.Backend.BeforeChangingProfile = () => throw new ProfilePreviewException(reason, "Simulated final write refusal.");
+
+        var pending = new GammaCalibrationTransaction(fixture.Backend, fixture.Journal).Recover(interrupted);
+
+        Assert.True(observedIntent);
+        Assert.Equal("recovery-pending", pending.Status);
+        Assert.Equal(reason, pending.ReasonCode);
+        Assert.Equal(earlierIntent, pending.ProfileRollbackMayResetCurve);
+
+        fixture.Backend.BeforeChangingProfile = null;
+        fixture.Backend.State = interrupted.Original with { Ramp = GammaRamp.Identity() };
+        var recovered = new GammaCalibrationTransaction(fixture.Backend, fixture.Journal).Recover(pending);
+        Assert.Equal(expected, recovered.Status);
+        Assert.True(fixture.Backend.State.Ramp.Matches(earlierIntent ? interrupted.Original.Ramp : GammaRamp.Identity()));
+    }
+
+    [Theory]
     [InlineData("external-before")]
     [InlineData("external-during")]
     [InlineData("unknown-reload")]
@@ -889,7 +980,7 @@ public sealed class GammaCalibrationTests
         public bool Committed, FailCommit, FailNextWrite, ProfileRestoreCalled, Disconnected, MisreportCommit;
         public bool Remapped;
         public List<GammaRamp> Writes { get; } = [];
-        public Action? BeforeRead, BeforeWrite, BeforeRestoreProfile, AfterRestoreProfile, BeforeCommit, AfterCommit;
+        public Action? BeforeRead, BeforeWrite, BeforeRestoreProfile, BeforeChangingProfile, AfterRestoreProfile, BeforeCommit, AfterCommit;
         public GammaRamp? RestoredProfileRamp;
         public GammaDeviceState Read(string displayId)
         {
@@ -918,13 +1009,15 @@ public sealed class GammaCalibrationTests
             AfterCommit?.Invoke();
             return new(installed, "current-user", "current-user");
         }
-        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected)
+        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null)
         {
             BeforeRestoreProfile?.Invoke();
             ProfileRestoreCalled = true;
             bool changed = !GammaCalibrationTransaction.SameProfile(session.Original, State);
             bool matches = GammaCalibrationTransaction.SameTarget(expected, State) && GammaCalibrationTransaction.SameProfile(expected, State)
                 && State.Ramp.Matches(expected.Ramp, GammaCalibrationTransaction.ReadbackTolerance);
+            if (changed && matches) beforeSelectionRestore?.Invoke();
+            BeforeChangingProfile?.Invoke();
             State = State with
             {
                 ProfileName = session.Original.ProfileName, ProfileScope = session.Original.ProfileScope,

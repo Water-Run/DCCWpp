@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using DccwPlus.Core.Calibration;
 
 namespace DccwPlus.Windows;
@@ -6,6 +7,7 @@ public sealed class StartupRestoreCoordinator
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan SettleInterval = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan StartupQueryTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan BusyRetryWindow = GammaCalibrationTransaction.WindowPreviewLimit + TimeSpan.FromMinutes(1);
     private readonly Func<Task<bool>> _isEnabled;
     private readonly Func<bool, string, Task<CalibrationRestoreReport>> _restore;
@@ -17,7 +19,8 @@ public sealed class StartupRestoreCoordinator
         var startup = new StartupService();
         var bindings = new CalibrationBindingService(root);
         _isEnabled = async () => (await startup.GetAsync()).IsEnabled;
-        _restore = (enabled, trigger) => Task.Run(() => bindings.RunStartup(enabled, trigger));
+        // The worker must keep the display mutex on one thread while rechecking Windows permission.
+        _restore = (enabled, trigger) => Task.Run(() => bindings.RunStartup(enabled, trigger, () => CheckPermission(startup)));
         _readConfiguration = new WindowsDisplayService().ReadActivePathStamp;
         _time = TimeProvider.System;
     }
@@ -46,6 +49,7 @@ public sealed class StartupRestoreCoordinator
             if (pending is not null && _time.GetElapsedTime(pending.ScheduledAt) >= pending.Delay)
             {
                 var report = await _restore(true, pending.Trigger);
+                if (report.Reason == "startup_disabled") return;
                 pending = ScheduleRetry(pending, report);
             }
 
@@ -78,7 +82,7 @@ public sealed class StartupRestoreCoordinator
             return pending with { ScheduledAt = now, Delay = remaining < PollInterval ? remaining : PollInterval };
         }
 
-        bool settling = report.Reason == "recovery_required"
+        bool settling = report.Reason is "recovery_required" or "startup_unavailable"
             || report.Bindings.Any(binding => IsSettlingReason(binding.ReasonCode))
             || report.Recoveries.Any(item => item is { Kind: "binding", NeedsRecovery: true } && IsSettlingReason(item.ReasonCode));
         return settling && pending.SettlingRetries < 2
@@ -89,6 +93,20 @@ public sealed class StartupRestoreCoordinator
     private static bool IsSettlingReason(string reason) => reason is "display_disconnected" or "display_state_changed"
         or "profile_device_unavailable" or "profile_scope_unavailable" or "profile_state_unavailable" or "profile_file_unavailable"
         or "curve_read_failed";
+
+    private static string? CheckPermission(StartupService startup)
+    {
+        try
+        {
+            var status = startup.GetAsync().WaitAsync(StartupQueryTimeout).GetAwaiter().GetResult();
+            if (status.State is "unavailable" or "unpackaged") return "startup_unavailable";
+            return status.IsEnabled ? null : "startup_disabled";
+        }
+        catch (Exception ex) when (ex is COMException or TimeoutException or InvalidOperationException or UnauthorizedAccessException or OperationCanceledException)
+        {
+            return "startup_unavailable";
+        }
+    }
 
     private sealed record PendingRestore(string Trigger, long StartedAt, long ScheduledAt, TimeSpan Delay, int SettlingRetries);
 }

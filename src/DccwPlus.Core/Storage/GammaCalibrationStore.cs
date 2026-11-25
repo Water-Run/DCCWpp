@@ -37,7 +37,8 @@ public sealed class GammaCalibrationStore(string root) : IGammaCalibrationJourna
     private static void Validate(GammaCalibrationSession session)
     {
         if (session.SchemaVersion != 1 || session.Id == Guid.Empty || session.Original is null || session.Preset is null
-            || session.ExpiresAt.Year is < 2020 or > 2100 || session.StartedAt.Year is < 2020 or > 2100)
+            || session.ExpiresAt.Year is < 2020 or > 2100 || session.StartedAt.Year is < 2020 or > 2100
+            || (session.ProfileRollbackMayResetCurve && (!session.ProfileCommitStarted || session.IsBindingRestore)))
             throw new InvalidDataException("Invalid calibration session.");
         if (session.Status is not ("prepared" or "applying" or "previewing" or "committing" or "recovering"
             or "confirmed" or "reverted" or "superseded" or "recovery-pending")) throw new InvalidDataException("Invalid calibration status.");

@@ -30,6 +30,8 @@ internal static class CliDiscovery
         new("apply", DisplayPreview, "<id> --display <id> [--seconds 30] [--request-id <uuid>] [--dry-run]",
             supportsDryRun: true, supportsRequestId: true),
         new("startup status", Read),
+        new("startup enable", LocalWrite),
+        new("startup disable", LocalWrite),
         new("startup last-restore", Read),
         new("bindings list", Read),
         new("bindings enable", LocalWrite, "<persistence-key>"),

@@ -18,6 +18,40 @@ public sealed class AssociationFingerprintTests
         SelectedProfileScope: "system-wide");
 
     [Theory]
+    [InlineData("topology", "recovery_target_changed")]
+    [InlineData("source", "recovery_target_changed")]
+    [InlineData("hdr", "recovery_target_changed")]
+    [InlineData("effective-profile", "external_profile_change")]
+    [InlineData("selected-scope", "external_profile_change")]
+    [InlineData("user-default", "external_profile_change")]
+    public void AssociationWritesRejectStateChangesAfterPreparation(string change, string reason)
+    {
+        var prepared = State with { ActiveTopologySha256 = ProfileHash };
+        var current = change switch
+        {
+            "topology" => prepared with { ActiveTopologySha256 = OtherHash },
+            "source" => prepared with { SourceId = 2 },
+            "hdr" => prepared with { ExplicitSdr = false },
+            "effective-profile" => prepared with { ProfileName = "another.icc" },
+            _ => prepared,
+        };
+        int scope = change == "selected-scope" ? 1 : 0;
+        string userDefault = change == "user-default" ? "new-user.icc" : "USER.ICC";
+
+        var error = Assert.Throws<ProfilePreviewException>(() =>
+            VerifyAssociationWriteState(prepared, current, 0, scope, "user.icc", userDefault));
+
+        Assert.Equal(reason, error.Code);
+    }
+
+    [Fact]
+    public void AssociationWriteRecheckAcceptsTheSameEffectiveAndDormantDefaults()
+    {
+        VerifyAssociationWriteState(State, State with { ProfileName = "SYSTEM.ICC" }, 0, 0, "user.icc", "USER.ICC");
+        VerifyAssociationWriteState(State, State, 0, 0, null, null);
+    }
+
+    [Theory]
     [InlineData("external_curve_change")]
     [InlineData("undo_curve_changed")]
     public void AProfileSwitchCanRewriteOnlyTheKnownOriginalOrLinearCurve(string conflict)

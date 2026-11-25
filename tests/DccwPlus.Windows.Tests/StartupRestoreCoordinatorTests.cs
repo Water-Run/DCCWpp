@@ -36,6 +36,21 @@ public sealed class StartupRestoreCoordinatorTests
     }
 
     [Fact]
+    public async Task DisableDetectedInsideTheRestoreStopsTheMonitorWithoutWaitingForTheNextPoll()
+    {
+        var clock = new FakeTime();
+        int attempts = 0;
+        await RunAsync(clock, TimeSpan.FromSeconds(5), (enabled, _) =>
+        {
+            Assert.True(enabled);
+            attempts++;
+            return Report("startup_disabled");
+        }, _ => throw new InvalidOperationException("The monitor should exit after a restore detects the policy change."));
+
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
     public async Task ResumeTakesPriorityOverDisplayChangesWhileAPreviewIsActive()
     {
         var clock = new FakeTime();
@@ -75,6 +90,7 @@ public sealed class StartupRestoreCoordinatorTests
 
     [Theory]
     [InlineData("recovery_required", null, 3)]
+    [InlineData("startup_unavailable", null, 3)]
     [InlineData("restore_finished", "display_disconnected", 3)]
     [InlineData("restore_finished", "display_state_changed", 3)]
     [InlineData("restore_finished", "profile_state_unavailable", 3)]

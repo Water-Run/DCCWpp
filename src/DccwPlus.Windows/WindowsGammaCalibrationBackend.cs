@@ -256,7 +256,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
 
     internal string? ReadSavedProfileFingerprint(GammaCalibrationSession session) => ReadAssociationBackup(session).CandidateHash;
 
-    public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected)
+    public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null)
     {
         string directory = _store.DirectoryFor(session.Id);
         var current = Read(expected.DisplayId);
@@ -283,11 +283,13 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             }
             return false;
         }
+        bool expectedSelectionChange = expectedState && !GammaCalibrationTransaction.SameProfile(session.Original, current);
+        var recordRollback = expectedSelectionChange ? beforeSelectionRestore : null;
         bool changed = session.UndoOf is Guid calibrationId
-            ? RestoreUndoProfile(session, calibrationId, expected, current)
+            ? RestoreUndoProfile(session, calibrationId, expected, current, recordRollback)
             : RestoreSavedAssociation(expected, ResolveRecoveryAssociation(session.Original, current, ReadAssociationBackup(session)),
-                current, session.Original.ProfileName);
-        return changed && expectedState && !GammaCalibrationTransaction.SameProfile(session.Original, current);
+                current, session.Original.ProfileName, beforeSelectionRestore: recordRollback);
+        return changed && expectedSelectionChange;
     }
 
     internal static IccAssociationBackup ResolveRecoveryAssociation(GammaDeviceState original, GammaDeviceState current, IccAssociationBackup backup)
@@ -300,7 +302,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
     }
 
     private bool RestoreSavedAssociation(GammaDeviceState original, IccAssociationBackup backup, GammaDeviceState current,
-        string? originalProfile, Guid? undoSession = null)
+        string? originalProfile, Guid? undoSession = null, Action? beforeSelectionRestore = null)
     {
         VerifyAssociationTarget(original, backup, current);
         var adapter = Adapter(backup.TargetKey);
@@ -322,24 +324,43 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         VerifyOriginalFingerprints(backup, InstalledProfileReader.ReadSha256);
         if ((candidateIsAssociated || candidateIsDefault) && backup.CandidateHash is not null)
             VerifyProfileFingerprint(backup.CandidateName, backup.CandidateHash, InstalledProfileReader.ReadSha256);
-        if (undoSession is Guid id)
-            AtomicFile.Write(Path.Combine(_store.DirectoryFor(id), "association-mutation-started"), []);
-
-        if (candidateIsDefault && backup.UserDefault is not null)
+        string? userDefaultToRestore = candidateIsDefault ? backup.UserDefault : null;
+        bool changesScope = currentScope != backup.Scope;
+        bool changesAssociation = userDefaultToRestore is not null || candidateIsAssociated || changesScope;
+        if (userDefaultToRestore is not null) IccProfileInspector.ValidateFileName(userDefaultToRestore);
+        if (changesAssociation)
         {
-            IccProfileInspector.ValidateFileName(backup.UserDefault);
-            Check(ColorProfileSetDisplayDefaultAssociation(1, backup.UserDefault, 0, 4, adapter, backup.SourceId));
+            beforeSelectionRestore?.Invoke();
+            VerifyAssociationWriteState(current, Read(current.DisplayId), currentScope, ReadScope(adapter, backup.SourceId),
+                currentUser, ReadDefault(adapter, backup.SourceId, CurrentUser));
+            if (!PreviousSystemDefaultMatches(backup, originalProfile, () => ReadDefault(adapter, backup.SourceId, SystemWide)))
+                throw new ProfilePreviewException("previous_system_profile_changed", new LocalizationService()["OriginalSystemProfileChanged"]);
+            if (undoSession is Guid id)
+                AtomicFile.Write(Path.Combine(_store.DirectoryFor(id), "association-mutation-started"), []);
         }
+
+        if (userDefaultToRestore is not null)
+            Check(ColorProfileSetDisplayDefaultAssociation(1, userDefaultToRestore, 0, 4, adapter, backup.SourceId));
         if (candidateIsAssociated)
             Check(ColorProfileRemoveDisplayAssociation(1, backup.CandidateName, adapter, backup.SourceId, false));
-        if (currentScope != backup.Scope) SetUserScope(backup.DeviceKey, backup.Scope == 1);
+        if (changesScope) SetUserScope(backup.DeviceKey, backup.Scope == 1);
         int restoredScope = ReadScope(adapter, backup.SourceId);
         string? restoredUserDefault = ReadDefault(adapter, backup.SourceId, 1);
         bool defaultRestored = ProfilePreviewPolicy.EqualName(restoredUserDefault, backup.UserDefault)
             || (backup.UserDefault is null && ProfilePreviewPolicy.EqualName(restoredUserDefault, backup.EffectiveDefault));
         if (restoredScope != backup.Scope || !defaultRestored)
             throw new IOException("The original color profile association or scope was not restored.");
-        return candidateIsAssociated || (candidateIsDefault && backup.UserDefault is not null) || currentScope != backup.Scope;
+        return changesAssociation;
+    }
+
+    internal static void VerifyAssociationWriteState(GammaDeviceState expected, GammaDeviceState current,
+        int expectedScope, int currentScope, string? expectedUserDefault, string? currentUserDefault)
+    {
+        if (!GammaCalibrationTransaction.SameTarget(expected, current))
+            throw new ProfilePreviewException("recovery_target_changed", new LocalizationService()["DisplayUnavailable"]);
+        if (!GammaCalibrationTransaction.SameProfile(expected, current) || expectedScope != currentScope
+            || !ProfilePreviewPolicy.EqualName(expectedUserDefault, currentUserDefault))
+            throw new ProfilePreviewException("external_profile_change", new LocalizationService()["ProfileChangedBeforeSave"]);
     }
 
     internal static bool PreviousSystemDefaultMatches(IccAssociationBackup backup, string? originalProfile, Func<string?> readSystemDefault) =>
