@@ -99,7 +99,7 @@ public sealed record ProfilePreviewSession
     public bool NeedsRecovery => Status is "prepared" or "applying" or "previewing" or "recovering" or "recovery-pending";
 }
 
-public interface IProfilePreviewJournal { void Save(ProfilePreviewSession session); }
+public interface IProfilePreviewJournal { void Save(ProfilePreviewSession session, Action? beforePublish = null); }
 
 // Only the independent worker owns this synchronous state machine and its native writes.
 public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend, IProfilePreviewJournal journal,
@@ -136,8 +136,7 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
             if (!CandidateIsCurrent(backend.Read(displayId)))
                 throw new ProfilePreviewException("association_not_verified", "Windows did not report the requested default association.");
             if (StopReason() is { } afterRead) return Revert(afterRead);
-            Persist("previewing", "previewing", true);
-            return Tick();
+            return PublishVerified("previewing");
         }
         catch (Exception ex)
         {
@@ -167,26 +166,38 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
         RequireSession();
         if (Session!.Status != "previewing") return Session;
         if (!ownerAlive) return Revert("owner_exited");
-        if (StopReason() is { } stopped) return Revert(stopped);
-        try
-        {
-            if (!CandidateIsCurrent(backend.Read(Session.Original.DisplayId))) return Revert("display_state_changed");
-        }
-        catch (Exception) { return Revert("display_unavailable"); }
-        return StopReason() is { } afterRead ? Revert(afterRead) : Session;
+        return PreviewFailure() is { } reason ? Revert(reason) : Session;
     }
 
     public ProfilePreviewSession Confirm()
     {
         RequireSession();
-        if (Session!.Status == "confirmed") return Session;
-        if (Session.Status != "previewing") return Session; // Late/repeated commands never reapply.
-        Tick();
-        if (Session.Status != "previewing") return Session;
+        if (Session!.Status != "previewing") return Session; // Late/repeated commands never reapply.
         if (StopReason() is { } stopped) return Revert(stopped);
-        try { Persist("confirmed", "confirmed", true); }
+        try { return PublishVerified("confirmed"); }
         catch (Exception) { Revert("confirmation_not_saved"); throw; }
-        return Session;
+    }
+
+    private ProfilePreviewSession PublishVerified(string status)
+    {
+        try
+        {
+            Persist(status, status, verified: true, beforePublish: () =>
+            {
+                if (PreviewFailure() is { } reason) throw new PreviewPublicationRejectedException(reason);
+            });
+        }
+        catch (PreviewPublicationRejectedException ex) { return Revert(ex.ReasonCode); }
+        return Session!;
+    }
+
+    private string? PreviewFailure()
+    {
+        if (StopReason() is { } stopped) return stopped;
+        bool current;
+        try { current = CandidateIsCurrent(backend.Read(Session!.Original.DisplayId)); }
+        catch (Exception) { return "display_unavailable"; }
+        return StopReason() ?? (current ? null : "display_state_changed");
     }
 
     public ProfilePreviewSession Revert(string reason = "user_reverted") => Revert(reason, interrupted: false);
@@ -260,11 +271,16 @@ public sealed class ProfilePreviewTransaction(IProfileAssociationBackend backend
         journal.Save(Session);
         return Session;
     }
-    private void Persist(string status, string reason, bool verified = false)
+    private void Persist(string status, string reason, bool verified = false, Action? beforePublish = null)
     {
         var next = Session! with { Status = status, ReasonCode = reason, AssociationVerified = verified };
-        journal.Save(next);
+        journal.Save(next, beforePublish);
         Session = next;
     }
     private void RequireSession() { if (Session is null) throw new InvalidOperationException("No preview has been started."); }
+
+    private sealed class PreviewPublicationRejectedException(string reasonCode) : Exception(reasonCode)
+    {
+        public string ReasonCode { get; } = reasonCode;
+    }
 }

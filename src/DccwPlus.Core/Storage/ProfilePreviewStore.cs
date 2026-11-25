@@ -13,10 +13,11 @@ public sealed class ProfilePreviewStore(string root) : IProfilePreviewJournal
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
     public string DirectoryFor(Guid id) => Path.Combine(_root, id.ToString("N"));
-    public void Save(ProfilePreviewSession session)
+    public void Save(ProfilePreviewSession session, Action? beforePublish = null)
     {
         Validate(session);
-        AtomicFile.Write(Path.Combine(DirectoryFor(session.Id), "state.json"), JsonSerializer.SerializeToUtf8Bytes(session, Json));
+        AtomicFile.Write(Path.Combine(DirectoryFor(session.Id), "state.json"),
+            JsonSerializer.SerializeToUtf8Bytes(session, Json), beforePublish: beforePublish);
     }
     public ProfilePreviewSession Load(Guid id)
     {

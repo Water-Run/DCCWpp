@@ -140,6 +140,52 @@ public sealed class ProfilePreviewTests
         Assert.Equal("original.icc", setup.Backend.State.CurrentProfile);
     }
 
+    [Theory]
+    [InlineData("previewing", "deadline", "reverted", "preview_expired", "original.icc")]
+    [InlineData("confirmed", "deadline", "reverted", "preview_expired", "original.icc")]
+    [InlineData("previewing", "owner", "reverted", "owner_exited", "original.icc")]
+    [InlineData("confirmed", "owner", "reverted", "owner_exited", "original.icc")]
+    [InlineData("previewing", "selection", "superseded", "external_profile_change", "external.icc")]
+    [InlineData("confirmed", "selection", "superseded", "external_profile_change", "external.icc")]
+    [InlineData("previewing", "file", "recovery-pending", "profile_file_changed", "candidate.icc")]
+    [InlineData("confirmed", "file", "recovery-pending", "profile_file_changed", "candidate.icc")]
+    [InlineData("confirmed", "topology", "recovery-pending", "recovery_target_changed", "candidate.icc")]
+    public void APreviewStateChangeWhileFlushingTheJournalPreventsPublication(string publication, string change,
+        string status, string reason, string selectedProfile)
+    {
+        bool ownerAlive = true;
+        var setup = new Fixture(() => ownerAlive);
+        if (publication == "confirmed") setup.Start();
+        bool published = false;
+        setup.Journal.AfterSave = state => published |= state.Status == publication;
+        setup.Journal.BeforePublish = state =>
+        {
+            if (state.Status != publication) return;
+            Assert.Equal(publication == "confirmed" ? "previewing" : "applying", setup.Journal.Last!.Status);
+            switch (change)
+            {
+                case "deadline": setup.Clock.Advance(TimeSpan.FromSeconds(30)); break;
+                case "owner": ownerAlive = false; break;
+                case "selection": setup.Backend.State = setup.Backend.State with { CurrentProfile = "external.icc" }; break;
+                case "topology": setup.Backend.State = setup.Backend.State with { TopologyFingerprint = new string('D', 64) }; break;
+                case "file":
+                    var profiles = setup.Backend.State.Profiles.ToArray();
+                    profiles[1] = profiles[1] with { Sha256 = new string('D', 64) };
+                    setup.Backend.State = setup.Backend.State with { Profiles = profiles };
+                    break;
+            }
+        };
+
+        var result = publication == "confirmed" ? setup.Transaction.Confirm() : setup.Start();
+
+        Assert.False(published);
+        Assert.Equal(status, result.Status);
+        Assert.Equal(reason, result.ReasonCode);
+        Assert.Equal(selectedProfile, setup.Backend.State.CurrentProfile);
+        Assert.Equal(status == "reverted" ? new[] { "candidate.icc", "original.icc" } : ["candidate.icc"], setup.Backend.Writes);
+        Assert.Equal(result, setup.Journal.Last);
+    }
+
     [Fact] public void WindowOwnerDeathReverts()
     {
         var setup = new Fixture(); setup.Start();
@@ -538,9 +584,12 @@ public sealed class ProfilePreviewTests
     {
         public ProfilePreviewSession? Last { get; private set; } public string? FailStatus { get; set; }
         public Action<ProfilePreviewSession>? AfterSave { get; set; }
-        public void Save(ProfilePreviewSession session)
+        public Action<ProfilePreviewSession>? BeforePublish { get; set; }
+        public void Save(ProfilePreviewSession session, Action? beforePublish = null)
         {
             if (session.Status == FailStatus) throw new IOException("Injected journal failure.");
+            BeforePublish?.Invoke(session);
+            beforePublish?.Invoke();
             Last = session;
             AfterSave?.Invoke(session);
         }

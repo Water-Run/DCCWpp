@@ -271,7 +271,7 @@ dccwpp profiles recover <session-id> --json
 
 `profiles list` 中的 `profiles[].mhc2Present` 表示是否检测到 MHC2 标签。读不到标签目录或记录来自旧版本时可能缺少该字段。`canSelect` 表示文件满足结构检查，实际预览还会检查显示器、作用域和 MHC2。当前或候选 ICC 含 MHC2 时，`--dry-run` 给出 `canPreview: false` 和 `mhc2_profile_blocked`，实际预览在建立日志和写入默认关联前返回退出码 4。旧会话仍可核对原配置、候选文件摘要和目标后回滚。[Windows 硬件色彩校准加载器](https://learn.microsoft.com/en-us/windows/win32/wcs/display-calibration-mhc#enhanced-windows-display-calibration-loader)
 
-确认前会再次核对关联。若核对跨过截止时间，工作进程会尝试恢复原 ICC。回退成功时记录 `preview_expired`。`profiles confirm` 和 `profiles revert` 分别在日志为 `confirmed` 或 `reverted` 时返回成功，重复提交同一操作可读取同一结果。其他状态返回退出码 4 和记录的 `error.code`。若工作进程已经退出且日志仍处于进行状态，原因是 `recovery_required`。用 `profiles status` 或 `profiles observe` 查看完整会话。
+工作进程写完临时日志后，在发布预览就绪或确认状态前重新核对目标、作用域、当前默认 ICC 及文件摘要，并在读回前后复核原截止时间和所有者状态。核对失败时继续走原回退流程。因超时而回退成功时记录 `preview_expired`。`profiles confirm` 和 `profiles revert` 分别在日志为 `confirmed` 或 `reverted` 时返回成功。重复提交同一操作可读取同一结果。其他状态返回退出码 4 和记录的 `error.code`。若工作进程已经退出且日志仍处于进行状态，原因是 `recovery_required`。用 `profiles status` 或 `profiles observe` 查看完整会话。
 
 首次启动 ICC 预览时，工作进程在写入日志后和调用 Windows 切换配置前检查期限。写入前到期时保留当前 ICC，日志记录 `reverted` 和 `preview_expired`，且 `associationVerified` 为 `false`。如果写入已经开始，则在返回或读回后发现到期时尝试回滚。预览尚未就绪且事务以 `preview_expired` 结束时，首次调用返回退出码 4 和该原因码。已有会话日志时，CLI 的启动等待上限为启动阶段 10 秒、所请求的预览秒数以及回滚宽限 5 秒。尚无日志时仍以 10 秒为上限。
 

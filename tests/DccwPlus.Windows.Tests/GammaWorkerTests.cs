@@ -424,6 +424,43 @@ public sealed class GammaWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task ProfileWorkerKeepsThePreviewJournalWhenConfirmationExpiresWhilePublishing()
+    {
+        var clock = new ProfileWorkerClock();
+        var backend = new SimulatedProfileBackend();
+        var store = new ProfilePreviewStore(_root);
+        var id = Guid.NewGuid();
+        string directory = store.DirectoryFor(id);
+        AtomicFile.Write(Path.Combine(directory, "request.json"), JsonSerializer.SerializeToUtf8Bytes(
+            new ProfilePreviewRequest(id, backend.State.DisplayId, "candidate.icc", 30, AllowRetries: true), ProfilePreviewStore.Json));
+
+        ProfilePreviewSession? previous = null;
+        backend.BeforeRead = () =>
+        {
+            if (store.Find(id)?.Status != "previewing") return;
+            if (Directory.EnumerateFiles(directory, "state.json.*.tmp")
+                .Any(path => ProfilePreviewStore.Read<ProfilePreviewSession>(path).Status == "confirmed"))
+            {
+                previous = store.Load(id);
+                clock.Elapsed = TimeSpan.FromSeconds(30);
+                backend.BeforeRead = null;
+            }
+            else store.Request(id, "confirm");
+        };
+
+        Assert.Equal(0, ProfilePreviewHost.Run(_root, id, Guid.NewGuid(), () => backend, clock));
+
+        Assert.Equal("previewing", previous?.Status);
+        var client = new ProfilePreviewClient(_root, "unused");
+        var result = await client.CommandAsync(id, "confirm");
+        Assert.Equal("reverted", result.Status);
+        Assert.Equal("preview_expired", result.ReasonCode);
+        Assert.Equal("original.icc", backend.State.CurrentProfile);
+        Assert.Equal(2, backend.Writes);
+        Assert.Empty(Directory.EnumerateFiles(directory, "state.json.*.tmp"));
+    }
+
+    [Fact]
     public void ProfileWorkerRejectsMhc2BeforeCreatingACalibrationJournal()
     {
         var backend = new SimulatedProfileBackend();
