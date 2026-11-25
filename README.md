@@ -26,7 +26,7 @@ A separate standard-user Sandbox check covered WinUI launch, opt-in sign-in star
 
 The ARM64 development MSIX passed installation, native WinUI cold launch, CLI alias, and removal in a GitHub-hosted Windows 11 ARM64 session. Standard-user deployment on ARM64 remains an acceptance item. [ARM64 development package checks](docs/STORE.md)
 
-Settings shows when the last automatic restore check ran, what triggered it, and why the selected display was skipped or still needs recovery. Refresh restore results to read the latest report.
+Settings shows when the last automatic restore check ran, what triggered it, and why the selected display was skipped or still needs recovery. If Windows cannot read the sign-in task state, the monitor waits for Windows to confirm permission before processing the queued event. Refresh restore results to read the latest report.
 
 Display calibration and ICC preview require a local Windows session. In Remote Desktop, DCCW++ keeps reference patterns and presets available and reports `remote_session_blocked` for display previews. Windows Display Color Calibration also requires a local session.
 

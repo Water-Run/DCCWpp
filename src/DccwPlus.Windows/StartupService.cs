@@ -7,10 +7,10 @@ public sealed record StartupStatus(string State, bool CanEnable, bool IsEnabled)
 public sealed class StartupService
 {
     public const string TaskId = "DccwPlusStartup";
-    public async Task<StartupStatus> GetAsync()
+    public async Task<StartupStatus> GetAsync(CancellationToken cancellationToken = default)
     {
         if (!HasPackageIdentity()) return new("unpackaged", false, false);
-        var task = await FindTaskAsync();
+        var task = await FindTaskAsync(cancellationToken);
         return task is null ? new("unavailable", false, false) : Map(task.State);
     }
 
@@ -28,8 +28,8 @@ public sealed class StartupService
         return Map(task.State);
     }
 
-    private static async Task<StartupTask?> FindTaskAsync() =>
-        (await StartupTask.GetForCurrentPackageAsync()).SingleOrDefault(task => task.TaskId == TaskId);
+    private static async Task<StartupTask?> FindTaskAsync(CancellationToken cancellationToken = default) =>
+        (await StartupTask.GetForCurrentPackageAsync().AsTask(cancellationToken)).SingleOrDefault(task => task.TaskId == TaskId);
 
     public static bool HasPackageIdentity()
     {

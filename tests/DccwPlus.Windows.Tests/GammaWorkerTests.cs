@@ -174,7 +174,13 @@ public sealed class GammaWorkerTests : IDisposable
             Assert.Equal(id, Assert.Single(recovery.List()).SessionId);
             Assert.Equal("preview_busy", recovery.Recover().Reason);
             var startup = new CalibrationBindingService(_root);
-            Assert.Equal("preview_busy", startup.RunStartup(true, "sign_in", () => null).Reason);
+            var deferred = startup.RunStartup("resume", () => null, "startup_unavailable");
+            Assert.Equal("startup_unavailable", deferred.Reason);
+            Assert.False(deferred.Applied);
+            Assert.Empty(deferred.Recoveries);
+            Assert.Equal("startup_unavailable", startup.LastStartupReport()?.Reason);
+            Assert.Equal("resume", startup.LastStartupReport()?.Trigger);
+            Assert.Equal("preview_busy", startup.RunStartup("sign_in", () => null).Reason);
             Assert.Equal("sign_in", startup.LastStartupReport()?.Trigger);
             Assert.Equal("previewing", store.Load(id).Status);
             Assert.Equal(1, backend.Writes);
@@ -521,7 +527,7 @@ public sealed class GammaWorkerTests : IDisposable
             var observation = await observer.ObserveProfileAsync(id, 0);
             Assert.Equal("recovering", observation.Session.Status);
             Assert.Equal("in_progress", observation.Outcome);
-            Assert.Equal("preview_busy", new CalibrationBindingService(_root).RunStartup(true, "resume", () => null).Reason);
+            Assert.Equal("preview_busy", new CalibrationBindingService(_root).RunStartup("resume", () => null).Reason);
             confirm = new ProfilePreviewClient(_root, "unused").CommandAsync(id, "confirm");
             Assert.False(confirm.IsCompleted);
             Assert.False(store.Requested(id, "confirm"));
@@ -554,7 +560,7 @@ public sealed class GammaWorkerTests : IDisposable
                 report = service.RecoverLocked(gamma, new SimulatedProfileBackend());
             Assert.Equal("preview_busy", report.Reason);
             Assert.Equal("preview_busy", Assert.Single(report.Sessions).ReasonCode);
-            Assert.Equal("preview_busy", new CalibrationBindingService(_root).RunStartup(true, "resume", () => null).Reason);
+            Assert.Equal("preview_busy", new CalibrationBindingService(_root).RunStartup("resume", () => null).Reason);
             Assert.Equal("previewing", store.Load(id).Status);
             Assert.Equal(1, gamma.Writes);
         }

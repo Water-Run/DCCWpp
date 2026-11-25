@@ -166,6 +166,8 @@ DCCW++ 设置页在状态为 `DisabledByUser` 时提供直达 Windows 启动应�
 
 后台收到 `preview_busy` 后每 15 秒重试，同一批请求最多等待 31 分钟。等待期间合并显示通知，保留 `resume` 作为优先触发原因。每次尝试前重新读取 Windows 自启动状态和当前绑定。关闭自启动会结束待处理请求，最近一条后台报告可显示 `startup_disabled`。手动执行 `bindings restore` 仍立即返回本次结果。[Windows 登录任务状态](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptaskstate?view=winrt-26100)
 
+开始处理待恢复事件前，若 Windows 自启动状态读取失败或超过 3 秒，后台会报告 `startup_unavailable` 并保留事件。3 秒后重新查询，仍不可读时转为每 15 秒查询。等待期间可合并唤醒及显示器变更通知。Windows 确认启用后重新评估，确认禁用后停止后台。[Windows 启动任务查询](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptask.getforcurrentpackageasync?view=winrt-26100)
+
 登录恢复在驱动写入前和最终读回后复核 Windows 权限。发现自启动关闭时停止当前批次并报告 `startup_disabled`。若复核超时或 Windows 的任务状态暂不可读，报告 `startup_unavailable`，后台按短间隔规则重试。在处理显示器期间停止时，尚未写入的显示器报告 `skipped`，已写入且仍由当前事务持有的曲线按原日志回滚。回滚未完成时，恢复报告仍显示 `recovery_required`。手动 `bindings restore` 使用逐屏恢复开关。
 
 校准操作：

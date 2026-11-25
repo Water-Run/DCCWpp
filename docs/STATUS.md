@@ -2,6 +2,11 @@
 
 验收条目保留测试时使用的构建 ID。历史合并前的构建 ID 对应当时的包和 CI 记录。
 
+## 2026-11-25 · Windows 启动任务状态暂不可读时保留恢复事件
+
+- 启动任务查询有 3 秒期限。读取暂不可用时，后台为当前事件保存一条 `startup_unavailable` 报告并等待系统确认权限。等待期间可合并唤醒通知。确认启用后处理新近事件，确认禁用后结束请求并退出。[CLI 契约](CLI.md)
+- 417 项单元及模拟测试、174 项 CLI 进程检查和 x64 开发 MSIX 内容校验通过。隔离目录模拟权限恢复，CLI 从 `startup_unavailable` 更新为唤醒触发的 `no_bindings_enabled`。校准会话数为零，实机全桌面的前后只读采样一致。报告位于 `artifacts/startup-permission-retry/5f1cc655-985a-4fe0-bcbc-1b9f02c625fe/summary.json`。真实睡眠唤醒及已绑定显示器的恢复效果仍需实机验收。
+
 ## 2026-11-25 · 从 Agent 打开校准向导
 
 - `wizard open` 可按 CLI 给出的显示器 ID 和本机预设 UUID 打开独立 WinUI 窗口。向导核对目标并载入草稿，通过同用户进程间回执确认。实际显示变更由向导内的限时预览发起。[CLI 契约](CLI.md)

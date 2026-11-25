@@ -80,10 +80,10 @@ public sealed class CalibrationBindingService(string root)
         return Report(dryRun ? "restore_plan" : "restore_finished", results, recoveries);
     }
 
-    internal CalibrationRestoreReport RunStartup(bool enabled, string trigger, Func<string?> getCancellationReason)
+    internal CalibrationRestoreReport RunStartup(string trigger, Func<string?> getCancellationReason, string? preconditionFailure = null)
     {
         CalibrationRestoreReport report;
-        try { report = enabled ? Restore(dryRun: false, getCancellationReason) : Report("startup_disabled"); }
+        try { report = preconditionFailure is null ? Restore(dryRun: false, getCancellationReason) : Report(preconditionFailure); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ProfilePreviewException or JsonException or InvalidDataException)
         {
             report = Report(ex is ProfilePreviewException p ? p.Code : "restore_data_unavailable");

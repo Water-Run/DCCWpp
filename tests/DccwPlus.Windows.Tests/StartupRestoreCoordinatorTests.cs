@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using DccwPlus.Windows;
 using Xunit;
 
@@ -48,6 +49,84 @@ public sealed class StartupRestoreCoordinatorTests
         }, _ => throw new InvalidOperationException("The monitor should exit after a restore detects the policy change."));
 
         Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task UnreadableStartupPermissionKeepsTheLatestEventWithoutRepeatedReports()
+    {
+        var clock = new FakeTime();
+        List<(TimeSpan Time, string Trigger, string? Failure)> attempts = [];
+        await RunWithPermissionAsync(clock, TimeSpan.FromSeconds(60), (trigger, failure) =>
+        {
+            attempts.Add((clock.Now, trigger, failure));
+            return Report(failure ?? "restore_finished");
+        }, wait =>
+        {
+            if (clock.Now != TimeSpan.Zero) return clock.WaitAsync(wait);
+            clock.Advance(TimeSpan.FromSeconds(1));
+            return Task.FromResult<string?>("resume");
+        }, permission: () => clock.Now < TimeSpan.FromSeconds(40) ? "startup_unavailable" : null);
+
+        Assert.Equal(new (TimeSpan, string, string?)[]
+        {
+            (TimeSpan.Zero, "sign_in", "startup_unavailable"),
+            (TimeSpan.FromSeconds(48), "resume", null)
+        }, attempts);
+    }
+
+    [Fact]
+    public async Task AQueuedEventDuringAnIdlePermissionOutageStillHonorsATrueDisable()
+    {
+        var clock = new FakeTime();
+        List<(string Trigger, string? Failure)> attempts = [];
+        await RunWithPermissionAsync(clock, TimeSpan.FromSeconds(60), (trigger, failure) =>
+        {
+            attempts.Add((trigger, failure));
+            return Report(failure ?? "restore_finished");
+        }, wait =>
+        {
+            if (clock.Now != TimeSpan.Zero) return clock.WaitAsync(wait);
+            clock.Advance(TimeSpan.FromSeconds(5));
+            return Task.FromResult<string?>("display_changed");
+        }, permission: () => clock.Now == TimeSpan.Zero ? null
+            : clock.Now < TimeSpan.FromSeconds(10) ? "startup_unavailable" : "startup_disabled");
+
+        Assert.Equal(new (string, string?)[]
+        {
+            ("sign_in", null),
+            ("display_changed", "startup_unavailable"),
+            ("display_changed", "startup_disabled")
+        }, attempts);
+    }
+
+    [Theory]
+    [InlineData("Enabled", true, null)]
+    [InlineData("EnabledByPolicy", true, null)]
+    [InlineData("Disabled", false, "startup_disabled")]
+    [InlineData("DisabledByUser", false, "startup_disabled")]
+    [InlineData("DisabledByPolicy", false, "startup_disabled")]
+    [InlineData("unavailable", false, "startup_unavailable")]
+    [InlineData("unknown", false, "startup_unavailable")]
+    public async Task OnlyAnExplicitWindowsStateCanAllowRestoreOrStopTheMonitor(string state, bool enabled, string? reason)
+    {
+        Assert.Equal(reason, await StartupRestoreCoordinator.CheckPermissionAsync(
+            _ => Task.FromResult(new StartupStatus(state, false, enabled)), TimeSpan.FromSeconds(3)));
+    }
+
+    [Fact]
+    public async Task APermissionQueryDeadlineCancelsThePendingRead()
+    {
+        CancellationToken request = default;
+        var result = await StartupRestoreCoordinator.CheckPermissionAsync(token =>
+        {
+            request = token;
+            return new TaskCompletionSource<StartupStatus>().Task;
+        }, TimeSpan.FromMilliseconds(50));
+
+        Assert.Equal("startup_unavailable", result);
+        Assert.True(request.IsCancellationRequested);
+        Assert.Equal("startup_unavailable", await StartupRestoreCoordinator.CheckPermissionAsync(
+            _ => throw new COMException(), TimeSpan.FromSeconds(3)));
     }
 
     [Fact]
@@ -148,10 +227,15 @@ public sealed class StartupRestoreCoordinatorTests
     }
 
     private static Task RunAsync(FakeTime clock, TimeSpan stopAt, Func<bool, string, CalibrationRestoreReport> restore,
-        Func<TimeSpan, Task<string?>>? wait = null, Func<string?>? readConfiguration = null)
+        Func<TimeSpan, Task<string?>>? wait = null, Func<string?>? readConfiguration = null) =>
+        RunWithPermissionAsync(clock, stopAt, (trigger, failure) => restore(failure is null, trigger), wait, readConfiguration);
+
+    private static Task RunWithPermissionAsync(FakeTime clock, TimeSpan stopAt, Func<string, string?, CalibrationRestoreReport> restore,
+        Func<TimeSpan, Task<string?>>? wait = null, Func<string?>? readConfiguration = null, Func<string?>? permission = null)
     {
-        var coordinator = new StartupRestoreCoordinator(() => Task.FromResult(clock.Now < stopAt),
-            (enabled, trigger) => Task.FromResult(restore(enabled, trigger)), readConfiguration ?? (() => "same-layout"), clock);
+        var coordinator = new StartupRestoreCoordinator(
+            () => Task.FromResult(clock.Now >= stopAt ? "startup_disabled" : permission?.Invoke()),
+            (trigger, failure) => Task.FromResult(restore(trigger, failure)), readConfiguration ?? (() => "same-layout"), clock);
         return coordinator.RunAsync(wait ?? clock.WaitAsync);
     }
 
