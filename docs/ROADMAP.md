@@ -19,7 +19,7 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 | 预设与 CLI | 已有草稿参数、绑定保护、重复导入和命令发现。直接预览、应用预设、撤回校准和试用 ICC 支持预演与请求 ID。Agent 可在限时预览中调整数值及切换原始与候选视图，也可查询或限时等待会话结果。x64 沙盒已验证 CLI 创建的预设在 GUI 可见，以及 GUI 导入、重复导入和显式副本的 CLI 查验 | 实机显示事务及跨版本兼容性 |
 | 登录恢复 | StartupTask 与逐屏恢复开关已接通。x64 沙盒普通用户已验证实际重新登录触发无窗口后台，断开测试目标被跳过。用户禁用或设备策略禁用后，后台退出且下次登录不再触发。撤销测试策略后恢复原先的用户偏好 | 实机恢复匹配显示器、睡眠唤醒与热插拔 |
 | 语言和照片 | en-US、zh-Hans、zh-Hant，可打开本机照片。x64 沙盒中可切换三语并保留向导当前步骤 | 各页面文案和参考照片的实机验收，内置照片依赖项目所有者供片及许可 |
-| 商店包 | 双架构开发 MSIX、对应源码与依赖许可已验证。x64 已在沙盒验证普通用户安装、交互式 GUI 冷启动、CLI 执行、原地升级保留数据及卸载 | 原生 ARM64 安装与运行、Store 签名包升级、DCCW++ 专属商店身份及认证 |
+| 商店包 | 双架构开发 MSIX、对应源码与依赖许可已验证。x64 已在沙盒验证普通用户安装、交互式 GUI 冷启动、CLI 执行、原地升级保留数据及卸载。GitHub 托管 ARM64 虚拟机已验证开发包装卸、原生 WinUI 冷启动和 CLI 别名 | 已登录 ARM64 普通用户安装、登录启动和升级，Store 签名包升级、DCCW++ 专属商店身份及认证 |
 
 ## 开发顺序与交付物
 
@@ -65,6 +65,8 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 开始实机验收前核对 `isRemoteSession: false`。远程采样可核对 Windows 读回的 ICC 关联和文件摘要。物理屏幕的曲线读回、显示效果和重新登录后加载使用本地交互会话验收。[Windows Gamma Ramp 读取条件](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getdevicegammaramp)
 
 确认后及重新登录后可对同一会话运行 `dccwpp calibration verify <calibration-id> --json`。分别检查当前 ICC 选择、文件摘要和逻辑曲线，并记录 Windows 加载器设置。中断另一场可能已写入的预览，核对命令是否报告 `recovery_required`，再在回滚后重新检查同一会话。多屏验收继续用全桌面采样核对其他目标。[实时核对命令](CLI.md)
+
+在向导第一步检查所选显示器的已保存校准，并与 `dccwpp calibration inspect --display <display-id> --json` 核对。验证 Windows 选用旧的 DCCW++ ICC 时定位对应保存，选用其他 ICC 时显示与最近一次保存的差异。切换显示器后重新检查，核对结果中的预设名、ICC 文件名及检查时间。[按显示器核对](CLI.md)
 
 重启后先核对当前默认 ICC 和曲线，再对重启前的校准运行 `calibration undo <calibration-id> --dry-run --json`。Windows 可为同一适配器分配新的 LUID。核对撤回计划采用当前路径，且只有匹配原显示器与配置设备时才允许预览。然后分别核对取消、确认恢复和其他屏幕的状态。[Windows 显示适配器 ID](https://learn.microsoft.com/en-us/uwp/api/windows.devices.display.core.displayadapter.id)
 

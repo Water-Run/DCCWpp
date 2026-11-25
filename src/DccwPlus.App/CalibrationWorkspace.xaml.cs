@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using DccwPlus.Core.Calibration;
 using DccwPlus.Core.Presets;
@@ -29,6 +30,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private GammaPreviewClient? _client;
     private readonly PreviewRecoveryService _recovery = new(DataPaths.DefaultRoot);
     private GammaCalibrationSession? _session;
+    private DisplayCalibrationInspection? _inspection;
     private CalibrationPreset _draft = CalibrationPreset.Create("Calibration");
     private DispatcherQueueTimer? _timer, _debounce, _displayRefresh;
     private bool _setting, _busy, _pushing, _dirty, _timerBusy;
@@ -150,6 +152,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     {
         if (_model is null || _client is null || _busy || Active) return;
         if (SelectedDisplay is not { } selected) { Show("SelectDisplay", InfoBarSeverity.Warning); return; }
+        _inspection = null;
         _busy = true; UpdateUi();
         try
         {
@@ -294,6 +297,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private async void UndoCalibrationClicked(object sender, RoutedEventArgs e)
     {
         if (Active || _busy || _client is null || _window is null || SelectedDisplay is not { } selected) return;
+        _inspection = null;
         _busy = true;
         UpdateUi();
         try
@@ -420,6 +424,8 @@ public sealed partial class CalibrationWorkspace : UserControl
         MoveDisplayButton.IsEnabled = hasDisplay && !Active && !_busy;
         RefreshDisplaysButton.IsEnabled = !Active && !_busy;
         RecoveryButton.IsEnabled = !Active && !_busy;
+        InspectCalibrationButton.IsEnabled = hasDisplay && !Active && !_busy;
+        UpdateInspection();
         FullScreenButton.IsEnabled = hasDisplay && !_busy;
         StartButton.IsEnabled = !Active && !HasPendingPreviewRecovery && !_busy && !remote && display is not null
             && CalibrationService.IsExplicitSdr(display) && display.Topology != "clone"
@@ -511,6 +517,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private void UpdateDisplaySelection()
     {
         CloseFullScreen();
+        _inspection = null;
         Outcome.IsOpen = false;
         ClearTypeNotice.IsOpen = false;
         UpdateUi();
@@ -640,7 +647,11 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (manual || lostSelection) UpdateDisplaySelection();
         else
         {
-            if (selected != current) CloseFullScreen();
+            if (selected != current)
+            {
+                CloseFullScreen();
+                _inspection = null;
+            }
             UpdateUi();
         }
         if (lostSelection) Show("DisplaySelectionLost", InfoBarSeverity.Warning);
@@ -661,6 +672,82 @@ public sealed partial class CalibrationWorkspace : UserControl
         Show("DisplayUnavailable", InfoBarSeverity.Warning);
         return null;
     }
+
+    private async void InspectCalibrationClicked(object sender, RoutedEventArgs e)
+    {
+        if (_closed || _busy || Active || SelectedDisplay is not { } selected) return;
+        _busy = true;
+        _inspection = new(selected.Id, "inspection_in_progress");
+        UpdateUi();
+        try
+        {
+            _inspection = await Task.Run(() => new CalibrationVerification(DataPaths.DefaultRoot).InspectDisplay(selected.Id, selected));
+            if (_inspection.ReasonCode == "capture_state_changed") RequestDisplayRefresh();
+        }
+        catch (KeyNotFoundException)
+        {
+            _inspection = new(selected.Id, "display_disconnected");
+            RequestDisplayRefresh();
+        }
+        catch (ProfilePreviewException ex)
+        {
+            _inspection = new(selected.Id, ex.Code);
+            if (ex.Code == "capture_state_changed") RequestDisplayRefresh();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine(ex);
+            _inspection = new(selected.Id, "inspection_failed");
+        }
+        finally
+        {
+            _busy = false;
+            if (!_closed) UpdateUi();
+        }
+    }
+
+    private void UpdateInspection()
+    {
+        if (_inspection is not { } inspection || SelectedDisplay?.Id != inspection.DisplayId)
+        {
+            InspectionResult.Visibility = Visibility.Collapsed;
+            InspectionResult.Text = "";
+            return;
+        }
+
+        var text = _model!.Text;
+        string message = text[inspection.ReasonCode switch
+        {
+            "inspection_in_progress" => "InspectingCalibration",
+            "calibration_matches" => "InspectedCalibrationMatches",
+            "no_saved_calibration" => "NoSavedCalibrationForDisplay",
+            "profile_selection_changed" => "UndoProfileChanged",
+            "profile_file_changed" => "InspectedProfileFileChanged",
+            "logical_curve_changed" => "InspectedCurveChanged",
+            "profile_fingerprint_unavailable" => "InspectedFingerprintUnavailable",
+            "profile_state_unavailable" => "ProfileStateUnavailable",
+            "profile_file_unavailable" => "IccFileUnavailable",
+            "profile_device_unavailable" => "ProfileDeviceUnavailable",
+            "curve_read_failed" => "CurveReadUnavailable",
+            "sdr_path_blocked" => "SdrRequired",
+            "mhc2_profile_blocked" => "Mhc2ProfileBlocked",
+            "remote_session_blocked" => "RemoteCalibrationBlocked",
+            "shared_source_blocked" => "MirroredDisplay",
+            "display_identity_ambiguous" or "display_identity_unavailable" or "display_disconnected" => "DisplayUnavailable",
+            "capture_state_changed" => "CaptureStateChanged",
+            "preview_busy" => "DisplayOperationBusy",
+            "recovery_required" => "RecoveryMessage",
+            _ => "RestoreDataUnavailable"
+        }];
+        if (inspection is { PresetName: { } name, Verification.SavedProfile: { } profile })
+            message += Environment.NewLine + string.Format(text["SavedProfileDetails"], name, profile);
+        if (inspection.CapturedAt is { } captured)
+            message += Environment.NewLine + string.Format(text["InspectedAt"],
+                captured.ToLocalTime().ToString("g", CultureInfo.GetCultureInfo(text.EffectiveLanguage)));
+        InspectionResult.Visibility = Visibility.Visible;
+        SetLiveText(InspectionResult, message, AnnounceWizardChanges && StepPicker.SelectedIndex == 0);
+    }
+
     private void FullScreenClicked(object sender, RoutedEventArgs e)
     {
         if (_model is null) return;
@@ -907,6 +994,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private async void RecoverClicked(object sender, RoutedEventArgs e)
     {
         if (_model is null || Active || _busy) return;
+        _inspection = null;
         _busy = true; UpdateUi();
         try
         {

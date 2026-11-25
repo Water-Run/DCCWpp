@@ -48,9 +48,21 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert public_commands["calibration confirm"]["effect"] == "display-change"
     assert public_commands["calibration confirm"]["supportsDryRun"] is False
     assert public_commands["calibration verify"]["effect"] == "read"
+    assert public_commands["calibration inspect"]["effect"] == "read"
     for action in ("enable", "disable"):
         assert public_commands[f"startup {action}"]["effect"] == "local-write"
     assert call("calibration", "verify", str(uuid4()), expected=3)["code"] == "not_found"
+    assert call("calibration", "inspect", expected=2)["code"] == "invalid_arguments"
+    assert call("calibration", "inspect", "--display", "missing-monitor", expected=3)["code"] == "not_found"
+    active_displays = call("displays", "list")
+    if active_displays:
+        target = active_displays[0]["id"]
+        inspection = call("calibration", "inspect", "--display", target, expected=(0, 4))
+        if "code" in inspection:
+            assert inspection["code"] == "capture_state_changed"
+        else:
+            assert inspection["displayId"] == target and inspection["reasonCode"] == "no_saved_calibration"
+            assert inspection["capturedAt"] and inspection["presetName"] is None and inspection["verification"] is None
     for group in ("calibration", "profiles"):
         assert public_commands[f"{group} observe"]["effect"] == "read"
         observe = (group, "observe", str(uuid4()))

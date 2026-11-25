@@ -12,13 +12,12 @@ public sealed class PreviewRecoveryService(string root)
     private readonly GammaCalibrationStore _gamma = new(root);
     private readonly ProfilePreviewStore _profiles = new(root);
 
-    public IReadOnlyList<InterruptedPreviewResult> List()
-    {
-        var sessions = _gamma.Sessions();
-        return sessions.Where(session => session.NeedsRecovery).Select(Summarize)
+    public IReadOnlyList<InterruptedPreviewResult> List() => List(_gamma.Sessions());
+
+    internal IReadOnlyList<InterruptedPreviewResult> List(IReadOnlyList<GammaCalibrationSession> sessions) =>
+        sessions.Where(session => session.NeedsRecovery).Select(Summarize)
             .Concat(_profiles.Incomplete().Select(Summarize))
             .Concat(sessions.Where(session => session.NeedsBindingCompletion).Select(SummarizeBinding)).ToArray();
-    }
 
     internal void RequireNoInterruptedPreview()
     {

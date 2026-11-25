@@ -6,7 +6,8 @@ using DccwPlus.Core.Localization;
 namespace DccwPlus.Windows;
 
 internal sealed record DisplayCalibrationEvidence(DisplayInfo Display, DisplayCalibrationCapture Sample, GammaRamp? LogicalRamp);
-internal sealed record CalibrationCaptureEvidence(CalibrationCaptureReport Report, IReadOnlyList<DisplayCalibrationEvidence> Displays);
+internal sealed record CalibrationCaptureEvidence(CalibrationCaptureReport Report, IReadOnlyList<DisplayCalibrationEvidence> Displays,
+    IReadOnlyList<DisplayInfo> Connected);
 
 public sealed class CalibrationCapture
 {
@@ -50,7 +51,7 @@ public sealed class CalibrationCapture
         var report = new CalibrationCaptureReport(1, DateTimeOffset.UtcNow, Environment.OSVersion.Version.Build,
             RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant(), before.Topology, samples,
             WindowsDisplayService.ComputeTopologyHash(before.Topology, displays), remote, displays.Length);
-        return new(report, evidence);
+        return new(report, evidence, displays);
     }
 
     private static DisplayInfo[] Select(DisplayInfo[] displays, string? id) =>

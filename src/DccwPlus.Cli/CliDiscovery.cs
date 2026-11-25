@@ -54,6 +54,7 @@ internal static class CliDiscovery
         new("calibration status", Read, "<session-id>"),
         new("calibration observe", Read, "<session-id> [--wait-seconds <seconds>]"),
         new("calibration verify", Read, "<calibration-id>"),
+        new("calibration inspect", Read, "--display <display-id>"),
         new("calibration confirm", DisplayChange, "<session-id>"),
         new("calibration revert", DisplayChange, "<session-id>"),
         new("calibration recover", DisplayChange, "<session-id>"),

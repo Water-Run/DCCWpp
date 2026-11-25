@@ -19,18 +19,21 @@ public sealed record CalibrationVerificationReport(Guid CalibrationId, string Sa
     public bool ColorAccuracyVerified => false;
 }
 
+public sealed record DisplayCalibrationInspection(string DisplayId, string ReasonCode, DateTimeOffset? CapturedAt = null,
+    string? PresetName = null, CalibrationVerificationReport? Verification = null);
+
 public sealed class CalibrationVerification
 {
     private readonly GammaCalibrationStore _sessions;
     private readonly PreviewRecoveryService _recovery;
-    private readonly Func<CalibrationCaptureEvidence> _capture;
+    private readonly Func<string?, CalibrationCaptureEvidence> _capture;
     private readonly Func<GammaCalibrationSession, IccAssociationBackup> _readSavedAssociation;
     private readonly Func<bool?> _readLoader;
 
-    public CalibrationVerification(string root) : this(root, () => new CalibrationCapture().ReadEvidence(),
+    public CalibrationVerification(string root) : this(root, new CalibrationCapture().ReadEvidence,
         new WindowsGammaCalibrationBackend(root).ReadAssociationBackup, WindowsGammaCalibrationBackend.ReadCalibrationLoader) { }
 
-    internal CalibrationVerification(string root, Func<CalibrationCaptureEvidence> capture,
+    internal CalibrationVerification(string root, Func<string?, CalibrationCaptureEvidence> capture,
         Func<GammaCalibrationSession, IccAssociationBackup> readSavedAssociation, Func<bool?> readLoader)
     {
         _sessions = new(root);
@@ -43,25 +46,62 @@ public sealed class CalibrationVerification
     public CalibrationVerificationReport Read(Guid id)
     {
         var session = _sessions.Load(id);
-        if (session.Status != "confirmed" || session.IsBindingRestore || session.UndoOf is not null || session.InstalledProfile is null)
+        if (!IsSavedCalibration(session))
             return Inconclusive(session, "calibration_not_confirmed");
 
         using var gate = DisplayMutationLock.Acquire();
-        // A stopped worker can leave a temporary curve or ICC selected after its lock is released.
-        if (_recovery.List().Any(item => item.Kind != "binding" && item.Status != "prepared"))
+        if (HasInterruptedPreview(_sessions.Sessions()))
             return Inconclusive(session, "recovery_required");
         return Evaluate(session);
     }
 
+    public DisplayCalibrationInspection InspectDisplay(string displayId, DisplayInfo? expected = null)
+    {
+        using var gate = DisplayMutationLock.Acquire();
+        var sessions = _sessions.Sessions();
+        if (HasInterruptedPreview(sessions)) return new(displayId, "recovery_required");
+
+        var capture = _capture(displayId);
+        var inspection = new DisplayCalibrationInspection(displayId, "display_identity_ambiguous", capture.Report.CapturedAt);
+        if (capture.Displays.Count != 1) return inspection;
+
+        var evidence = capture.Displays[0];
+        var connected = capture.Connected;
+        var display = evidence.Display;
+        if (expected is not null && MonitorIdentity.ResolveSelectedDisplay(expected, connected, hadAmbiguousIdentity: true)?.Id != displayId)
+            return inspection with { ReasonCode = "capture_state_changed" };
+
+        var candidates = sessions.Where(session => IsSavedCalibration(session)
+            && MonitorIdentity.MatchesSavedDisplay(session.Original, display))
+            .OrderByDescending(session => ProfilePreviewPolicy.EqualName(session.InstalledProfile, display.ProfileName));
+        string reason = "no_saved_calibration";
+        foreach (var session in candidates)
+        {
+            if (connected.Count(current => MonitorIdentity.MatchesSavedDisplay(session.Original, current)) != 1)
+                return inspection;
+
+            var association = ReadSavedAssociation(session);
+            string? profileDevice = SavedProfileDevice(session, association);
+            // Older journals without a device key can only identify the original active path here.
+            bool deviceMatches = profileDevice is null
+                ? MonitorIdentity.MatchesSavedDisplay(session.Original with { PersistenceKey = null }, display)
+                : WindowsDisplayService.HasUniqueProfileDevice(display, connected, profileDevice);
+            if (!deviceMatches)
+            {
+                reason = "profile_device_unavailable";
+                continue;
+            }
+
+            var verification = Compare(session, evidence, association, CapturedReport(session, capture, "display_disconnected"));
+            return new(displayId, verification.ReasonCode, capture.Report.CapturedAt, session.Preset.Name, verification);
+        }
+        return inspection with { ReasonCode = reason };
+    }
+
     internal CalibrationVerificationReport Evaluate(GammaCalibrationSession session)
     {
-        var capture = _capture();
-        var report = Inconclusive(session, "display_disconnected") with
-        {
-            CapturedAt = capture.Report.CapturedAt,
-            IsRemoteSession = capture.Report.IsRemoteSession,
-            WindowsCalibrationLoaderEnabled = _readLoader()
-        };
+        var capture = _capture(null);
+        var report = CapturedReport(session, capture, "display_disconnected");
 
         var matches = capture.Displays.Where(item => MonitorIdentity.MatchesSavedDisplay(session.Original, item.Display)).ToArray();
         if (matches.Length != 1)
@@ -70,11 +110,16 @@ public sealed class CalibrationVerification
 
         var evidence = matches[0];
         var association = ReadSavedAssociation(session);
-        string? profileDevice = session.Original.ProfileDeviceSha256 ?? WindowsDisplayService.HashProfileDeviceKey(association?.DeviceKey);
-        if (profileDevice is not null && !WindowsDisplayService.HasUniqueProfileDevice(evidence.Display,
-            capture.Displays.Select(item => item.Display), profileDevice))
+        string? profileDevice = SavedProfileDevice(session, association);
+        if (profileDevice is not null && !WindowsDisplayService.HasUniqueProfileDevice(evidence.Display, capture.Connected, profileDevice))
             return report with { ReasonCode = "profile_device_unavailable" };
 
+        return Compare(session, evidence, association, report);
+    }
+
+    private static CalibrationVerificationReport Compare(GammaCalibrationSession session, DisplayCalibrationEvidence evidence,
+        IccAssociationBackup? association, CalibrationVerificationReport report)
+    {
         var sample = evidence.Sample;
         report = report with { DisplayId = sample.DisplayId, CurrentProfile = sample.ProfileName, SelectedProfileScope = sample.SelectedProfileScope };
         if (!CalibrationService.IsExplicitSdr(evidence.Display)) return report with { ReasonCode = "sdr_path_blocked" };
@@ -102,6 +147,24 @@ public sealed class CalibrationVerification
         return report.LogicalCurveMatches == true ? report with { Status = "matched", ReasonCode = "calibration_matches" }
             : report with { ReasonCode = sample.CurveStatus };
     }
+
+    private CalibrationVerificationReport CapturedReport(GammaCalibrationSession session, CalibrationCaptureEvidence capture, string reason) =>
+        Inconclusive(session, reason) with
+        {
+            CapturedAt = capture.Report.CapturedAt,
+            IsRemoteSession = capture.Report.IsRemoteSession,
+            WindowsCalibrationLoaderEnabled = _readLoader()
+        };
+
+    private static bool IsSavedCalibration(GammaCalibrationSession session) =>
+        session.Status == "confirmed" && !session.IsBindingRestore && session.UndoOf is null && session.InstalledProfile is not null;
+
+    private static string? SavedProfileDevice(GammaCalibrationSession session, IccAssociationBackup? association) =>
+        session.Original.ProfileDeviceSha256 ?? WindowsDisplayService.HashProfileDeviceKey(association?.DeviceKey);
+
+    // A stopped worker can leave a temporary curve or ICC selected after its lock is released.
+    private bool HasInterruptedPreview(IReadOnlyList<GammaCalibrationSession> sessions) =>
+        _recovery.List(sessions).Any(item => item.Kind != "binding" && item.Status != "prepared");
 
     private static CalibrationVerificationReport Inconclusive(GammaCalibrationSession session, string reason) =>
         new(session.Id, session.Status, "inconclusive", reason) { SavedProfile = session.InstalledProfile };

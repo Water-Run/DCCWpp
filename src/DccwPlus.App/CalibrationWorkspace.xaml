@@ -51,6 +51,8 @@
                                NavigateUri="ms-settings:display" Visibility="Collapsed" />
               <HyperlinkButton x:Name="HdrCalibrationLink" Content="{Binding Text[OpenHdrCalibrationStore]}"
                                NavigateUri="ms-windows-store://pdp/?ProductId=9N7F2SM5D1LR" Visibility="Collapsed" />
+              <Button x:Name="InspectCalibrationButton" Content="{Binding Text[InspectSavedCalibration]}" Click="InspectCalibrationClicked" />
+              <TextBlock x:Name="InspectionResult" TextWrapping="Wrap" Visibility="Collapsed" AutomationProperties.LiveSetting="Polite" />
             </StackPanel>
           </Border>
         </StackPanel>

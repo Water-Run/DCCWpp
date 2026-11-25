@@ -8,6 +8,7 @@ using Xunit;
 
 namespace DccwPlus.Windows.Tests;
 
+[Collection("Desktop mutation lock")]
 public sealed class GammaWorkerTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "dccwpp-worker-tests", Guid.NewGuid().ToString("N"));

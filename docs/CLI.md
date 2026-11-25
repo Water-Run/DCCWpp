@@ -56,6 +56,7 @@ dccwpp calibration diagnose --display <display-id> --json
 dccwpp calibration capture [--display <display-id>] --json
 dccwpp calibration compare <before.json> <after.json> --json
 dccwpp calibration verify <calibration-id> --json
+dccwpp calibration inspect --display <display-id> --json
 dccwpp presets list --json
 dccwpp presets create "Daylight" --json
 dccwpp presets create "Daylight edited" --gamma 2.35 --red-gain 0.92 --author "Studio" --json
@@ -123,6 +124,8 @@ dccwpp.exe calibration compare before.json after.json --json
 如果本机正在执行其他显示操作，已确认校准的核对返回退出码 4 和 `preview_busy`。显示操作结束后，若还有可能已经写入的 Gamma 或 ICC 预览等待回滚，核对返回 `inconclusive` 和 `recovery_required`，`capturedAt` 为空。用 `recovery status` 查找未结束的会话。只留下 `prepared` 日志或只待补写本地绑定时，仍可核对当前显示状态。
 
 实时报告分别给出 `profileSelectionMatches`、`profileFileMatches` 和 `logicalCurveMatches`。`null` 表示该项缺少证据或不可比较。`matched` 需要三项均为 `true`，其中逻辑曲线使用与保存验证相同的读回容差。在本地独立 SDR 路径发现差异时报告 `changed`。证据不足时报告 `inconclusive`，通过 `reasonCode` 指明远程会话、显示器断开、身份不唯一或缺失的证据。远程匹配的 ICC 关联和文件摘要仍可单独报告。`windowsCalibrationLoaderEnabled` 是当前 Windows 加载器设置，`colorAccuracyVerified` 固定为 `false`。退出码 0 表示已生成实时报告，仍需读取 `status`。
+
+`calibration inspect --display <display-id>` 与向导第一步的「检查已保存的校准」使用同一条只读路径。用 `displays list` 取得当前显示 ID。按显示器与配置设备定位已确认的校准，优先选择 ICC 文件名与当前 Windows 选用名称相同的记录，其次选择该设备最近一次确认的保存。缺少配置设备证据的旧日志只可在原活动路径下用作比对。命令输出 `displayId`、`reasonCode`、`capturedAt`、`presetName` 和 `verification`。可比较时，`verification` 提供与 `calibration verify` 相同的报告。`no_saved_calibration`、`display_identity_ambiguous`、`profile_device_unavailable` 和 `recovery_required` 均无比对报告，`verification` 为 `null`。目标未连接时返回退出码 3，显示操作正在进行或采样状态发生变化时返回退出码 4。命令只读取所选屏的 Gamma 表，仍检查活动拓扑以判断身份和配置设备是否唯一。
 
 已确认校准的逐屏绑定可在设置或 `bindings` 命令中启用。启用绑定仅保存偏好。Windows 登录任务由设置页单独管理。确认会话的 `bindingStatus` 表示本机绑定保存情况。旧日志中该字段可能为空。
 

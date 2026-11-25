@@ -175,6 +175,12 @@ internal static class Cli
                 if (remaining is ["calibration", "status", var statusId]) return Success(SessionSummary(client.Status(ParseId(statusId))), json);
                 if (remaining is ["calibration", "verify", var verificationId])
                     return Success(new CalibrationVerification(root).Read(ParseId(verificationId)), json);
+                if (remaining.ElementAtOrDefault(1) == "inspect")
+                {
+                    if (remaining is not ["calibration", "inspect", "--display", var displayId] || string.IsNullOrWhiteSpace(displayId))
+                        throw new ArgumentException(new LocalizationService()["InspectCalibrationUsage"]);
+                    return Success(new CalibrationVerification(root).InspectDisplay(displayId), json);
+                }
                 if (remaining is ["calibration", "confirm" or "revert", var actionId])
                 {
                     var result = await client.CommandAsync(ParseId(actionId), remaining[1]);
