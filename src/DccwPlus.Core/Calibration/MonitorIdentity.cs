@@ -25,20 +25,31 @@ public static class MonitorIdentity
             : saved.DisplayId == current.Id && saved.TargetKey == current.TargetKey && saved.DeviceName == current.DeviceName
               && (saved.SourceId is null || saved.SourceId == current.SourceId);
 
-    public static DisplayInfo? ResolveSelectedDisplay(DisplayInfo? selected, IReadOnlyList<DisplayInfo> connected)
+    public static IEnumerable<string> AmbiguousPersistenceKeys(IReadOnlyList<DisplayInfo> connected) =>
+        connected.Select(display => display.PersistenceKey).OfType<string>().Where(IsPersistenceKey)
+            .GroupBy(key => key, StringComparer.OrdinalIgnoreCase).Where(group => group.Count() > 1).Select(group => group.Key);
+
+    public static DisplayInfo? ResolveSelectedDisplay(DisplayInfo? selected, IReadOnlyList<DisplayInfo> connected,
+        bool hadAmbiguousIdentity = false)
     {
         if (selected is null) return null;
         var exact = connected.FirstOrDefault(display => display.Id == selected.Id);
         if (selected.PersistenceKey is not { } key)
-            return exact is not null && exact.TargetKey == selected.TargetKey && exact.SourceId == selected.SourceId
-                && string.Equals(exact.DeviceName, selected.DeviceName, StringComparison.OrdinalIgnoreCase)
-                && (selected.ProfileDeviceKey is null || string.Equals(exact.ProfileDeviceKey, selected.ProfileDeviceKey, StringComparison.OrdinalIgnoreCase))
-                ? exact : null;
-        if (exact is not null && SamePersistentIdentity(key, exact.PersistenceKey)) return exact;
+            return exact is not null && SameActivePath(selected, exact) ? exact : null;
 
         var matches = connected.Where(display => SamePersistentIdentity(key, display.PersistenceKey)).Take(2).ToArray();
-        return matches.Length == 1 ? matches[0] : null;
+        bool ambiguous = hadAmbiguousIdentity || matches.Length > 1;
+        if (exact is not null && SamePersistentIdentity(key, exact.PersistenceKey))
+            return !ambiguous || SameActivePath(selected, exact) ? exact : null;
+
+        // The remaining monitor may be the other device that shared this identity.
+        return !ambiguous && matches.Length == 1 ? matches[0] : null;
     }
+
+    private static bool SameActivePath(DisplayInfo selected, DisplayInfo current) =>
+        selected.TargetKey == current.TargetKey && selected.SourceId == current.SourceId
+        && string.Equals(selected.DeviceName, current.DeviceName, StringComparison.OrdinalIgnoreCase)
+        && (selected.ProfileDeviceKey is null || string.Equals(selected.ProfileDeviceKey, current.ProfileDeviceKey, StringComparison.OrdinalIgnoreCase));
 
     public static MonitorPersistenceIdentity FromEdid(ReadOnlySpan<byte> edid, string devicePath)
     {

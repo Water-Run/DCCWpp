@@ -13,7 +13,7 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 | 能力 | 0.2 状态 | 仍缺的证据或实现 |
 | --- | --- | --- |
 | WinUI 3 向导 | 已接入选屏、Gamma 参考图、亮度、对比度、灰阶、限时比较、保存和 ClearType，可跳过硬件调整。x64 沙盒已在 200% 缩放验收宽窄布局、固定步骤栏和操作区、三语导航及全屏图案，并核对原版拒绝远程校准时的入口行为 | 本地会话下的原版逐页对照、实机多屏定位、其他 DPI 和无障碍验收 |
-| SDR 写入和 ICC | 已有曲线读回、`vcgt` 生成、默认关联提交和限时撤回预览。关联前后检查安装文件的摘要，回滚检查日志中的摘要。x64 沙盒普通用户已通过 Windows API 验证虚拟显示器的 ICC 选择、替换和作用域回退 | 本地实机验证曲线写入、系统加载、应用内确认与撤回、退出和重连恢复 |
+| SDR 写入和 ICC | 已有曲线读回、`vcgt` 生成、默认关联提交和限时撤回预览。关联前后检查安装文件的摘要，回滚检查日志中的摘要。x64 沙盒普通用户已通过 Windows API 验证虚拟显示器的 ICC 选择、替换和作用域回退。x64 本地控制台三条 SDR 显示路径的只读诊断和预演已通过，前后全桌面采样一致 | 本地实机验证曲线写入、系统加载、应用内确认与撤回、退出和重连恢复 |
 | 多屏和重连 | 已探测活动拓扑和彩色模式，分开当前查询 ID 和持久身份 | 同型号/无序列号屏、扩展和复制切换、换端口的实机验证 |
 | HDR 与 Advanced Color 入口 | 区分 SDR、WCG 和 HDR，查询对应的默认 ICC，向导已接入 Windows 设置和 HDR 校准入口 | 核对实际 HDR、WCG 和 MHC2 的显示提示与跳转 |
 | 预设与 CLI | 已有草稿参数、绑定保护、重复导入和命令发现。直接预览、应用预设、撤回校准和试用 ICC 支持预演与请求 ID。Agent 可在限时预览中调整数值及切换原始与候选视图，也可查询或限时等待会话结果。x64 沙盒已验证 CLI 创建的预设在 GUI 可见，以及 GUI 导入、重复导入和显式副本的 CLI 查验 | 实机显示事务及跨版本兼容性 |
@@ -84,11 +84,13 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 
 保存后核对 ICC 确认状态和本地绑定的进度。模拟确认回执丢失、预设刷新失败和 ClearType 启动失败，确认提示仍显示已选用的 ICC。ClearType 的重试应只重开调谐器。
 
-选择非主屏后刷新列表。核对原屏重建路径且持久身份唯一时保留选中，原屏掉线或身份不明确时清空选中。旧 ID 被别的屏复用时仍按原选中身份查找。移动、全屏和启动预览前重新核对活动路径。
+选择非主屏后刷新列表。核对原屏重建路径且持久身份唯一时保留选中，原屏掉线或身份不明确时清空选中。向导运行期间记住重复的持久身份。已见重复时，即使只剩一个匹配设备，也要核对完整的原活动路径和配置设备。移动、全屏和启动预览前重新核对活动路径。[Windows 显示器设备路径](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-displayconfig_target_device_name)
+
+将全屏图案移到另一屏或使其退回普通窗口。核对图案在实际可见边界不再覆盖所选屏时关闭，同屏缩小时可重新打开。活动预览中若图案越出所选屏，应使用原会话的取消与回滚路径。向导发送新的曲线更新前再核对窗口仍在目标屏。[窗口变更通知](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.windowing.appwindowchangedeventargs) · [可见窗口边界](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowrect)
 
 向导空闲时接收 Windows 显示设置通知，并在返回校准页或重新激活窗口时刷新。核对刷新后显示模式、按钮、选屏和全屏参考图的状态。下拉列表打开或显示事务进行时应延后刷新。[Windows 显示设置通知](https://learn.microsoft.com/en-us/dotnet/api/microsoft.win32.systemevents.displaysettingschanged)
 
-用 UI Automation 检查选屏控件展开和收起时的名称。三种语言均应读到显示器名称、主屏标识和可用的桌面坐标，刷新和切换语言后保留选中。用两台同型号显示器验证坐标能区分桌面位置。[Windows 无障碍名称指引](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/basic-accessibility-information)
+用 UI Automation 检查选屏控件展开和收起时的名称。三种语言均应读到显示器名称、主屏标识和可用的桌面坐标，刷新和切换语言后保留选中。用两台同型号显示器验证坐标能区分桌面位置。可见标签相同时核对各自附加的 ID 与 `displays list` 一致。[Windows 无障碍名称指引](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/basic-accessibility-information)
 
 依照 WinUI Gallery 的控件和交互习惯完善布局。实测浅色、深色、高对比度、窄窗口、键盘导航、Narrator、焦点和三种语言。新文案同步维护三个 catalog，CLI 的字段和原因码保持语言无关。[WinUI Gallery](https://github.com/microsoft/WinUI-Gallery)
 

@@ -39,12 +39,37 @@ public sealed class MonitorIdentityTests
     public void RefreshKeepsAnExactSelectionAndDeclinesAnAmbiguousReassignment()
     {
         var selected = SelectedDisplay();
-        var other = selected with { Id = "other-path" };
+        var other = selected with { Id = "other-path", PersistenceKey = selected.PersistenceKey!.ToLowerInvariant() };
         var duplicate = selected with { Id = "duplicate-path" };
         var exact = selected with { Width = 1920 };
 
+        Assert.Single(MonitorIdentity.AmbiguousPersistenceKeys([other, exact]));
         Assert.Same(exact, MonitorIdentity.ResolveSelectedDisplay(selected, [other, exact]));
         Assert.Null(MonitorIdentity.ResolveSelectedDisplay(selected, [other, duplicate]));
+    }
+
+    [Fact]
+    public void APreviouslySharedSerialCannotMoveTheSelectionToTheOnlyRemainingDisplay()
+    {
+        var selected = SelectedDisplay();
+        var other = selected with { Id = "other-path", TargetKey = "other-target", DeviceName = "DISPLAY2", SourceId = 2,
+            ProfileDeviceKey = "other-device" };
+
+        Assert.Null(MonitorIdentity.ResolveSelectedDisplay(selected, [other], hadAmbiguousIdentity: true));
+        Assert.Same(selected, MonitorIdentity.ResolveSelectedDisplay(selected, [selected], hadAmbiguousIdentity: true));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ASharedSerialDoesNotKeepAnExactIdWhoseProfileDeviceChanged(bool previouslyShared)
+    {
+        var selected = SelectedDisplay();
+        var replacement = selected with { ProfileDeviceKey = "other-device" };
+        var other = selected with { Id = "other-path", ProfileDeviceKey = "another-device" };
+        DisplayInfo[] connected = previouslyShared ? [replacement] : [replacement, other];
+
+        Assert.Null(MonitorIdentity.ResolveSelectedDisplay(selected, connected, hadAmbiguousIdentity: previouslyShared));
     }
 
     [Fact]

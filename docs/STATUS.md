@@ -1,5 +1,25 @@
 # 开发交接
 
+验收条目保留测试时使用的构建 ID。历史合并前的构建 ID 对应当时的包和 CI 记录。
+
+## 2026-11-25 · 同一持久身份的显示器选中保护
+
+- 向导记住本次运行中发现的重复持久身份。已知重复时，原活动 ID、目标、源及可用的配置设备需要匹配才能保留选中。即使只剩一条匹配路径，也会在无法核对时清空并提示重新选择。相同的可见标签附加与 CLI 一致的显示器 ID。[选屏验收项](ROADMAP.md)
+- 新增的三个回归用例复现了旧版误留或误选另一台显示器。沙盒普通用户使用模拟显示拓扑的诊断包验证了三语标签、重复身份断开及重选后仍保留保护，以及唯一身份随路径变化保留选中。校准会话数为零，诊断包已卸载。记录位于 `artifacts/monitor-selection-probe/937fe087-d179-4ed6-93af-b8c816c66dbe/results/monitor-selection.json`。本地控制台的两条同名路径有不同坐标及 CLI ID，真实重复 EDID 设备热插拔仍待验收。
+- 356 项单元及模拟测试、166 项本机 CLI 进程检查、x64 开发 MSIX 校验通过。
+
+## 2026-11-25 · 本地控制台 SDR 只读验收
+
+- 用 `2f6f9ad` 的 x64 CLI 在 Windows build 26340 本地控制台验收三条独立 SDR 扩展显示路径。`calibration diagnose` 均能读回逻辑曲线，Windows 校准加载器处于启用状态。一条路径读到系统 ICC，其余两条均明确无默认 ICC。以 Gamma 2.3 和红色增益 0.97 对三条路径执行 `calibration preview --dry-run`，均返回 `canPreview: true` 和 `changesDisplay: false`。
+- 前后采样使用全桌面范围，`calibration compare` 返回 `matched`、`fullDesktopCoverage: true` 和 `sameSessionType: true`。隔离数据目录中的校准会话数为零。系统自带 DCCW 文件版本为 `10.0.26100.9949`。记录位于 `artifacts/local-sdr-readonly/fe74518b-452b-4fb9-8b9c-1efea673ec39/summary.json`。真实曲线写入、回滚、原生向导对照和光学效果仍待人工验收。
+- Windows Sandbox build 26100 普通用户在 200% 缩放下采集了向导内和全屏的 Gamma 图案。两张截图的数据均包含灰值 186 的中心和单个物理像素黑白交替的棋盘格。沙盒中的 Windows 设置未提供显示缩放控件，本地三条路径当前同为 200%。100% 和 150% 的实际窗口渲染仍待验收。截图和设置探测结果位于 `artifacts/gamma-dpi-sandbox/d313a382-2cdb-4712-be40-77c1040dc6f7/results/`。[Windows 显示缩放设置](https://support.microsoft.com/en-gb/windows/hardware/display-graphics/change-your-screen-resolution-and-layout-in-windows)
+
+## 2026-11-25 · 全屏参考图的窗口位置复核
+
+- 用 Windows 报告的可见窗口边界核对参考图是否完整覆盖所选显示器。窗口退回普通大小时关闭参考图并提示重开。活动预览中若参考图越出目标屏，则在下次检查时走现有取消与回滚路径。向导发送曲线更新前也复核窗口位置。[窗口变更通知](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.windowing.appwindowchangedeventargs) · [可见窗口边界](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowrect)
+- 在 Windows Sandbox build 26100 的普通用户桌面使用 200% 缩放复现。原包的全屏窗口从 2430 × 1304 变为同屏普通窗口后仍保留。新版关闭参考图并显示提示，重开时回到原尺寸并保留 Gamma 步骤。抽查三个圆点的灰值均为 186，周边棋盘格仍为单个物理像素黑白交替，重开前后的抽查区逐像素一致。基线和新版报告分别位于 `artifacts/fullscreen-placement-lab/8a347c2e-96c1-443d-9902-9b2c148a0224/results/placement.json` 与 `artifacts/fullscreen-placement-lab/4d8d238f-171c-45d9-842a-21c2c410c832/results/placement.json`。
+- 353 项单元及模拟测试、166 项本机 CLI 进程检查和 x64 开发 MSIX 内容校验通过。沙盒运行未创建校准会话，测试结束后卸载开发包。实机多屏移动与校准回滚仍待验收。
+
 ## 2026-11-25 · 在登录恢复写入前复核 Windows 权限
 
 - 后台在恢复事务开始时、曲线写入前和最终读回之后重新查询 Windows 登录任务。禁用时停止当前批次。任务状态暂不可读或查询超时时，以 `startup_unavailable` 暂缓恢复。已经写入的曲线按现有事务回滚规则处理，未完成的回滚继续留在恢复报告中。[CLI 契约](CLI.md)

@@ -9,3 +9,4 @@
 - Reference RunOnce packaging and Clash# localization concepts without copying their product identity or licensing incompatible code.
 - Build: `./scripts/Build.ps1 -Test`; package: `./scripts/Build.ps1 -Configuration Release -Package`.
 - Keep signing keys and real Store association artifacts out of version control. Do not change real user display settings as part of automated tests.
+- Group related changes into tested milestone commits. Keep at most one Windows Sandbox instance active and reuse it for related checks when practical.

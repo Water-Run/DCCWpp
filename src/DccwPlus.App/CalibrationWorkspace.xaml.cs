@@ -32,6 +32,8 @@ public sealed partial class CalibrationWorkspace : UserControl
     private DispatcherQueueTimer? _timer, _debounce, _displayRefresh;
     private bool _setting, _busy, _pushing, _dirty, _timerBusy;
     private bool _displayRefreshPending, _closed;
+    private readonly HashSet<string> _ambiguousDisplayIdentities = new(StringComparer.OrdinalIgnoreCase);
+    private bool _previewPatternLeftDisplay;
     private bool _workerExited;
     private bool _calibrationPageVisible = true;
     private DateTimeOffset _lastHeartbeat;
@@ -63,6 +65,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         GammaTargetPattern.SetPattern(ReferencePatternKind.Gamma, GammaExample.Balanced);
         GammaHighPattern.SetPattern(ReferencePatternKind.Gamma, GammaExample.TooHigh);
         PresetName.Text = model.Text["DefaultPresetName"];
+        _ambiguousDisplayIdentities.UnionWith(MonitorIdentity.AmbiguousPersistenceKeys(model.Displays));
         UpdateDisplayOptions(model.Displays.FirstOrDefault());
         UpdateStepLabels();
         _timer = DispatcherQueue.CreateTimer(); _timer.Interval = TimeSpan.FromSeconds(1); _timer.Tick += TimerTick;
@@ -159,6 +162,7 @@ public sealed partial class CalibrationWorkspace : UserControl
             _draft = CurrentPreset() with { Id = Guid.NewGuid(), CreatedAt = DateTimeOffset.UtcNow };
             OriginalToggle.IsOn = false;
             _dirty = false;
+            _previewPatternLeftDisplay = false;
             _session = await _client.BeginAsync(display.Id, _draft, 60, windowOwned: true);
             if (Active) { _timer!.Start(); StepPicker.SelectedIndex = 1; Show("PreviewActive", InfoBarSeverity.Informational); }
             else ShowState();
@@ -177,6 +181,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         {
             do
             {
+                if (!OnPreviewDisplay()) { await CancelAsync(targetMoved: true); return false; }
                 sendingEdits = _dirty;
                 _dirty = false;
                 var preset = sendingEdits ? CurrentPreset() : null;
@@ -317,6 +322,7 @@ public sealed partial class CalibrationWorkspace : UserControl
                 return;
             }
             OriginalToggle.IsOn = false;
+            _previewPatternLeftDisplay = false;
             _session = await _client.BeginUndoAsync(saved.Id, windowOwned: true, expectedDisplayId: display.Id);
             if (Active)
             {
@@ -506,6 +512,16 @@ public sealed partial class CalibrationWorkspace : UserControl
             return new DisplayOption(display, string.Join(" · ", details));
         }).ToArray();
 
+        var repeatedLabels = options.GroupBy(option => option.ToString(), StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        for (int index = 0; index < options.Length; index++)
+        {
+            var option = options[index];
+            if (!repeatedLabels.Contains(option.ToString())) continue;
+            string id = string.Format(_model.Text["DisplayQueryId"], option.Display.Id);
+            options[index] = option with { Details = option.Details + " · " + id };
+        }
+
         bool previousSetting = _setting;
         _setting = true;
         try
@@ -602,7 +618,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         var selected = SelectedDisplay;
         if (!_model!.RefreshDisplays() && !manual) return;
 
-        var current = MonitorIdentity.ResolveSelectedDisplay(selected, _model.Displays);
+        var current = ResolveSelectedDisplay(selected, _model.Displays);
         UpdateDisplayOptions(current);
         bool lostSelection = selected is not null && current is null;
         if (manual || lostSelection) UpdateDisplaySelection();
@@ -614,9 +630,16 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (lostSelection) Show("DisplaySelectionLost", InfoBarSeverity.Warning);
     }
 
+    private DisplayInfo? ResolveSelectedDisplay(DisplayInfo? selected, IReadOnlyList<DisplayInfo> connected)
+    {
+        _ambiguousDisplayIdentities.UnionWith(MonitorIdentity.AmbiguousPersistenceKeys(connected));
+        bool ambiguous = selected?.PersistenceKey is { } key && _ambiguousDisplayIdentities.Contains(key);
+        return MonitorIdentity.ResolveSelectedDisplay(selected, connected, ambiguous);
+    }
+
     private DisplayInfo? CheckSelectedDisplay(DisplayInfo selected, IReadOnlyList<DisplayInfo> connected)
     {
-        var current = MonitorIdentity.ResolveSelectedDisplay(selected, connected);
+        var current = ResolveSelectedDisplay(selected, connected);
         if (current?.Id == selected.Id) return current;
         RequestDisplayRefresh();
         Show("DisplayUnavailable", InfoBarSeverity.Warning);
@@ -631,8 +654,13 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (display is null) { ClosePatternWindow(); return; }
         if (Active && (!OnPreviewDisplay() || display.TargetKey != _session!.Original.TargetKey
             || display.SourceId != _session.Original.SourceId || display.DeviceName != _session.Original.DeviceName))
-        { ClosePatternWindow(); Show("DisplayUnavailable", InfoBarSeverity.Warning); return; }
-        if (_patternWindow is not null && DisplayWindowPlacement.IsOnDisplay(_patternWindow, display.DeviceName))
+        {
+            _previewPatternLeftDisplay = true;
+            ClosePatternWindow();
+            Show("DisplayUnavailable", InfoBarSeverity.Warning);
+            return;
+        }
+        if (_patternWindow is not null && DisplayWindowPlacement.IsFullScreenOnDisplay(_patternWindow, display.DeviceName))
         { _patternWindow.Activate(); return; }
         ClosePatternWindow();
         var text = _model.Text;
@@ -708,8 +736,28 @@ public sealed partial class CalibrationWorkspace : UserControl
             if (!DisplayWindowPlacement.IsOnDisplay(window, display.DeviceName))
             { ClosePatternWindow(); Show("DisplayUnavailable", InfoBarSeverity.Warning); return; }
             window.Activate();
+            if (!DisplayWindowPlacement.IsFullScreenOnDisplay(window, display.DeviceName))
+            { ClosePatternWindow(); Show("DisplayUnavailable", InfoBarSeverity.Warning); return; }
+            window.AppWindow.Changed += (_, change) =>
+            {
+                if (change.DidPositionChange || change.DidSizeChange || change.DidPresenterChange)
+                    DispatcherQueue.TryEnqueue(() => CheckPatternPlacement(window, display.DeviceName));
+            };
+            if (Outcome.Message == text["FullScreenLost"]) Outcome.IsOpen = false;
         }
         catch (Exception ex) { ClosePatternWindow(); ShowError(ex); }
+    }
+
+    private void CheckPatternPlacement(Window window, string deviceName)
+    {
+        if (!ReferenceEquals(_patternWindow, window)) return;
+        bool onDisplay = DisplayWindowPlacement.IsFrameOnDisplay(window, deviceName, out bool fillsDisplay);
+        if (onDisplay && fillsDisplay) return;
+
+        bool cancelPreview = Active && !onDisplay;
+        if (cancelPreview) _previewPatternLeftDisplay = true;
+        ClosePatternWindow();
+        if (!cancelPreview) Show("FullScreenLost", InfoBarSeverity.Warning);
     }
     private void UpdateFullScreenControls()
     {
@@ -736,9 +784,9 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
     private bool OnPreviewDisplay()
     {
-        return _session is not null && _window is not null
+        return !_previewPatternLeftDisplay && _session is not null && _window is not null
             && DisplayWindowPlacement.IsOnDisplay(_window, _session.Original.DeviceName)
-            && (_patternWindow is null || DisplayWindowPlacement.IsOnDisplay(_patternWindow, _session.Original.DeviceName));
+            && (_patternWindow is null || DisplayWindowPlacement.IsFrameOnDisplay(_patternWindow, _session.Original.DeviceName, out _));
     }
     private void ClosePatternWindow()
     {

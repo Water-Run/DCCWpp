@@ -9,6 +9,7 @@ namespace DccwPlus.App;
 internal static class DisplayWindowPlacement
 {
     private const uint MonitorDefaultToNearest = 2;
+    private const uint ExtendedFrameBounds = 9;
 
     public static void SizeInitialWindow(Window window, SizeInt32 preferredSizeInDips)
     {
@@ -28,6 +29,22 @@ internal static class DisplayWindowPlacement
     {
         nint monitor = MonitorFromWindow(WindowNative.GetWindowHandle(window), 0);
         return Matches(monitor, deviceName);
+    }
+
+    public static bool IsFullScreenOnDisplay(Window window, string deviceName) =>
+        IsFrameOnDisplay(window, deviceName, out bool fillsDisplay) && fillsDisplay;
+
+    public static bool IsFrameOnDisplay(Window window, string deviceName, out bool fillsDisplay)
+    {
+        fillsDisplay = false;
+        nint handle = WindowNative.GetWindowHandle(window);
+        if (!TryGetMonitorInfo(MonitorFromWindow(handle, 0), out var monitor) || !NameMatches(monitor, deviceName))
+            return false;
+        // DWM reports physical bounds without invisible resize borders, in the same coordinates as the monitor.
+        if (DwmGetWindowAttribute(handle, ExtendedFrameBounds, out var frame, Marshal.SizeOf<NativeRect>()) != 0
+            || !frame.HasArea || !monitor.MonitorRect.Contains(frame)) return false;
+        fillsDisplay = frame.Width == monitor.MonitorRect.Width && frame.Height == monitor.MonitorRect.Height;
+        return true;
     }
 
     public static bool MoveToDisplay(Window window, string deviceName)
@@ -82,6 +99,8 @@ internal static class DisplayWindowPlacement
         public readonly int Width => Right - Left;
         public readonly int Height => Bottom - Top;
         public readonly bool HasArea => Width > 0 && Height > 0;
+        public readonly bool Contains(NativeRect rect) =>
+            Left <= rect.Left && Top <= rect.Top && Right >= rect.Right && Bottom >= rect.Bottom;
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -90,6 +109,7 @@ internal static class DisplayWindowPlacement
 
     [DllImport("user32.dll")] private static extern nint MonitorFromWindow(nint window, uint flags);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint window);
+    [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(nint window, uint attribute, out NativeRect value, int size);
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumDisplayMonitors(nint dc, nint clip, MonitorCallback callback, nint context);
