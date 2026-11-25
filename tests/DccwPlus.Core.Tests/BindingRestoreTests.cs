@@ -267,7 +267,8 @@ public sealed class BindingRestoreTests
             AfterWrite?.Invoke();
             return true;
         }
-        public GammaProfileSelection Commit(GammaCalibrationSession session) => throw new InvalidOperationException("The restore must reuse the selected profile.");
+        public GammaProfileSelection Commit(GammaCalibrationSession session, AuthorizeCalibrationCommit authorize) =>
+            throw new InvalidOperationException("The restore must reuse the selected profile.");
         public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null) =>
             throw new InvalidOperationException("The restore must not change the profile.");
     }
@@ -275,6 +276,10 @@ public sealed class BindingRestoreTests
     private sealed class Journal : IGammaCalibrationJournal
     {
         public List<GammaCalibrationSession> Sessions { get; } = [];
-        public void Save(GammaCalibrationSession session) => Sessions.Add(session);
+        public void Save(GammaCalibrationSession session, Action? beforePublish = null)
+        {
+            beforePublish?.Invoke();
+            Sessions.Add(session);
+        }
     }
 }

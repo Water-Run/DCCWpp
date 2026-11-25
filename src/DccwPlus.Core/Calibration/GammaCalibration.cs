@@ -50,6 +50,8 @@ public sealed record GammaCalibrationSession
     [JsonIgnore]
     public bool NeedsBindingCompletion => Status == "confirmed" && !IsBindingRestore && BindingStatus == "pending";
 }
+public delegate void AuthorizeCalibrationCommit(bool changesProfileSelection = false);
+
 public interface IGammaCalibrationBackend
 {
     GammaDeviceState Read(string displayId);
@@ -57,14 +59,15 @@ public interface IGammaCalibrationBackend
     GammaDeviceState ReadRecoveryTarget(GammaDeviceState original) => Read(original.DisplayId);
     // Evaluate canWrite after validation, immediately before the native write. False means no write was attempted.
     bool TryWrite(GammaDeviceState expected, GammaRamp ramp, Func<bool>? canWrite = null);
+    // Authorize each native write immediately before issuing it. Pass true for association and scope writes.
     // Return the intended ICC selection for the transaction's final readback.
-    GammaProfileSelection Commit(GammaCalibrationSession session);
+    GammaProfileSelection Commit(GammaCalibrationSession session, AuthorizeCalibrationCommit authorize);
     // Returns true for a verified reversal of the session's ICC selection from the expected pre-restore state.
     // Call beforeSelectionRestore after validating that state and before changing the effective selection.
     // recovery_target_changed and previous_system_profile_changed reject the operation before an ICC write.
     bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null);
 }
-public interface IGammaCalibrationJournal { void Save(GammaCalibrationSession session); }
+public interface IGammaCalibrationJournal { void Save(GammaCalibrationSession session, Action? beforePublish = null); }
 
 public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend, IGammaCalibrationJournal journal,
     TimeProvider? timeProvider = null, Func<bool>? isOwnerAlive = null, Func<string?>? getCancellationReason = null)
@@ -170,31 +173,43 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
     public GammaCalibrationSession Confirm(BindingSaveIntent? bindingIntent = null)
     {
         Tick(); if (Session!.Status != "previewing") return Session;
+        bool associationWriteAuthorized = false;
         try
         {
             Apply(Session.Candidate);
             if (Session.Status != "previewing" || RevertIfStopped()) return Session;
             Session = Session! with { ProfileCommitStarted = true, ShowingOriginal = false, BindingIntent = bindingIntent };
             Persist("committing", "saving_profile");
-            if (StopReason() is { } stopped)
-            {
-                Session = Session with { ProfileCommitStarted = false, BindingIntent = null };
-                return Revert(stopped);
-            }
-            var selection = backend.Commit(Session!);
+            AuthorizeCommit();
+            var selection = backend.Commit(Session!, AuthorizeCommit);
             Session = Session! with { InstalledProfile = selection.ProfileName };
             var current = backend.Read(Session.Original.DisplayId);
+            AuthorizeCommit();
             if (!SameTarget(Session.Original, current) || !current.Ramp.Matches(Session.Candidate, ReadbackTolerance))
                 throw new IOException("Calibration curve changed while saving the profile.");
             if (!selection.Matches(current))
                 throw new ProfilePreviewException("profile_selection_changed", new LocalizationService()["ProfileChangedBeforeSave"]);
-            if (Session.IsBindingRestore && getCancellationReason?.Invoke() is { } canceled) return Revert(canceled);
             if (!Session.IsBindingRestore) Session = Session with { BindingStatus = "pending" };
-            Persist("confirmed", "confirmed", true);
+            Persist("confirmed", "confirmed", true, beforePublish: () => AuthorizeCommit());
+        }
+        catch (CalibrationCommitStoppedException ex)
+        {
+            Session = Session! with { BindingStatus = null };
+            // A logged write intent can precede the deadline check. If this process refused every association
+            // write, rollback may restore its curve but cannot claim ownership of another application's ICC.
+            if (!associationWriteAuthorized)
+                Session = Session with { ProfileCommitStarted = false, BindingIntent = null };
+            return Revert(ex.ReasonCode);
         }
         catch (ProfilePreviewException ex) when (ex.Code == "profile_selection_changed") { Revert(ex.Code); throw; }
         catch { Revert("commit_failed"); throw; }
         return Session!;
+
+        void AuthorizeCommit(bool changesProfileSelection = false)
+        {
+            if (StopReason() is { } reason) throw new CalibrationCommitStoppedException(reason);
+            associationWriteAuthorized |= changesProfileSelection;
+        }
     }
     public GammaCalibrationSession Revert(string reason = "user_reverted") => Revert(reason, interrupted: false);
 
@@ -387,6 +402,15 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
     { Session = Session! with { Status = "recovery-pending", ReasonCode = reason, CurveReadbackVerified = false }; journal.Save(Session); return Session; }
     private GammaCalibrationSession Superseded(string reason)
     { Persist("superseded", reason); return Session!; }
-    private void Persist(string status, string reason, bool verified = false)
-    { var next = Session! with { Status = status, ReasonCode = reason, CurveReadbackVerified = verified }; journal.Save(next); Session = next; }
+    private void Persist(string status, string reason, bool verified = false, Action? beforePublish = null)
+    {
+        var next = Session! with { Status = status, ReasonCode = reason, CurveReadbackVerified = verified };
+        journal.Save(next, beforePublish);
+        Session = next;
+    }
+
+    private sealed class CalibrationCommitStoppedException(string reasonCode) : Exception(reasonCode)
+    {
+        public string ReasonCode { get; } = reasonCode;
+    }
 }

@@ -260,7 +260,7 @@ public sealed class GammaCalibrationTests
             Ramp = GammaRampMath.Compose(GammaRamp.Identity(), new() { Gamma = 1.8 })
         };
         var interrupted = fixture.Begin() with { Status = "committing", ProfileCommitStarted = true };
-        fixture.Backend.Commit(interrupted);
+        fixture.Backend.Commit(interrupted, _ => { });
         return interrupted;
     }
 
@@ -660,6 +660,64 @@ public sealed class GammaCalibrationTests
         Assert.True(fixture.Backend.ProfileRestoreCalled);
         Assert.True(fixture.Backend.State.Ramp.Matches(GammaRamp.Identity()));
     }
+
+    [Theory]
+    [InlineData("before-association", false)]
+    [InlineData("before-association", true)]
+    [InlineData("after-association", false)]
+    [InlineData("after-association", true)]
+    [InlineData("publish-confirmation", false)]
+    [InlineData("publish-confirmation", true)]
+    public void InterruptedSaveCannotConfirmAnExpiredOrOwnerlessPreview(string step, bool ownerExits)
+    {
+        bool ownerAlive = true;
+        var fixture = new Fixture(() => ownerAlive);
+        var preview = fixture.Begin(windowOwned: true);
+        var intent = new BindingSaveIntent(null);
+        if (step == "before-association") fixture.Backend.BeforeCommit = StopPreview;
+        else if (step == "after-association") fixture.Backend.AfterCommit = StopPreview;
+        else fixture.Journal.BeforeSave = session => { if (session.Status == "confirmed") StopPreview(); };
+
+        var result = fixture.Engine.Confirm(intent);
+
+        Assert.Equal("reverted", result.Status);
+        Assert.Equal(ownerExits ? "owner_exited" : "preview_expired", result.ReasonCode);
+        bool wroteAssociation = step != "before-association";
+        Assert.Equal(wroteAssociation, fixture.Backend.Committed);
+        Assert.Equal(wroteAssociation, fixture.Backend.ProfileRestoreCalled);
+        Assert.Equal(wroteAssociation, result.ProfileCommitStarted);
+        Assert.False(result.NeedsBindingCompletion);
+        Assert.Equal(preview.Original.ProfileName, fixture.Backend.State.ProfileName);
+        Assert.Equal(preview.Original.SelectedProfileScope, fixture.Backend.State.SelectedProfileScope);
+        Assert.True(preview.Original.Ramp.Matches(fixture.Backend.State.Ramp));
+
+        void StopPreview()
+        {
+            if (ownerExits) ownerAlive = false;
+            else fixture.Clock.Advance(31);
+        }
+    }
+
+    [Fact]
+    public void ExpiryBeforeAssociationWritePreservesAnExternalProfileChange()
+    {
+        var fixture = new Fixture();
+        var preview = fixture.Begin();
+        fixture.Backend.BeforeCommit = () =>
+        {
+            fixture.Backend.State = fixture.Backend.State with { ProfileName = "External.icc", ProfileScope = "current-user" };
+            fixture.Clock.Advance(31);
+        };
+
+        var result = fixture.Engine.Confirm();
+
+        Assert.Equal("superseded", result.Status);
+        Assert.Equal("external_profile_change", result.ReasonCode);
+        Assert.False(fixture.Backend.Committed);
+        Assert.False(fixture.Backend.ProfileRestoreCalled);
+        Assert.Equal("External.icc", fixture.Backend.State.ProfileName);
+        Assert.True(preview.Candidate.Matches(fixture.Backend.State.Ramp));
+    }
     [Fact] public void UpdateFailureRestoresEvenWhenThePreviousOwnCurveWasActive()
     {
         var fixture = new Fixture(); fixture.Begin();
@@ -994,9 +1052,10 @@ public sealed class GammaCalibrationTests
         public Action<GammaCalibrationSession>? BeforeSave { get; set; }
         public GammaCalibrationSession? LastApplying { get; private set; }
         public GammaCalibrationSession? LastCommitting { get; private set; }
-        public void Save(GammaCalibrationSession session)
+        public void Save(GammaCalibrationSession session, Action? beforePublish = null)
         {
             BeforeSave?.Invoke(session);
+            beforePublish?.Invoke();
             if (session.Status == "applying") LastApplying = session;
             if (session.Status == "committing") LastCommitting = session;
         }
@@ -1034,9 +1093,10 @@ public sealed class GammaCalibrationTests
             State = State with { Ramp = ramp.Copy() };
             return true;
         }
-        public GammaProfileSelection Commit(GammaCalibrationSession session)
+        public GammaProfileSelection Commit(GammaCalibrationSession session, AuthorizeCalibrationCommit authorize)
         {
             BeforeCommit?.Invoke();
+            authorize(changesProfileSelection: true);
             if (FailCommit) throw new IOException("commit failure");
             Committed = true;
             const string installed = "DCCWPlus-test.icc";

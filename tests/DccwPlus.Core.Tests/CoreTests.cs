@@ -28,6 +28,24 @@ public sealed class CoreTests : IDisposable
     }
 
     [Fact]
+    public void RefusingAtomicPublicationPreservesThePreviousVersionAndRemovesTheStagedFile()
+    {
+        string path = Path.Combine(_root, "state.json");
+        AtomicFile.Write(path, "committing"u8.ToArray());
+
+        Assert.Throws<OperationCanceledException>(() => AtomicFile.Write(path, "confirmed"u8.ToArray(), beforePublish: () =>
+        {
+            string staged = Assert.Single(Directory.EnumerateFiles(_root, "*.tmp"));
+            Assert.Equal("confirmed", File.ReadAllText(staged));
+            Assert.Equal("committing", File.ReadAllText(path));
+            throw new OperationCanceledException();
+        }));
+
+        Assert.Equal("committing", File.ReadAllText(path));
+        Assert.Equal(path, Assert.Single(Directory.EnumerateFiles(_root)));
+    }
+
+    [Fact]
     public void ImportKeepsIntentAndCreatesANewIdentity()
     {
         var original = CalibrationPreset.Create("夜间 / Night", new() { Gamma = 2.35, RedGain = 0.9 });

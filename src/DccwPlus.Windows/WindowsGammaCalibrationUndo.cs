@@ -71,7 +71,7 @@ public sealed partial class WindowsGammaCalibrationBackend
         return (target, backup with { TargetKey = target.TargetKey, SourceId = target.SourceId.Value });
     }
 
-    private GammaProfileSelection CommitUndo(GammaCalibrationSession undo, Guid calibrationId)
+    private GammaProfileSelection CommitUndo(GammaCalibrationSession undo, Guid calibrationId, AuthorizeCalibrationCommit authorize)
     {
         var saved = _store.Load(calibrationId);
         if (!undo.Candidate.Matches(saved.Original.Ramp))
@@ -80,13 +80,13 @@ public sealed partial class WindowsGammaCalibrationBackend
         if (!GammaCalibrationTransaction.SameTarget(undo.Original, current)
             || !GammaCalibrationTransaction.SameProfile(undo.Original, current))
             throw new ProfilePreviewException("display_state_changed", "The display changed during the undo preview.");
-        RestoreSavedAssociation(undo.Original, backup, current, saved.Original.ProfileName, undo.Id);
+        RestoreSavedAssociation(undo.Original, backup, current, saved.Original.ProfileName, undo.Id, authorize: authorize);
 
         var selection = new GammaProfileSelection(saved.Original.ProfileName, saved.Original.ProfileScope, ScopeName(backup.Scope));
         var restored = Read(undo.Original.DisplayId, backup.DeviceKey);
         if (!GammaCalibrationTransaction.SameTarget(undo.Original, restored) || !selection.Matches(restored))
             throw new ProfilePreviewException("undo_profile_not_verified", "Windows did not report the previous profile and scope.");
-        if (NeedsCurveWriteAfterAssociation(undo, restored.Ramp, "undo_curve_changed")) TryWrite(restored, undo.Candidate);
+        WriteCurveAfterAssociation(undo, restored, "undo_curve_changed", authorize);
         return selection;
     }
 

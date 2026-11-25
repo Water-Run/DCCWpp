@@ -189,11 +189,13 @@ Gamma、ICC 和撤回预演都先检查显示操作是否忙碌，以及是否�
 
 `calibration preview` 使用同一套检查。Gamma 范围为 1–3，默认 2.2。`--red-gain`、`--green-gain` 和 `--blue-gain` 范围为 0.5–1.5，默认 1。预演通过或因色彩模式被阻止时，`data` 含 `displayId`、`calibration`、`canPreview`、`reasonCode`、`timeoutSeconds` 和 `changesDisplay`。直接输入只在事务中暂存，在确认保存后可出现在预设库。
 
-**未带 `--dry-run` 的 `apply` 和 `calibration preview` 会实际写入所选 SDR 显示器的临时 Gamma 曲线。** 命令返回 `sessionId` 和固定的 `expiresAt`。CLI 时限为 10–60 秒，更新参数或切回原曲线都沿用同一时限。未在到期前进入保存流程的会话会尝试恢复原曲线。`confirm` 保存 ICC 并在 Windows 中选用，`revert` 取消尚未确认的预览，`recover` 尝试恢复中断会话。
+**未带 `--dry-run` 的 `apply` 和 `calibration preview` 会实际写入所选 SDR 显示器的临时 Gamma 曲线。** 命令返回 `sessionId` 和固定的 `expiresAt`。CLI 时限为 10–60 秒，更新参数、切回原曲线和确认都沿用同一时限。`confirm` 保存 ICC 并在 Windows 中选用，`revert` 取消尚未确认的预览，`recover` 尝试恢复中断会话。
 
 新生成的 ICC 描述包含会话短编号和预设名。自动化查找仍使用 `installedProfile` 的 `DCCWPlus-<会话 UUID 去除连字符>.icc` 文件名。ICC v2 中，无法用 ASCII 表示的预设名保存在 Unicode 描述里，ASCII 字段保留短编号。[ICC 描述格式](https://www.color.org/icc_specs2/)
 
 Gamma 工作进程会在读取显示状态、写入预览日志后以及调用驱动前复核期限。首次预览若在任何写入获准前到期，日志以 `reverted` 和 `preview_expired` 结束，`curveReadbackVerified` 为 `false`。更新或确认跨过期限时，工作进程只按已获准的曲线写入判断能否回退。若其他应用写入了恰好与未获准更新相同的曲线，会保留外部曲线。如果驱动写入已开始，则在返回后到期时尝试回退。[Windows Gamma Ramp 文档](https://learn.microsoft.com/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp)
+
+保存或撤回时，在安装 ICC、修改关联与作用域、重新写入曲线以及发布确认日志之前复核期限和窗口所有者。若 Windows 调用已开始，则等该次调用返回后尝试回退，保留 `preview_expired` 或 `owner_exited` 原因。目标或配置冲突时，会话仍按恢复规则记录结果。ICC 安装和选用是独立操作，已经安装的文件可能留在 Windows 中。用 `calibration status` 查询回退或待恢复的状态。[安装 ICC](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-installcolorprofilew) · [关联 ICC](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-colorprofileadddisplayassociation)
 
 `calibration update` 可通过数值选项调整当前普通预览，仅替换传入的参数。也可用 `--preset` 切换到已保存的预设。`--original` 查看原始曲线，`--adjusted` 查看当前候选曲线，单独使用只切换视图。成功响应中 `calibration` 是候选预设参数，`showingOriginal` 表示当前视图。若预览已经结束或在更新时进入回退，命令返回退出码 4，`error.code` 记录原因，例如 `preview_expired`。确认提交候选曲线。撤回已保存校准使用 `calibration undo`，它的候选曲线来自原校准备份。
 

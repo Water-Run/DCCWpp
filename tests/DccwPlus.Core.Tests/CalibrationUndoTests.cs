@@ -83,6 +83,28 @@ public sealed class CalibrationUndoTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UndoExpiryDuringConfirmationKeepsTheSavedProfileAndCurve(bool afterProfileSwitch)
+    {
+        var fixture = new Fixture();
+        fixture.Begin();
+        if (afterProfileSwitch) fixture.Backend.AfterCommit = Expire;
+        else fixture.Backend.BeforeCommit = Expire;
+
+        var result = fixture.Engine.Confirm();
+
+        Assert.Equal("reverted", result.Status);
+        Assert.Equal("preview_expired", result.ReasonCode);
+        Assert.Equal(afterProfileSwitch ? 2 : 0, fixture.Backend.ProfileWrites);
+        Assert.Equal(fixture.Saved.InstalledProfile, fixture.Backend.Current.ProfileName);
+        Assert.Equal("current-user", fixture.Backend.Current.SelectedProfileScope);
+        Assert.True(fixture.Backend.Current.Ramp.Matches(fixture.Saved.Candidate));
+
+        void Expire() => fixture.To(TimeSpan.FromSeconds(31));
+    }
+
+    [Theory]
     [InlineData("profile")]
     [InlineData("curve")]
     [InlineData("target")]
@@ -129,7 +151,7 @@ public sealed class CalibrationUndoTests
         {
             var store = new GammaCalibrationStore(root);
             store.Save(active with { Status = "committing", ProfileCommitStarted = true });
-            fixture.Backend.Commit(active);
+            fixture.Backend.Commit(active, _ => { });
             var recovered = new GammaCalibrationTransaction(fixture.Backend, store).Recover(store.Load(active.Id));
             Assert.Equal("reverted", recovered.Status);
             Assert.Equal(fixture.Saved.Id, recovered.UndoOf);
@@ -170,7 +192,10 @@ public sealed class CalibrationUndoTests
         public void To(TimeSpan elapsed) => _clock.Elapsed = elapsed;
     }
 
-    private sealed class Journal : IGammaCalibrationJournal { public void Save(GammaCalibrationSession session) { } }
+    private sealed class Journal : IGammaCalibrationJournal
+    {
+        public void Save(GammaCalibrationSession session, Action? beforePublish = null) => beforePublish?.Invoke();
+    }
 
     private sealed class Clock : TimeProvider
     {
@@ -188,6 +213,7 @@ public sealed class CalibrationUndoTests
         };
         public int ProfileWrites { get; private set; }
         public bool FailAfterChangingProfile { get; set; }
+        public Action? BeforeCommit { get; set; }
         public Action? AfterCommit { get; set; }
         public GammaDeviceState Read(string displayId) => Current with { Ramp = Current.Ramp.Copy() };
         public bool TryWrite(GammaDeviceState expected, GammaRamp ramp, Func<bool>? canWrite = null)
@@ -196,8 +222,10 @@ public sealed class CalibrationUndoTests
             Current = Current with { Ramp = ramp.Copy() };
             return true;
         }
-        public GammaProfileSelection Commit(GammaCalibrationSession session)
+        public GammaProfileSelection Commit(GammaCalibrationSession session, AuthorizeCalibrationCommit authorize)
         {
+            BeforeCommit?.Invoke();
+            authorize(changesProfileSelection: true);
             Current = Current with { ProfileName = saved.Original.ProfileName, ProfileScope = saved.Original.ProfileScope,
                 SelectedProfileScope = saved.Original.SelectedProfileScope };
             ProfileWrites++;

@@ -95,7 +95,7 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
             return backend.TryWrite(expected, ramp, canWrite);
         }
 
-        public GammaProfileSelection Commit(GammaCalibrationSession session)
+        public GammaProfileSelection Commit(GammaCalibrationSession session, AuthorizeCalibrationCommit authorize)
         {
             VerifyProfile(backend.Read(session.Original.DisplayId));
             return _selection;

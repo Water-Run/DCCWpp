@@ -8,11 +8,11 @@ public sealed class GammaCalibrationStore(string root) : IGammaCalibrationJourna
 {
     private readonly string _root = Path.Combine(Path.GetFullPath(root), "calibration-sessions");
     public string DirectoryFor(Guid id) => Path.Combine(_root, id.ToString("N"));
-    public void Save(GammaCalibrationSession session)
+    public void Save(GammaCalibrationSession session, Action? beforePublish = null)
     {
         Validate(session);
         AtomicFile.Write(Path.Combine(DirectoryFor(session.Id), "state.json"),
-            JsonSerializer.SerializeToUtf8Bytes(session, ProfilePreviewStore.Json));
+            JsonSerializer.SerializeToUtf8Bytes(session, ProfilePreviewStore.Json), beforePublish: beforePublish);
     }
     public GammaCalibrationSession Load(Guid id)
     {

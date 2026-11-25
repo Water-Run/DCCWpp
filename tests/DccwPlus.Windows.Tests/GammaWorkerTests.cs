@@ -51,6 +51,46 @@ public sealed class GammaWorkerTests : IDisposable
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WindowExitDuringSaveReturnsARevertedOutcomeToTheClient(bool afterAssociation)
+    {
+        using var owner = StartDisposableOwner();
+        var backend = new SimulatedGammaBackend();
+        var store = new GammaCalibrationStore(_root);
+        var client = new GammaPreviewClient(_root, "unused");
+        var id = Guid.NewGuid();
+        var preset = CalibrationPreset.Create("Owner fixture", new() { RedGain = .9 });
+        WriteRequest(store, new(id, backend.State.DisplayId, preset, 30, owner.Id, owner.StartTime.ToUniversalTime().Ticks));
+        backend.AtCommit = changed =>
+        {
+            if (changed == afterAssociation) StopDisposableOwner(owner);
+        };
+        var worker = Task.Run(() => GammaPreviewHost.Run(_root, id, () => backend));
+        int workerExit;
+
+        try
+        {
+            var preview = await WaitForPreviewAsync(store, id, worker);
+            var result = await client.CommandAsync(id, "confirm");
+
+            Assert.Equal("reverted", result.Status);
+            Assert.Equal("owner_exited", result.ReasonCode);
+            Assert.Equal(afterAssociation ? 2 : 0, backend.AssociationWrites);
+            Assert.Equal(preview.Original.ProfileName, backend.State.ProfileName);
+            Assert.True(preview.Original.Ramp.Matches(backend.State.Ramp));
+            Assert.False(result.NeedsBindingCompletion);
+            Assert.Equal(result.Status, client.Status(id).Status);
+        }
+        finally
+        {
+            StopDisposableOwner(owner);
+            workerExit = await worker.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        Assert.Equal(0, workerExit);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public void ProfileWorkerChecksTheOwnerAtTheAssociationWrite(bool windowOwned)
@@ -791,7 +831,9 @@ public sealed class GammaWorkerTests : IDisposable
         public GammaDeviceState State { get; private set; } = new("abcd1234abcd1234", "simulated", "simulated-target",
             new string('A', 64), true, false, GammaRamp.Identity());
         public int Writes { get; private set; }
+        public int AssociationWrites { get; private set; }
         public Action? BeforeWrite { get; set; }
+        public Action<bool>? AtCommit { get; set; }
 
         public GammaDeviceState Read(string displayId) => State with { Ramp = State.Ramp.Copy() };
         public bool TryWrite(GammaDeviceState expected, GammaRamp ramp, Func<bool>? canWrite = null)
@@ -802,8 +844,25 @@ public sealed class GammaWorkerTests : IDisposable
             State = State with { Ramp = ramp.Copy() };
             return true;
         }
-        public GammaProfileSelection Commit(GammaCalibrationSession session) => throw new InvalidOperationException("These tests only preview.");
-        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null) =>
-            throw new InvalidOperationException("These tests only preview.");
+        public GammaProfileSelection Commit(GammaCalibrationSession session, AuthorizeCalibrationCommit authorize)
+        {
+            var checkpoint = AtCommit ?? throw new InvalidOperationException("This fixture only previews.");
+            checkpoint(false);
+            authorize(changesProfileSelection: true);
+            const string candidate = "candidate.icc";
+            State = State with { ProfileName = candidate, ProfileScope = "current-user", SelectedProfileScope = "current-user" };
+            AssociationWrites++;
+            checkpoint(true);
+            return new(candidate, "current-user", "current-user");
+        }
+        public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null)
+        {
+            if (AtCommit is null) throw new InvalidOperationException("This fixture only previews.");
+            beforeSelectionRestore?.Invoke();
+            State = State with { ProfileName = session.Original.ProfileName, ProfileScope = session.Original.ProfileScope,
+                SelectedProfileScope = session.Original.SelectedProfileScope };
+            AssociationWrites++;
+            return true;
+        }
     }
 }

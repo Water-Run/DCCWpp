@@ -66,6 +66,8 @@ The capability report lists command effects, dry-run support, and request ID sup
 
 For direct numeric control, use `calibration preview` with a display ID and Gamma or RGB gain values. Start with `--dry-run` and check `data.canPreview`. Once the user is ready to review, run the preview with a request UUID and use its `sessionId` with `calibration update` to tune individual values or switch between `--original` and `--adjusted`. The 10–60 second deadline is fixed for a CLI preview. Ask the user to inspect the display before confirming. The preset can enter the library as part of the confirmed save.
 
+Confirming a calibration or an undo keeps the current preview deadline. DCCW++ checks it before each Windows write and before publishing the confirmed result. If the deadline passes or the owning window exits before confirmation, the worker attempts to restore the previous display state. Use `calibration status` to check the result, including any pending recovery.
+
 Use `calibration observe <session-id> --json` or `profiles observe <session-id> --json` to check whether the preview worker is still handling an unfinished session. Add `--wait-seconds 15` to wait up to 15 seconds for a final outcome. Read `data.outcome` alongside `data.session.status`. The observation leaves the display and the original preview deadline untouched.
 
 If `confirm` or `revert` returns exit code 4 with `error.code` set to `recovery_required`, the preview worker has stopped while the session still needs recovery. Run `recover` with the same command group (`calibration` or `profiles`) and session ID to attempt restoration, then check the returned state.
