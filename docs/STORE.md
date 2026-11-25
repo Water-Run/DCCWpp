@@ -128,22 +128,11 @@ python ./scripts/verify_package.py $x64Upload $arm64Upload --store-identity ./st
 在测试设备上安装 Windows SDK 的应用平台元数据和 Windows 应用认证工具包（WACK），登录交互桌面并以管理员身份打开 PowerShell。用该设备信任的测试证书签署开发 MSIX。将 `$signedMsix` 设为签名包的绝对路径，`$reportXml` 设为本次检查的新报告路径。在同一用户会话中运行以下命令。[微软命令行说明](https://learn.microsoft.com/en-us/windows/uwp/debug-test-perf/windows-app-certification-kit)
 
 ```powershell
-$kit = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\App Certification Kit\appcert.exe'
-& $kit reset
-if ($LASTEXITCODE) { throw 'Could not reset the Windows App Certification Kit.' }
-& $kit test -appxpackagepath $signedMsix -reportoutputpath $reportXml
-$report = [System.Xml.XmlDocument]::new()
-$report.Load($reportXml)
-$report.DocumentElement.GetAttribute('OVERALL_RESULT')
-$report.DocumentElement.GetAttribute('PARTIAL_RUN')
-$report.SelectNodes('/REPORT/REQUIREMENTS/REQUIREMENT/TEST[RESULT != "PASS"]') |
-    ForEach-Object {
-        [pscustomobject]@{
-            Test = $_.GetAttribute('NAME')
-            Optional = $_.GetAttribute('OPTIONAL')
-            Result = $_.SelectSingleNode('RESULT').InnerText
-        }
-    }
+./scripts/Test-WackPreflight.ps1 -SignedMsix $signedMsix -ReportPath $reportXml
+# Read an existing report without running the toolkit again.
+./scripts/Test-WackPreflight.ps1 -ReadExistingReport -ReportPath $reportXml
 ```
 
-即使命令退出码为 `0`，也要读取 XML 的 `OVERALL_RESULT`、`PARTIAL_RUN` 和具体失败项目。记录待测提交、原始包 SHA-256、Windows build、工具包版本及报告中的各项结果。按报告核对失败、警告和未运行的项目。微软将 Desktop Bridge 的可选项目作为兼容性参考，正式认证结果以 Partner Center 为准。[桌面应用检查项目](https://learn.microsoft.com/windows/uwp/debug-test-perf/windows-desktop-bridge-app-tests)
+脚本保留原始 XML 和同名 JSON。实际运行会对照 MSIX 的名称、版本和签名后文件的 SHA-256。XML 必须报告完整运行，且所有必需检查都通过。可选项目的非通过结果保留在 JSON 中。读取既有报告时，摘要反映 XML 里的信息。[桌面应用检查项目](https://learn.microsoft.com/windows/uwp/debug-test-perf/windows-desktop-bridge-app-tests)
+
+如需复测 x64 开发包，可以在 GitHub Actions 手动运行 **Build**，启用 `wack_preflight`。作业会使用该次构建的开发 MSIX，在托管测试机临时签名后运行，归档 `DCCWPlus-x64-wack`。Partner Center 仍负责商店正式认证。

@@ -2,6 +2,11 @@
 
 验收条目保留测试时使用的构建 ID。历史合并前的构建 ID 对应当时的包和 CI 记录。
 
+## 2026-11-25 · 当前 x64 开发包通过 WACK 预检
+
+- 手动触发 GitHub Actions 预检。候选提交 `9741087` 的 x64 开发 MSIX 在 Windows Server 2025 build 26100 使用临时证书和 WACK `10.0.26100.9457` 验证。原始 XML 为 `OVERALL_RESULT=PASS`、`PARTIAL_RUN=FALSE`，13 项必需测试通过。两项可选测试 `General metadata correctness` 与 `Blocked executables` 返回 `FAIL`，保留在摘要中。双架构安装运行同样通过。[GitHub 验证记录](https://github.com/Water-Run/DCCWpp/actions/runs/45560567393)
+- 预检保留签名后包的 SHA-256、原始 XML、摘要及工具日志。既有报告的判定经过通过、失败、部分运行和缺少测试用例的验证。当前证据对应开发身份。商店签名和 Partner Center 认证仍待完成。[预检步骤](STORE.md)
+
 ## 2026-11-25 · 在非提升权限桌面核对装包向导交接
 
 - CI 与交互桌面共用交接检查，限定 CLI 执行和输出收集的总等待时间。检查目标、预设、WinUI 包身份、原生架构及校准会话列表。沙盒验收脚本在已有实例时停止新建。已在宿主核对原实例 ID 保持不变。[商店验收](STORE.md)

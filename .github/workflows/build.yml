@@ -1,5 +1,13 @@
 name: Build
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      wack_preflight:
+        description: Run Windows App Certification Kit on the x64 development MSIX
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -55,13 +63,25 @@ jobs:
           path: artifacts/release-evidence/runtime-input
       - name: Install and run the development package
         shell: pwsh
-        run: >-
-          ./scripts/Test-DevelopmentPackage.ps1
-          -Architecture '${{ matrix.architecture }}'
-          -EvidenceDirectory artifacts/release-evidence/runtime-input
-          -ReportPath artifacts/release-evidence/${{ matrix.architecture }}-runtime.json
+        env:
+          DCCWPP_RUN_WACK: ${{ inputs.wack_preflight && matrix.architecture == 'x64' }}
+        run: |
+          $arguments = @{
+              Architecture = '${{ matrix.architecture }}'
+              EvidenceDirectory = 'artifacts/release-evidence/runtime-input'
+              ReportPath = 'artifacts/release-evidence/${{ matrix.architecture }}-runtime.json'
+          }
+          if ($env:DCCWPP_RUN_WACK -eq 'true') {
+              $arguments.WackReportPath = 'artifacts/release-evidence/wack/certification.xml'
+          }
+          ./scripts/Test-DevelopmentPackage.ps1 @arguments
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: DCCWPlus-${{ matrix.architecture }}-runtime
           path: artifacts/release-evidence/${{ matrix.architecture }}-runtime.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() && inputs.wack_preflight && matrix.architecture == 'x64' }}
+        with:
+          name: DCCWPlus-x64-wack
+          path: artifacts/release-evidence/wack/

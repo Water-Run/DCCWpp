@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)][ValidateSet('x64', 'arm64')][string]$Architecture,
     [Parameter(Mandatory)][string]$EvidenceDirectory,
-    [Parameter(Mandatory)][string]$ReportPath
+    [Parameter(Mandatory)][string]$ReportPath,
+    [string]$WackReportPath
 )
 
 Set-StrictMode -Version Latest
@@ -13,6 +14,7 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
     $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne $architectureName -or $osArchitecture -ne $architectureName) {
     throw "This installation check requires an isolated GitHub-hosted Windows $architectureName runner."
 }
+if ($WackReportPath -and $architectureName -ne 'x64') { throw 'The hosted WACK preflight runs with the x64 development package.' }
 
 $reportFile = [IO.Path]::GetFullPath($ReportPath)
 $null = New-Item -Path (Split-Path -Parent $reportFile) -ItemType Directory -Force
@@ -112,6 +114,11 @@ try {
     Remove-AppxPackage -Package $installed.PackageFullName
     $report.packageRemoved = !(Get-AppxPackage -Name $name)
     if (!$report.packageRemoved) { throw 'The development package is still registered.' }
+    if ($WackReportPath) {
+        $report.step = 'wack_preflight'
+        & (Join-Path $PSScriptRoot 'Test-WackPreflight.ps1') -SignedMsix $signed -ReportPath $WackReportPath
+        $report.wackPreflightPassed = $true
+    }
     $report.step = 'complete'
     $report.success = $true
 }
@@ -121,7 +128,7 @@ catch {
 }
 finally {
     try {
-        if ($attemptedInstall -and (!$report.Contains('packageRemoved') -or !$report.packageRemoved)) {
+        if ($attemptedInstall) {
             Get-AppxPackage -Name $name | ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName }
         }
         if ($certificate) {
