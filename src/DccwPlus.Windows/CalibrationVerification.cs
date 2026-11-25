@@ -24,19 +24,19 @@ public sealed class CalibrationVerification
     private readonly GammaCalibrationStore _sessions;
     private readonly PreviewRecoveryService _recovery;
     private readonly Func<CalibrationCaptureEvidence> _capture;
-    private readonly Func<GammaCalibrationSession, string?> _readSavedHash;
+    private readonly Func<GammaCalibrationSession, IccAssociationBackup> _readSavedAssociation;
     private readonly Func<bool?> _readLoader;
 
     public CalibrationVerification(string root) : this(root, () => new CalibrationCapture().ReadEvidence(),
-        new WindowsGammaCalibrationBackend(root).ReadSavedProfileFingerprint, WindowsGammaCalibrationBackend.ReadCalibrationLoader) { }
+        new WindowsGammaCalibrationBackend(root).ReadAssociationBackup, WindowsGammaCalibrationBackend.ReadCalibrationLoader) { }
 
     internal CalibrationVerification(string root, Func<CalibrationCaptureEvidence> capture,
-        Func<GammaCalibrationSession, string?> readSavedHash, Func<bool?> readLoader)
+        Func<GammaCalibrationSession, IccAssociationBackup> readSavedAssociation, Func<bool?> readLoader)
     {
         _sessions = new(root);
         _recovery = new(root);
         _capture = capture;
-        _readSavedHash = readSavedHash;
+        _readSavedAssociation = readSavedAssociation;
         _readLoader = readLoader;
     }
 
@@ -69,6 +69,12 @@ public sealed class CalibrationVerification
                 : report.IsRemoteSession == true ? "remote_session_blocked" : "display_disconnected" };
 
         var evidence = matches[0];
+        var association = ReadSavedAssociation(session);
+        string? profileDevice = session.Original.ProfileDeviceSha256 ?? WindowsDisplayService.HashProfileDeviceKey(association?.DeviceKey);
+        if (profileDevice is not null && !WindowsDisplayService.HasUniqueProfileDevice(evidence.Display,
+            capture.Displays.Select(item => item.Display), profileDevice))
+            return report with { ReasonCode = "profile_device_unavailable" };
+
         var sample = evidence.Sample;
         report = report with { DisplayId = sample.DisplayId, CurrentProfile = sample.ProfileName, SelectedProfileScope = sample.SelectedProfileScope };
         if (!CalibrationService.IsExplicitSdr(evidence.Display)) return report with { ReasonCode = "sdr_path_blocked" };
@@ -80,7 +86,7 @@ public sealed class CalibrationVerification
             bool selected = sample.ProfileScope == "current-user" && sample.SelectedProfileScope == "current-user"
                 && ProfilePreviewPolicy.EqualName(sample.ProfileName, session.InstalledProfile);
             report = report with { ProfileSelectionMatches = selected };
-            if (selected && sample.ProfileSha256 is not null && ReadSavedHash(session) is { } savedHash)
+            if (selected && sample.ProfileSha256 is not null && association?.CandidateHash is { } savedHash && ProfilePreviewPolicy.IsHash(savedHash))
                 report = report with { ProfileFileMatches = string.Equals(savedHash, sample.ProfileSha256, StringComparison.OrdinalIgnoreCase) };
         }
         if (evidence.LogicalRamp is { } ramp)
@@ -100,13 +106,9 @@ public sealed class CalibrationVerification
     private static CalibrationVerificationReport Inconclusive(GammaCalibrationSession session, string reason) =>
         new(session.Id, session.Status, "inconclusive", reason) { SavedProfile = session.InstalledProfile };
 
-    private string? ReadSavedHash(GammaCalibrationSession session)
+    private IccAssociationBackup? ReadSavedAssociation(GammaCalibrationSession session)
     {
-        try
-        {
-            string? hash = _readSavedHash(session);
-            return ProfilePreviewPolicy.IsHash(hash) ? hash : null;
-        }
+        try { return _readSavedAssociation(session); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
         { return null; }
     }

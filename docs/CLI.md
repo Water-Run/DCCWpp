@@ -118,6 +118,8 @@ dccwpp.exe calibration compare before.json after.json --json
 
 `calibration verify <calibration-id>` 只读核对已确认的 SDR 校准。`calibration-id` 是已确认会话的 `sessionId`。命令将历史 `savedStatus` 与实时 `status` 分开报告。保存记录含持久显示身份时，命令用唯一匹配的当前路径进行核对。没有持久身份的旧记录继续要求原显示路径。
 
+会话或 ICC 关联备份记录的 Windows 配置设备也必须唯一匹配。设备不符、不可读或被其他显示路径共用时，返回 `inconclusive` 和 `profile_device_unavailable`，目标 ID 与比较标志为空。较早的会话可以从关联备份获得设备信息。[Windows 默认 ICC 查询](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-colorprofilegetdisplaydefault)
+
 如果本机正在执行其他显示操作，已确认校准的核对返回退出码 4 和 `preview_busy`。显示操作结束后，若还有可能已经写入的 Gamma 或 ICC 预览等待回滚，核对返回 `inconclusive` 和 `recovery_required`，`capturedAt` 为空。用 `recovery status` 查找未结束的会话。只留下 `prepared` 日志或只待补写本地绑定时，仍可核对当前显示状态。
 
 实时报告分别给出 `profileSelectionMatches`、`profileFileMatches` 和 `logicalCurveMatches`。`null` 表示该项缺少证据或不可比较。`matched` 需要三项均为 `true`，其中逻辑曲线使用与保存验证相同的读回容差。在本地独立 SDR 路径发现差异时报告 `changed`。证据不足时报告 `inconclusive`，通过 `reasonCode` 指明远程会话、显示器断开、身份不唯一或缺失的证据。远程匹配的 ICC 关联和文件摘要仍可单独报告。`windowsCalibrationLoaderEnabled` 是当前 Windows 加载器设置，`colorAccuracyVerified` 固定为 `false`。退出码 0 表示已生成实时报告，仍需读取 `status`。

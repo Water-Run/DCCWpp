@@ -78,7 +78,7 @@ Generate a UUID before starting a preview with `calibration preview`, `apply`, `
 
 Save `calibration capture --json` output before and after a test. Use `dccwpp.exe calibration compare before.json after.json --json` to compare the captured ICC, scope, logical curve, and display topology offline. For a whole-desktop match, check both `status: matched` and `fullDesktopCoverage: true`. Captures record whether the session is remote, and comparisons across known local and remote sessions report `inconclusive`.
 
-`calibration verify` takes the session ID of a previously confirmed calibration and reads its current state. It checks the selected ICC association, the saved ICC fingerprint, and the logical curve. It can locate a uniquely identifiable display after its active path changes. If an unfinished preview may have changed the display, verification reports `inconclusive` with `recovery_required`. Use `recovery status` to find the interrupted session, then verify after resolving it.
+`calibration verify` takes the session ID of a previously confirmed calibration and reads its current state. It checks the selected ICC association, the saved ICC fingerprint, and the logical curve. It can locate a uniquely identifiable display after its active path changes and checks any recorded Windows profile device before comparing the calibration. If an unfinished preview may have changed the display, verification reports `inconclusive` with `recovery_required`. Use `recovery status` to find the interrupted session, then verify after resolving it.
 
 ## Project layout
 

@@ -11,11 +11,12 @@ public sealed class CalibrationVerificationTests
     private static readonly byte[] IccBytes = [1, 2, 3];
     private static readonly string IccHash = Convert.ToHexString(SHA256.HashData(IccBytes));
     private static readonly string Identity = "path:" + new string('F', 64);
+    private const string DeviceKey = @"\Registry\Machine\System\VerificationFixture";
 
     [Fact]
     public void VerifiesAUniquePersistentDisplayWhenItsActivePathChanges()
     {
-        var saved = Saved();
+        var saved = SavedWithProfileDevice();
         var display = Connected(saved);
         var result = Verify(saved, [display], saved.Candidate);
 
@@ -27,6 +28,46 @@ public sealed class CalibrationVerificationTests
         Assert.True(result.LogicalCurveMatches);
         Assert.False(result.WindowsCalibrationLoaderEnabled);
         Assert.False(result.ColorAccuracyVerified);
+    }
+
+    [Theory]
+    [InlineData("changed")]
+    [InlineData("missing")]
+    [InlineData("shared")]
+    public void ARecordedProfileDeviceMustMatchUniquelyBeforeComparingTheCalibration(string change)
+    {
+        var saved = SavedWithProfileDevice();
+        var display = Connected(saved);
+        DisplayInfo[] displays = change switch
+        {
+            "changed" => [display with { ProfileDeviceKey = DeviceKey + "-changed" }],
+            "missing" => [display with { ProfileDeviceKey = null }],
+            _ => [display, display with { Id = "0000000000000001", PersistenceKey = "path:" + new string('B', 64),
+                DeviceName = "Display3", SourceId = 3, ProfileDeviceKey = DeviceKey.ToUpperInvariant() }]
+        };
+
+        var result = Verify(saved, displays, saved.Candidate);
+
+        Assert.Equal("inconclusive", result.Status);
+        Assert.Equal("profile_device_unavailable", result.ReasonCode);
+        Assert.Null(result.DisplayId);
+        Assert.Null(result.ProfileSelectionMatches);
+        Assert.Null(result.ProfileFileMatches);
+        Assert.Null(result.LogicalCurveMatches);
+    }
+
+    [Fact]
+    public void AnOldJournalUsesItsAssociationBackupToIdentifyTheProfileDevice()
+    {
+        var saved = Saved();
+        var display = Connected(saved);
+        Assert.Equal("matched", Verify(saved, [display], saved.Candidate, backedUpDevice: DeviceKey).Status);
+
+        var replacement = display with { ProfileDeviceKey = DeviceKey + "-replacement" };
+        var result = Verify(saved, [replacement], saved.Candidate, backedUpDevice: DeviceKey);
+        Assert.Equal("inconclusive", result.Status);
+        Assert.Equal("profile_device_unavailable", result.ReasonCode);
+        Assert.Null(result.LogicalCurveMatches);
     }
 
     [Theory]
@@ -75,13 +116,14 @@ public sealed class CalibrationVerificationTests
     }
 
     private static CalibrationVerificationReport Verify(GammaCalibrationSession saved, DisplayInfo[] displays,
-        GammaRamp? ramp, bool remote = false, string? savedHash = null)
+        GammaRamp? ramp, bool remote = false, string? savedHash = null, string? backedUpDevice = null)
     {
         var capture = new CalibrationCapture(() => new("extend", displays),
             _ => ramp ?? throw new ProfilePreviewException("curve_read_failed", "No fixture curve."),
             _ => IccBytes, () => remote);
-        return new CalibrationVerification(Path.GetTempPath(), () => capture.ReadEvidence(), _ => savedHash ?? IccHash, () => false)
-            .Evaluate(saved);
+        return new CalibrationVerification(Path.GetTempPath(), () => capture.ReadEvidence(),
+            _ => new(0, null, saved.Original.SourceId ?? 0, saved.Original.TargetKey, saved.InstalledProfile!, backedUpDevice ?? "",
+                CandidateHash: savedHash ?? IccHash), () => false).Evaluate(saved);
     }
 
     private static GammaCalibrationSession Saved()
@@ -97,8 +139,15 @@ public sealed class CalibrationVerificationTests
         };
     }
 
+    private static GammaCalibrationSession SavedWithProfileDevice()
+    {
+        var saved = Saved();
+        return saved with { Original = saved.Original with { ProfileDeviceSha256 = WindowsDisplayService.HashProfileDeviceKey(DeviceKey) } };
+    }
+
     private static DisplayInfo Connected(GammaCalibrationSession saved) => new("fedcba9876543210", "Panel", "Display2", true, "sdr",
         Topology: "extend", TargetKey: "00000000:00000002:2", SourceId: 2, PersistenceKey: saved.Original.PersistenceKey,
+        ProfileDeviceKey: DeviceKey,
         ProfileName: saved.InstalledProfile, ProfileScope: "current-user", SelectedProfileScope: "current-user", ProfileQueryStatus: "read",
         HdrActive: false, AdvancedColorActive: false);
 }

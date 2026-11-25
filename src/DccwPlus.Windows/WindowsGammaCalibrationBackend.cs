@@ -254,8 +254,6 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         }
     }
 
-    internal string? ReadSavedProfileFingerprint(GammaCalibrationSession session) => ReadAssociationBackup(session).CandidateHash;
-
     public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null)
     {
         string directory = _store.DirectoryFor(session.Id);

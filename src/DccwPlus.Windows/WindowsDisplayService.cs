@@ -49,6 +49,10 @@ public sealed class WindowsDisplayService : IDisplayService
         key?.StartsWith(@"\Registry\Machine\System\", StringComparison.OrdinalIgnoreCase) == true
             ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key.ToUpperInvariant()))) : null;
 
+    internal static bool HasUniqueProfileDevice(DisplayInfo target, IEnumerable<DisplayInfo> connected, string profileDeviceSha256) =>
+        string.Equals(HashProfileDeviceKey(target.ProfileDeviceKey), profileDeviceSha256, StringComparison.OrdinalIgnoreCase)
+        && connected.Count(display => string.Equals(display.ProfileDeviceKey, target.ProfileDeviceKey, StringComparison.OrdinalIgnoreCase)) == 1;
+
     internal static DisplayInfo ResolveRecoveryDisplay(IReadOnlyList<DisplayInfo> connected, string originalId,
         string? persistenceKey, string? profileDeviceSha256)
     {
@@ -62,8 +66,7 @@ public sealed class WindowsDisplayService : IDisplayService
         if (matches.Length != 1)
             throw new ProfilePreviewException("display_identity_ambiguous", new LocalizationService()["DisplayUnavailable"]);
         var target = matches[0];
-        if (!string.Equals(HashProfileDeviceKey(target.ProfileDeviceKey), profileDeviceSha256, StringComparison.OrdinalIgnoreCase)
-            || connected.Count(display => string.Equals(display.ProfileDeviceKey, target.ProfileDeviceKey, StringComparison.OrdinalIgnoreCase)) != 1)
+        if (!HasUniqueProfileDevice(target, connected, profileDeviceSha256!))
             throw new ProfilePreviewException("profile_device_unavailable", new LocalizationService()["ProfileDeviceUnavailable"]);
         return target;
     }
