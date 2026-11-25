@@ -144,6 +144,8 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 4. 审阅已起草的英文、简中和繁中商店说明，补充实际应用截图。根据验收更新 SDR 范围和已知限制。归档相同版本完整对应源码、构建方式、依赖许可和照片许可。[商店文案及认证说明](STORE_LISTING.md)
 5. 首次发布可用 Private audience 做 Store 签名包的安装验证。已有正式版本后，评估使用 package flights 验证更新。跟踪 Partner Center 认证和 Store 签名安装结果，公开发布后再增加 README 的正式商店入口。[Private audience](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/visibility-options) · [Package flights](https://learn.microsoft.com/en-us/windows/apps/publish/package-flights)
 
+在本地 ARM64 设备验收之前，CI 使用原生 Windows 11 ARM64 虚拟机测试该次构建的开发包。核对运行报告中的提交、包摘要、CLI 别名、WinUI 进程架构和卸载状态。[ARM64 运行记录](STORE.md)
+
 ## 发布后的 HDR 与 Advanced Color
 
 首发对 HDR、Advanced Color 和包含 MHC2 的配置显示明确的状态及可用的 Windows 校准入口。检测到 MHC2 的 SDR 曲线预览会在写入前结束。独立实现先验证能力探测、HDR 图案呈现、MHC2 配置和关联恢复，再决定支持组合。用仪器或可复核元数据核对亮度、色域与白点。分别测试 SDR 预设和 HDR 配置在模式切换后的归属、应用及恢复。[Windows MHC2 校准管线](https://learn.microsoft.com/en-us/windows/win32/wcs/display-calibration-mhc)
