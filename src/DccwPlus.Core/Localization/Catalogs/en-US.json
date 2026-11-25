@@ -155,6 +155,7 @@
   "ShowOriginalAction": "Show original",
   "ShowAdjustedAction": "Show adjusted",
   "ExitFullScreen": "Exit full screen",
+  "FullScreenDraftAdjustments": "These values are a draft. Exit full screen and start calibration to preview them.",
   "FullScreenLost": "The reference pattern no longer fills the selected display. Open it again to continue.",
   "PreviewMoved": "The window moved off the selected display. The original curve was restored.",
   "Previous": "Previous",

@@ -12,6 +12,8 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.Win32;
 using Windows.Globalization.NumberFormatting;
@@ -26,7 +28,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private Window? _fullScreenWindow;
     private Window? _activeWindow;
     private PatternSurface? _fullScreenPattern;
-    private (Button Exit, Button Compare, Button Cancel, TextBlock Guide, TextBlock Countdown)? _fullScreenControls;
+    private FullScreenControls? _fullScreenControls;
     private GammaPreviewClient? _client;
     private readonly PreviewRecoveryService _recovery = new(DataPaths.DefaultRoot);
     private GammaCalibrationSession? _session;
@@ -508,7 +510,13 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (keyboardFocused) RedSlider.Focus(FocusState.Keyboard);
     }
     private void ResetClicked(object sender, RoutedEventArgs e)
-    { if (StepPicker.SelectedIndex == 1) GammaSlider.Value = 2.2; else { RedSlider.Value = GreenSlider.Value = BlueSlider.Value = 1; } }
+    {
+        if (_busy || UndoActive) return;
+        if (StepPicker.SelectedIndex == 1)
+            GammaSlider.Value = 2.2;
+        else if (StepPicker.SelectedIndex == 4)
+            RedSlider.Value = GreenSlider.Value = BlueSlider.Value = 1;
+    }
     private void DisplayChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_model is null || _setting) return;
@@ -814,19 +822,28 @@ public sealed partial class CalibrationWorkspace : UserControl
         var guide = new TextBlock { TextWrapping = TextWrapping.Wrap };
         AutomationProperties.SetLiveSetting(guide, AutomationLiveSetting.Polite);
         var countdown = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        var adjustments = photo ? null : CreateFullScreenAdjustments();
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         actions.Children.Add(exit);
         actions.Children.Add(compare);
         actions.Children.Add(cancel);
+        if (adjustments is not null) actions.Children.Add(adjustments.Reset);
         var footer = new StackPanel
         {
             Style = (Style)Application.Current.Resources["FullScreenPatternFooter"],
-            Padding = new Thickness(16, 10, 16, 10),
-            Spacing = 6
+            Padding = new Thickness(16, 10, 16, 10)
         };
-        footer.Children.Add(guide);
-        footer.Children.Add(countdown);
-        footer.Children.Add(new ScrollViewer
+        var footerContent = new StackPanel { Spacing = 6 };
+        if (adjustments is not null) footerContent.MaxWidth = 720;
+        footer.Children.Add(footerContent);
+        footerContent.Children.Add(guide);
+        footerContent.Children.Add(countdown);
+        if (adjustments is not null)
+        {
+            footerContent.Children.Add(adjustments.Gamma);
+            footerContent.Children.Add(adjustments.Balance);
+        }
+        footerContent.Children.Add(new ScrollViewer
         {
             Content = actions, HorizontalScrollMode = ScrollMode.Enabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollMode = ScrollMode.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled
@@ -840,7 +857,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         var window = new Window { Title = title, Content = root };
         _fullScreenWindow = window;
         _fullScreenPattern = content as PatternSurface;
-        _fullScreenControls = (exit, compare, cancel, guide, countdown);
+        _fullScreenControls = new(exit, compare, cancel, guide, countdown, adjustments);
         UpdateFullScreenControls();
         window.Activated += (_, e) => TrackActiveWindow(window, e.WindowActivationState);
         window.Closed += (_, _) =>
@@ -859,7 +876,16 @@ public sealed partial class CalibrationWorkspace : UserControl
             }
         };
         exit.Click += (_, _) => window.Close();
-        exit.Loaded += (_, _) => exit.Focus(FocusState.Programmatic);
+        root.Loaded += (_, _) =>
+        {
+            var initialFocus = adjustments is null ? exit : StepPicker.SelectedIndex switch
+            {
+                1 => (Control)adjustments.GammaSlider,
+                4 => adjustments.RedSlider,
+                _ => exit
+            };
+            if (!initialFocus.Focus(FocusState.Programmatic)) exit.Focus(FocusState.Programmatic);
+        };
         compare.Click += async (_, _) =>
         {
             if (!OriginalToggle.IsEnabled) return;
@@ -913,6 +939,74 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (photo) ReferencePhotoPlacementFailed?.Invoke();
         else Show(key, InfoBarSeverity.Warning);
     }
+
+    private FullScreenAdjustments CreateFullScreenAdjustments()
+    {
+        var (gamma, gammaSlider, gammaNumber) = CreateAdjustmentRow(GammaSlider, GammaNumber, "FullScreenGamma");
+        var (red, redSlider, redNumber) = CreateAdjustmentRow(RedSlider, RedNumber, "FullScreenRed");
+        var (green, greenSlider, greenNumber) = CreateAdjustmentRow(GreenSlider, GreenNumber, "FullScreenGreen");
+        var (blue, blueSlider, blueNumber) = CreateAdjustmentRow(BlueSlider, BlueNumber, "FullScreenBlue");
+        var balance = new StackPanel { Spacing = 6 };
+        balance.Children.Add(red);
+        balance.Children.Add(green);
+        balance.Children.Add(blue);
+        var reset = new Button();
+        AutomationProperties.SetAutomationId(reset, "FullScreenReset");
+        reset.Click += ResetClicked;
+        return new(gamma, balance, reset, gammaSlider, redSlider,
+            [gammaSlider, gammaNumber, redSlider, redNumber, greenSlider, greenNumber, blueSlider, blueNumber, reset]);
+    }
+
+    private static (Grid Row, Slider Slider, NumberBox Number) CreateAdjustmentRow(Slider source, NumberBox sourceNumber,
+        string automationPrefix)
+    {
+        var slider = new Slider
+        {
+            Minimum = source.Minimum,
+            Maximum = source.Maximum,
+            SmallChange = source.SmallChange,
+            LargeChange = source.LargeChange,
+            StepFrequency = source.StepFrequency,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var number = new NumberBox
+        {
+            Minimum = sourceNumber.Minimum,
+            Maximum = sourceNumber.Maximum,
+            SmallChange = source.SmallChange,
+            LargeChange = source.LargeChange,
+            NumberFormatter = sourceNumber.NumberFormatter,
+            SpinButtonPlacementMode = sourceNumber.SpinButtonPlacementMode,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var label = new TextBlock { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
+        // Both windows edit the wizard's value so the existing preview scheduler receives every change.
+        slider.SetBinding(RangeBase.ValueProperty, BindToSource(nameof(Slider.Value), BindingMode.TwoWay));
+        number.SetBinding(NumberBox.ValueProperty, BindToSource(nameof(Slider.Value), BindingMode.TwoWay));
+        label.SetBinding(TextBlock.TextProperty, BindToSource(nameof(Slider.Header), BindingMode.OneWay));
+        slider.SetBinding(AutomationProperties.NameProperty, BindToSource(nameof(Slider.Header), BindingMode.OneWay));
+        number.SetBinding(AutomationProperties.NameProperty, BindToSource(nameof(Slider.Header), BindingMode.OneWay));
+        AutomationProperties.SetAutomationId(slider, automationPrefix + "Slider");
+        AutomationProperties.SetAutomationId(number, automationPrefix + "Number");
+        var row = new Grid { ColumnSpacing = 16 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MaxWidth = 120 });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(3, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 72, MaxWidth = 112 });
+        Grid.SetColumn(slider, 1);
+        Grid.SetColumn(number, 2);
+        row.Children.Add(label);
+        row.Children.Add(slider);
+        row.Children.Add(number);
+        return (row, slider, number);
+
+        Binding BindToSource(string property, BindingMode mode) => new()
+        {
+            Source = source,
+            Path = new PropertyPath(property),
+            Mode = mode
+        };
+    }
+
     private void UpdateFullScreenControls()
     {
         if (_model is null || _fullScreenControls is not { } controls) return;
@@ -927,8 +1021,19 @@ public sealed partial class CalibrationWorkspace : UserControl
         controls.Cancel.IsEnabled = CancelButton.IsEnabled;
         bool photo = HasFullScreenPhoto;
         controls.Guide.Visibility = !photo || Active ? Visibility.Visible : Visibility.Collapsed;
-        SetLiveText(controls.Guide, photo || reviewing ? ComparisonState.Text : StepInstructions.Text,
-            ReferenceEquals(_fullScreenWindow, _activeWindow));
+        string guidance = photo || reviewing ? ComparisonState.Text : StepInstructions.Text;
+        if (controls.Adjustments is { } adjustments)
+        {
+            bool gamma = StepPicker.SelectedIndex == 1 && !UndoActive;
+            bool balance = StepPicker.SelectedIndex == 4 && !UndoActive;
+            adjustments.Gamma.Visibility = gamma ? Visibility.Visible : Visibility.Collapsed;
+            adjustments.Balance.Visibility = balance ? Visibility.Visible : Visibility.Collapsed;
+            adjustments.Reset.Content = text["ResetStep"];
+            adjustments.Reset.Visibility = gamma || balance ? Visibility.Visible : Visibility.Collapsed;
+            foreach (Control editor in adjustments.Editors) editor.IsEnabled = !_busy;
+            if ((gamma || balance) && !Active) guidance += " " + text["FullScreenDraftAdjustments"];
+        }
+        SetLiveText(controls.Guide, guidance, ReferenceEquals(_fullScreenWindow, _activeWindow));
         controls.Countdown.Visibility = photo && Active ? Visibility.Visible : CountdownText.Visibility;
         if (controls.Countdown.Visibility == Visibility.Visible) controls.Countdown.Text = PreviewCountdownText();
     }
@@ -938,6 +1043,12 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (activation != WindowActivationState.Deactivated) _activeWindow = window;
         else if (ReferenceEquals(_activeWindow, window)) _activeWindow = null;
     }
+
+    private sealed record FullScreenControls(Button Exit, Button Compare, Button Cancel, TextBlock Guide, TextBlock Countdown,
+        FullScreenAdjustments? Adjustments);
+
+    private sealed record FullScreenAdjustments(Grid Gamma, StackPanel Balance, Button Reset, Slider GammaSlider, Slider RedSlider,
+        IReadOnlyList<Control> Editors);
     private bool OnPreviewDisplay()
     {
         return !_previewReferenceLeftDisplay && _session is not null && _window is not null

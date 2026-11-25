@@ -155,6 +155,7 @@
   "ShowOriginalAction": "顯示原始曲線",
   "ShowAdjustedAction": "顯示調整後的曲線",
   "ExitFullScreen": "結束全螢幕",
+  "FullScreenDraftAdjustments": "目前的調整為草稿。結束全螢幕並開始校正後，即可預覽效果。",
   "FullScreenLost": "參考圖已結束所選顯示器的全螢幕顯示，請重新開啟。",
   "PreviewMoved": "視窗已離開所選顯示器，已還原原始曲線。",
   "Previous": "上一步",

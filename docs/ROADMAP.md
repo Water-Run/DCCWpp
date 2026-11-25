@@ -80,9 +80,9 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 | 原版任务 | DCCW++ 验收 |
 | --- | --- |
 | 准备与选屏 | 标明目标、位置和色彩模式。把校准画布放在所选屏上。跨屏或拓扑变化时重新验证目标。 |
-| Gamma | 可辨识过低、合适、过高的视觉参考。图案在 100%、150%、200% 缩放和全屏按物理像素呈现。支持数值微调、重置和返回。 |
+| Gamma | 可辨识过低、合适、过高的视觉参考。图案在 100%、150%、200% 缩放和全屏按物理像素呈现。向导和全屏均支持数值微调和重置。 |
 | 亮度与对比度 | 分别用纯黑与纯白作背景，各有八个相邻色阶供辨认可见细节。指引用户操作显示器后，验证亮度和对比度可跳过，并能按记录恢复手动调整过的 OSD 设置。 |
-| 灰阶色彩平衡 | RGB 单独调整，保留灰阶层次。键盘可微调和恢复默认。切换步骤保留当前草稿。 |
+| 灰阶色彩平衡 | RGB 单独调整，保留灰阶层次。向导和全屏均可用键盘微调和恢复默认。切换步骤保留当前草稿。 |
 | 前后对比 | 比较同一目标屏的原始状态和候选状态。从全屏图案或全屏参考照片切换曲线、查看原会话倒计时或取消并恢复。确认全屏图案随步骤更新，切到参考照片后保持原预览期限，并在其他页面验证取消反馈。 |
 | 完成、取消与 ClearType | 确认后可在 Windows 中识别新 ICC，取消恢复原状态。完成后可按用户选择打开 ClearType。 |
 
@@ -105,6 +105,8 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 在未启动预览时，用 Tab 聚焦 Gamma 和 RGB 的滑块与数值框。核对方向键每次分别改变 0.02 和 0.01，数值框的 Page Up／Page Down 分别改变 0.20 和 0.10，且滑块同步变化。验证到达上下限、重置及返回上一步后保留草稿数值。[WinUI 滑块步长](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.primitives.rangebase.smallchange?view=windows-app-sdk-1.8) · [数值框步长](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.numberbox.largechange?view=windows-app-sdk-1.8)
 
 在亮度或对比度页用键盘执行跳过，核对焦点移到灰阶页的红色滑块，并可立即用方向键微调。在 Gamma 页用 Tab 进入全屏按钮后打开参考图，分别用 Escape、退出按钮和 Alt+F4 返回，核对焦点回到全屏按钮并保留所选步骤。[Windows 键盘焦点指引](https://learn.microsoft.com/en-us/windows/apps/develop/input/keyboard-interactions)
+
+在 Gamma 和灰阶页全屏调整滑块及数值框，退出全屏核对向导中的值。分别用草稿和活动预览验证调值、重置与取消。进入亮度、对比度或比较时隐藏曲线编辑控件。验证显示器更换时沿用原路径校验，全屏调值与向导共享同一预览会话。
 
 订阅 Windows UI Automation 的 `LiveRegionChanged`，核对前台向导的步骤说明和比较状态。全屏比较使用当前全屏说明作为事件来源。同一段文字在界面定时刷新时应保持安静，隐藏的向导页也不应播报。另行用 Narrator 核对实际播报内容和时机。[Windows 实时区域示例](https://learn.microsoft.com/en-us/accessibility-tools-docs/items/uwpxaml/text_livesetting)
 
