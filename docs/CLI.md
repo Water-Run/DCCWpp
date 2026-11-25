@@ -24,6 +24,7 @@ $cli = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\dccwpp.exe'
 | --- | --- |
 | `read` | 查询数据或验证输入 |
 | `local-write` | 保存或修改本地文件、预设、显示观察、恢复偏好或 Windows 登录启动设置 |
+| `ui-launch` | 打开交互式 WinUI 窗口并准备草稿 |
 | `display-preview` | 开始或更新限时预览 |
 | `display-change` | 确认、取消或恢复显示状态 |
 
@@ -49,6 +50,8 @@ dccwpp --help --json
 dccwpp capabilities --json
 dccwpp status --json
 dccwpp displays list --json
+dccwpp wizard open --display <display-id> --preset <preset-uuid> --dry-run --json
+dccwpp wizard open --display <display-id> --preset <preset-uuid> --json
 dccwpp displays snapshot --json
 dccwpp displays snapshot show --json
 dccwpp displays restore-plan --display <display-id> --json
@@ -81,6 +84,12 @@ dccwpp bindings restore --dry-run --json
 ```
 
 `--data-dir <directory>` 指定存储目录，默认是 `%LOCALAPPDATA%/DCCW++`。包内 GUI 与 CLI 使用同一存储环境。导入只加入预设库，导出会保护已有文件和预设库中的记录。
+
+### 从 Agent 交接到校准向导
+
+`wizard open` 可选用 `displays list` 的显示器 ID 和 `presets list` 的预设 UUID，分别通过 `--display` 和 `--preset` 传入。直接调用会打开新向导，明确传入显示器时将窗口放到该屏。预设进入草稿，显示状态等到用户在向导开始预览时才会变更。使用装包的执行别名或开发版 WinUI 输出目录内的 `Cli/dccwpp.exe`。向导读取默认数据目录，传入不同的 `--data-dir` 会报告 `wizard_data_directory_mismatch`。非交互式 Windows 会话会报告 `wizard_desktop_unavailable`。
+
+`--dry-run` 查询目标、预设和启动入口是否可用，返回 `canOpen`、`reasonCode` 及 `changesDisplay: false`。实际打开成功返回 `status: opened`、`processId`、`displayId`、`presetId` 和 `changesDisplay: false`。省略的 ID 字段为 `null`。成功需要新 WinUI 进程回执。传入的显示器或预设一开始就找不到时退出码为 3。打开过程中目标变化、窗口定位失败或回执超时会返回退出码 4 和对应的 `error.code`。超时后可先查看当前桌面是否已经打开窗口。此命令每次调用都会请求新窗口。[Windows 进程创建](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)
 
 `presets create` 可用 `--gamma`、`--red-gain`、`--green-gain`、`--blue-gain`、`--author` 和 `--description` 创建草稿。数值使用英文小数点。重复导入同一文档会返回已有的本地预设，包括本地改名后的条目。旧版库中的精确副本也可复用。需要独立条目时加 `--copy`。已有命令返回的预设字段保持原样。
 

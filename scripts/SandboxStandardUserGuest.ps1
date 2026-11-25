@@ -14,7 +14,8 @@ if (!$result.standardUser -or !(Test-Path -LiteralPath (Join-Path $testRoot 'use
 function Invoke-PackagedCli([string]$Executable, [string[]]$Command) {
     $response = & $Executable @Command --json | ConvertFrom-Json
     if ($LASTEXITCODE -or !$response.ok) {
-        throw ('CLI command failed: ' + ($Command -join ' '))
+        $reason = if ($response -and !$response.ok) { $response.error.code } else { "exit $LASTEXITCODE" }
+        throw ('CLI command failed: ' + ($Command -join ' ') + ' (' + $reason + ')')
     }
     return $response.data
 }
@@ -113,6 +114,42 @@ public static class SandboxIccProfile {
         if ($capabilities.contractVersion -ne 1) { throw 'The installed alias did not report the CLI v1 contract.' }
         $result.cliContractVersion = $capabilities.contractVersion
         $result.cliRequestIdCommands = @($capabilities.commands | Where-Object { $_.supportsRequestId } | ForEach-Object { $_.name })
+        if ($capabilities.commands.name -contains 'wizard open') {
+            $result.step = 'wizard_handoff'
+            $draft = Invoke-PackagedCli $alias @('presets', 'create', 'Sandbox handoff fixture', '--gamma', '2.4')
+            $plan = Invoke-PackagedCli $alias @('wizard', 'open', '--preset', $draft.id, '--dry-run')
+            if ($plan.changesDisplay -or $plan.presetId -ne $draft.id -or
+                $plan.reasonCode -notin @('wizard_ready', 'wizard_desktop_unavailable')) {
+                throw 'Unexpected wizard dry-run result for the disposable user.'
+            }
+            $result.wizardDesktop = $plan.reasonCode
+        }
+        if ($result.Contains('wizardDesktop') -and $result.wizardDesktop -eq 'wizard_ready') {
+            $handoff = Invoke-PackagedCli $alias @('wizard', 'open', '--preset', $draft.id)
+            if ($handoff.status -ne 'opened' -or $handoff.presetId -ne $draft.id -or $handoff.changesDisplay) {
+                throw 'The standard-user wizard did not acknowledge the requested draft.'
+            }
+            $gui = Get-Process -Id $handoff.processId
+            try {
+                $timer = [Diagnostics.Stopwatch]::StartNew()
+                do {
+                    $gui.Refresh()
+                    if ($gui.HasExited) { throw 'The wizard exited before showing its window.' }
+                    if (!$gui.MainWindowHandle) { Start-Sleep -Milliseconds 100 }
+                } until ($gui.MainWindowHandle -or $timer.Elapsed.TotalSeconds -ge 10)
+                if (!$gui.MainWindowHandle -or $gui.MainWindowTitle -ne 'DCCW++') { throw 'The wizard window did not open.' }
+                $calibrations = Invoke-PackagedCli $alias @('calibration', 'sessions')
+                if ($calibrations) { throw 'Opening a draft created a display calibration session.' }
+                $result.wizardHandoff = $true
+            }
+            finally {
+                if (!$gui.HasExited -and (!$gui.CloseMainWindow() -or !$gui.WaitForExit(6000))) {
+                    $gui.Kill()
+                    $gui.WaitForExit()
+                }
+                $gui.Dispose()
+            }
+        }
         $result.step = 'cli_redirected_process'
         $processInfo = [Diagnostics.ProcessStartInfo]::new($alias)
         $missingSession = [Guid]::NewGuid().ToString('D')

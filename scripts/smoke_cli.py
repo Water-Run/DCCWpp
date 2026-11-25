@@ -49,6 +49,14 @@ with tempfile.TemporaryDirectory(prefix="dccwpp-cli-") as directory:
     assert public_commands["calibration confirm"]["supportsDryRun"] is False
     assert public_commands["calibration verify"]["effect"] == "read"
     assert public_commands["calibration inspect"]["effect"] == "read"
+    assert public_commands["wizard open"]["effect"] == "ui-launch"
+    assert public_commands["wizard open"]["supportsDryRun"] is True
+    assert call("wizard", "open", "--display", "not-a-display", expected=2)["code"] == "invalid_arguments"
+    assert call("wizard", "open", "--preset", "00000000-0000-0000-0000-000000000000", expected=2)["code"] == "invalid_arguments"
+    handoff = call("wizard", "open", "--dry-run")
+    assert handoff["canOpen"] is False and handoff["reasonCode"] == "wizard_data_directory_mismatch"
+    assert handoff["changesDisplay"] is False
+    assert call("wizard", "open", expected=4)["code"] == "wizard_data_directory_mismatch"
     for action in ("enable", "disable"):
         assert public_commands[f"startup {action}"]["effect"] == "local-write"
     assert call("calibration", "verify", str(uuid4()), expected=3)["code"] == "not_found"

@@ -57,6 +57,9 @@ internal static class Cli
             var store = new PresetStore(root);
             var displays = new WindowsDisplayService();
 
+            if (remaining is ["wizard", "open", ..])
+                return await OpenWizardAsync(remaining, root, store, displays, json);
+
             switch (remaining.ToArray())
             {
                 case ["status"]:
@@ -292,6 +295,39 @@ internal static class Cli
         catch (UnauthorizedAccessException ex) { return Failure("access_denied", ex.Message, 5, json); }
         catch (IOException ex) { return Failure("io_error", ex.Message, 5, json); }
         catch (Exception ex) { return Failure("internal_error", ex.Message, 1, json); }
+    }
+
+    private static async Task<int> OpenWizardAsync(List<string> args, string root, PresetStore store, WindowsDisplayService displays, bool json)
+    {
+        var text = new LocalizationService();
+        string? displayId = TakeOption(args, "--display")?.ToLowerInvariant();
+        string? preset = TakeOption(args, "--preset");
+        bool dryRun = args.Remove("--dry-run");
+        if (args.Count != 2 || (displayId is not null && !WizardLaunchRequest.IsDisplayId(displayId)))
+            throw new ArgumentException(text["WizardOpenUsage"]);
+        Guid? presetId = preset is null ? null : ParseId(preset);
+        if (presetId == Guid.Empty) throw new ArgumentException(text["WizardOpenUsage"]);
+
+        bool sharedData = string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)),
+            DataPaths.DefaultRoot, StringComparison.OrdinalIgnoreCase);
+        if (!sharedData)
+            return Blocked("wizard_data_directory_mismatch", "WizardDataDirectoryMismatch");
+        if (!Environment.UserInteractive)
+            return Blocked("wizard_desktop_unavailable", "WizardDesktopUnavailable");
+        var display = displayId is null ? null : displays.Enumerate().SingleOrDefault(item => item.Id == displayId);
+        if (displayId is not null && display is null)
+            return Failure("not_found", text["DisplayUnavailable"], 3, json);
+        if (presetId is Guid selected) _ = store.Get(selected);
+        if (!WizardLaunch.IsAvailable())
+            return Blocked("wizard_unavailable", "WizardUnavailable");
+        if (dryRun) return Plan(true, "wizard_ready");
+
+        var request = new WizardLaunchRequest(Guid.NewGuid(), displayId, display is null ? null : WizardLaunchRequest.Stamp(display), presetId);
+        uint processId = await WizardLaunch.OpenAsync(request);
+        return Success(new { displayId, presetId, processId, status = "opened", changesDisplay = false }, json);
+
+        int Plan(bool canOpen, string reasonCode) => Success(new { displayId, presetId, canOpen, reasonCode, changesDisplay = false }, json);
+        int Blocked(string reasonCode, string messageKey) => dryRun ? Plan(false, reasonCode) : Failure(reasonCode, text[messageKey], 4, json);
     }
 
     private static async Task<int> SetStartupAsync(bool enabled, bool json)

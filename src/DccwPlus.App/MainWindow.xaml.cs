@@ -44,6 +44,9 @@ public sealed partial class MainWindow : Window
                 await RefreshStartupAsync();
         };
     }
+
+    internal WizardLaunchOutcome PrepareWizardLaunch(WizardLaunchRequest request) => Workspace.PrepareWizardLaunch(request);
+
     private void NavigationChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
         if (Workspace is null || PageScroll is null) return;

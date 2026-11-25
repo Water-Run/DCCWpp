@@ -135,6 +135,61 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
 
     internal Task CancelPreviewAsync() => CancelAsync();
+
+    internal WizardLaunchOutcome PrepareWizardLaunch(WizardLaunchRequest request)
+    {
+        try
+        {
+            var model = _model!;
+            DisplayInfo? selected = null;
+            if (request.DisplayId is { } id)
+            {
+                model.RefreshDisplays();
+                selected = model.Displays.SingleOrDefault(display => display.Id == id);
+                if (selected is null) return Reject(WizardLaunchOutcome.DisplayUnavailable, "DisplayUnavailable");
+                if (!request.Matches(selected)) return Reject(WizardLaunchOutcome.DisplayChanged, "DisplaySelectionLost");
+            }
+
+            CalibrationPreset? preset;
+            try { preset = request.PresetId is Guid presetId ? model.PresetStore.Get(presetId) : null; }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+            {
+                Debug.WriteLine(ex);
+                return Reject(WizardLaunchOutcome.PresetUnavailable, "WizardPresetUnavailable");
+            }
+
+            if (selected is not null)
+            {
+                if (!DisplayWindowPlacement.MoveToDisplay(_window!, selected.DeviceName))
+                    return Reject(WizardLaunchOutcome.PlacementFailed, "WizardPlacementFailed");
+                UpdateDisplayOptions(selected);
+                UpdateDisplaySelection();
+            }
+            if (preset is not null)
+            {
+                LoadPreset(preset);
+                Outcome.Message = string.Format(model.Text["WizardDraftLoaded"], preset.Name);
+            }
+            return WizardLaunchOutcome.Opened;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine(ex);
+            return Reject(WizardLaunchOutcome.Failed, "WizardLaunchFailed");
+        }
+
+        WizardLaunchOutcome Reject(WizardLaunchOutcome reason, string messageKey)
+        {
+            if (request.DisplayId is not null)
+            {
+                UpdateDisplayOptions(null);
+                UpdateDisplaySelection();
+            }
+            Show(messageKey, InfoBarSeverity.Warning);
+            return reason;
+        }
+    }
+
     public void LoadPreset(CalibrationPreset preset)
     {
         if (Active || _busy) { Show("FinishOrCancel", InfoBarSeverity.Warning); return; }

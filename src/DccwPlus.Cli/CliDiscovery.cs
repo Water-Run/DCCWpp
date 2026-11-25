@@ -7,6 +7,7 @@ internal static class CliDiscovery
     private const string LocalWrite = "local-write";
     private const string DisplayPreview = "display-preview";
     private const string DisplayChange = "display-change";
+    private const string UiLaunch = "ui-launch";
     private const string CalibrationValues = "[--gamma <value>] [--red-gain <value>] [--green-gain <value>] [--blue-gain <value>]";
 
     private static readonly string[] GlobalOptions = ["--json", "--data-dir <directory>"];
@@ -17,6 +18,7 @@ internal static class CliDiscovery
         new("displays snapshot", LocalWrite),
         new("displays snapshot show", Read),
         new("displays restore-plan", Read, "--display <id>"),
+        new("wizard open", UiLaunch, "[--display <display-id>] [--preset <preset-id>] [--dry-run]", supportsDryRun: true),
         new("presets list", Read),
         new("presets show", Read, "<id>"),
         new("presets create", LocalWrite,

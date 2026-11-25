@@ -50,6 +50,8 @@ For local development, run the built CLI directly or use `dotnet run --project s
 ```powershell
 dccwpp.exe capabilities --json
 dccwpp.exe displays list --json
+dccwpp.exe wizard open --display $displayId --preset $presetId --dry-run --json
+dccwpp.exe wizard open --display $displayId --preset $presetId --json
 dccwpp.exe presets validate examples/neutral.dccw.json --json
 dccwpp.exe calibration diagnose --display $displayId --json
 dccwpp.exe calibration capture --json
@@ -64,6 +66,8 @@ dccwpp.exe recovery status --json
 ```
 
 The capability report lists command effects, dry-run support, and request ID support. For a preset dry run, set `$presetId` to a saved preset ID and `$displayId` to an ID from `displays list`. The dry run checks for interrupted previews, reads the current curve and ICC association, and builds a candidate ICC in memory. Calling `apply` without `--dry-run` repeats those checks and starts a timed SDR preview if they pass. Use `calibration status`, `calibration confirm`, or `calibration revert` with its session ID.
+
+`wizard open` hands the calibration to a person. Use the installed alias or the copy of the CLI in the unpackaged WinUI build's `Cli` directory. It opens a new wizard on the requested display and loads the optional preset as an editable draft from the default data directory. The command waits for WinUI to acknowledge the handoff. The user starts any display preview separately in the wizard.
 
 For direct numeric control, use `calibration preview` with a display ID and Gamma or RGB gain values. Start with `--dry-run` and check `data.canPreview`. Once the user is ready to review, run the preview with a request UUID and use its `sessionId` with `calibration update` to tune individual values or switch between `--original` and `--adjusted`. The 10–60 second deadline is fixed for a CLI preview. Ask the user to inspect the display before confirming. The preset can enter the library as part of the confirmed save.
 

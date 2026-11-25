@@ -29,7 +29,7 @@ $cliData = Join-Path $scratch 'agent-data'
 $certificate = $null
 $attemptedInstall = $false
 
-function Invoke-AgentCli([string]$Executable, [string[]]$Command, [int]$ExpectedExitCode = 0) {
+function Invoke-AgentCli([string]$Executable, [string[]]$Command, [int]$ExpectedExitCode = 0, [switch]$UseDefaultData) {
     $start = [Diagnostics.ProcessStartInfo]::new($Executable)
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
@@ -37,7 +37,9 @@ function Invoke-AgentCli([string]$Executable, [string[]]$Command, [int]$Expected
     $start.RedirectStandardError = $true
     $start.StandardOutputEncoding = [Text.Encoding]::UTF8
     $start.StandardErrorEncoding = [Text.Encoding]::UTF8
-    foreach ($argument in ($Command + @('--json', '--data-dir', $cliData))) {
+    $arguments = $Command + @('--json')
+    if (!$UseDefaultData) { $arguments += @('--data-dir', $cliData) }
+    foreach ($argument in $arguments) {
         $start.ArgumentList.Add($argument)
     }
     $process = [Diagnostics.Process]::Start($start)
@@ -121,30 +123,40 @@ try {
     if ($LASTEXITCODE -or ($smoke -join "`n") -notmatch 'PASS: (\d+) CLI process checks') { throw 'The ARM64 CLI smoke suite failed.' }
     $report.cliProcessChecks = [int]$Matches[1]
 
+    $report.step = 'wizard_handoff'
+    $report.runnerInteractive = [Environment]::UserInteractive
+    $preset = (Invoke-AgentCli $alias @('presets', 'create', 'ARM64 review', '--gamma', '2.4') -UseDefaultData).data
+    $wizardArguments = @('wizard', 'open', '--preset', $preset.id)
+    $display = (Invoke-AgentCli $alias @('displays', 'list')).data |
+        Where-Object { $_.deviceName.StartsWith('\\.\DISPLAY', [StringComparison]::OrdinalIgnoreCase) } |
+        Sort-Object isPrimary | Select-Object -First 1
+    if ($display) { $wizardArguments += @('--display', $display.id) }
+    $plan = (Invoke-AgentCli $alias ($wizardArguments + '--dry-run') -UseDefaultData).data
+    if (!$plan.canOpen -or $plan.reasonCode -ne 'wizard_ready' -or $plan.changesDisplay) {
+        throw 'The packaged wizard preflight did not confirm the available draft.'
+    }
+    $opened = (Invoke-AgentCli $alias $wizardArguments -UseDefaultData).data
+    if ($opened.status -ne 'opened' -or $opened.changesDisplay -or $opened.presetId -ne $preset.id -or
+        ($display -and $opened.displayId -ne $display.id)) {
+        throw 'The CLI did not receive the requested WinUI handoff.'
+    }
+    $report.wizardHandoff = $true
+    $report.wizardDisplayRequested = [bool]$display
+    $sessions = (Invoke-AgentCli $alias @('calibration', 'sessions') -UseDefaultData).data
+    if ($sessions) { throw 'The wizard handoff started a calibration session.' }
+
     $report.step = 'winui_launch'
     Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 
-[ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface AppActivationManager {
-    [PreserveSig] int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appId,
-        [MarshalAs(UnmanagedType.LPWStr)] string arguments, uint options, out uint processId);
-}
-
-public static class Arm64ReleaseActivation {
+public static class Arm64ReleaseProcess {
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool IsWow64Process2(IntPtr process, out ushort processMachine, out ushort nativeMachine);
-
-    public static int Activate(string appId) {
-        var type = Type.GetTypeFromCLSID(new Guid("45ba127d-10a8-46ea-8ab7-56ea9078943c"));
-        var manager = (AppActivationManager)Activator.CreateInstance(type);
-        uint processId;
-        Marshal.ThrowExceptionForHR(manager.ActivateApplication(appId, null, 2, out processId));
-        GC.KeepAlive(manager);
-        return checked((int)processId);
-    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    static extern int GetPackageFullName(IntPtr process, ref uint length, StringBuilder name);
 
     public static bool IsNativeArm64(IntPtr process) {
         ushort processMachine, nativeMachine;
@@ -152,12 +164,20 @@ public static class Arm64ReleaseActivation {
             throw new Win32Exception(Marshal.GetLastWin32Error());
         return processMachine == 0 && nativeMachine == 0xaa64;
     }
+
+    public static string ReadPackageFullName(IntPtr process) {
+        uint length = 0;
+        if (GetPackageFullName(process, ref length, null) != 122) return null;
+        var name = new StringBuilder(checked((int)length));
+        return GetPackageFullName(process, ref length, name) == 0 ? name.ToString() : null;
+    }
 }
 '@
-    $gui = Get-Process -Id ([Arm64ReleaseActivation]::Activate("$($installed.PackageFamilyName)!App"))
+    $gui = Get-Process -Id $opened.processId
     try {
         if ($gui.MainModule.FileName -ne (Join-Path $installed.InstallLocation 'DccwPlus.App.exe') -or
-            ![Arm64ReleaseActivation]::IsNativeArm64($gui.Handle)) {
+            ![Arm64ReleaseProcess]::IsNativeArm64($gui.Handle) -or
+            [Arm64ReleaseProcess]::ReadPackageFullName($gui.Handle) -cne $installed.PackageFullName) {
             throw 'WinUI activation did not start the installed native ARM64 executable.'
         }
         $timer = [Diagnostics.Stopwatch]::StartNew()

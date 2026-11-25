@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppLifecycle;
 using DccwPlus.Core.Storage;
+using DccwPlus.Windows;
 
 namespace DccwPlus.App;
 
@@ -10,7 +11,7 @@ public partial class App : Application
     public App()
     {
         UnhandledException += (_, e) => RecordFailure(e.Exception);
-        DccwPlus.Windows.DesktopIdentity.Initialize();
+        DesktopIdentity.Initialize();
         InitializeComponent();
     }
     private static void RecordFailure(Exception exception)
@@ -35,7 +36,20 @@ public partial class App : Application
             finally { Exit(); }
             return;
         }
-        _window = new MainWindow();
-        _window.Activate();
+        var request = WizardLaunchRequest.Parse(Environment.GetCommandLineArgs()[1..]);
+        try
+        {
+            var window = new MainWindow();
+            _window = window;
+            var outcome = request is null ? WizardLaunchOutcome.Opened : window.PrepareWizardLaunch(request);
+            window.Activate();
+            if (request is not null) await WizardLaunch.RespondAsync(request, outcome);
+        }
+        catch (Exception ex) when (request is not null)
+        {
+            RecordFailure(ex);
+            await WizardLaunch.RespondAsync(request, WizardLaunchOutcome.Failed);
+            Exit();
+        }
     }
 }
