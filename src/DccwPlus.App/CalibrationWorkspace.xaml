@@ -43,6 +43,7 @@
               </ComboBox>
               <TextBlock x:Name="DisplaySummary" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
               <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="IdentifyDisplayButton" Content="{Binding Text[IdentifyDisplay]}" Click="IdentifyDisplayClicked" />
                 <Button x:Name="MoveDisplayButton" Content="{Binding Text[MoveToDisplay]}" Click="MoveDisplayClicked" />
                 <Button x:Name="RefreshDisplaysButton" Content="{Binding Text[Refresh]}" Click="RefreshClicked" />
               </StackPanel>

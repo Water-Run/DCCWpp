@@ -2,6 +2,11 @@
 
 验收条目保留测试时使用的构建 ID。历史合并前的构建 ID 对应当时的包和 CI 记录。
 
+## 2026-11-25 · 向导可识别所选显示器
+
+- 准备页的「识别显示器」在目标屏显示名称、位置和 CLI 显示器 ID，约四秒后关闭。镜像路径及向导预览期间停用。标识窗口配置为不获取焦点。[向导验收项](ROADMAP.md)
+- Windows 11 x64 build 26340 的 Release 向导通过 UI Automation 验证负坐标副屏的位置、ID、标识窗口未进入前台、自动关闭及切换步骤后关闭。全桌面三条路径的前后只读采样一致。429 项单元及模拟测试、174 项 CLI 进程检查和 x64 开发 MSIX 内容校验通过。报告位于 `artifacts/identify-display/5d15aa03-41b5-4a6f-a1e9-519bfb4d6dd1/summary.json`。键盘操作、镜像和热插拔仍待实机交互验收。
+
 ## 2026-11-25 · 当前 x64 开发包通过 WACK 预检
 
 - 手动触发 GitHub Actions 预检。候选提交 `9741087` 的 x64 开发 MSIX 在 Windows Server 2025 build 26100 使用临时证书和 WACK `10.0.26100.9457` 验证。原始 XML 为 `OVERALL_RESULT=PASS`、`PARTIAL_RUN=FALSE`，13 项必需测试通过。两项可选测试 `General metadata correctness` 与 `Blocked executables` 返回 `FAIL`，保留在摘要中。双架构安装运行同样通过。[GitHub 验证记录](https://github.com/Water-Run/DCCWpp/actions/runs/45560567393)

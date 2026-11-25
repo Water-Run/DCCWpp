@@ -110,6 +110,8 @@
   "FullScreen": "全螢幕",
   "CalibrationPattern": "校準參考圖",
   "MoveToDisplay": "移至所選顯示器",
+  "IdentifyDisplay": "識別顯示器",
+  "IdentifyMirroredDisplay": "請切換為延伸或單一顯示器，再識別此顯示器。",
   "OpenDisplaySettings": "開啟 Windows 顯示設定",
   "OpenHdrCalibrationStore": "在 Microsoft Store 中檢視 Windows HDR 校正",
   "HdrCalibrationGuidance": "在 Windows 設定中選取這部顯示器並開啟 HDR。使用 Windows HDR 校正來校正 HDR 遊戲和應用程式，或在支援的內建螢幕上使用 HDR 影片校正設定。",

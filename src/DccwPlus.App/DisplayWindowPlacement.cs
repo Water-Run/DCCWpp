@@ -17,11 +17,7 @@ internal static class DisplayWindowPlacement
         nint monitor = MonitorFromWindow(handle, MonitorDefaultToNearest);
         if (TryGetMonitorInfo(monitor, out var info) && info.WorkRect.HasArea)
         {
-            uint dpi = GetDpiForWindow(handle);
-            double scale = dpi == 0 ? 1 : dpi / 96d;
-            var preferredPixels = new SizeInt32((int)Math.Round(preferredSizeInDips.Width * scale),
-                (int)Math.Round(preferredSizeInDips.Height * scale));
-            CenterInWorkArea(window.AppWindow, info.WorkRect, preferredPixels);
+            CenterInWorkArea(window.AppWindow, info.WorkRect, PixelsAtWindowDpi(window, preferredSizeInDips));
         }
     }
 
@@ -47,7 +43,7 @@ internal static class DisplayWindowPlacement
         return true;
     }
 
-    public static bool MoveToDisplay(Window window, string deviceName)
+    public static bool MoveToDisplay(Window window, string deviceName, SizeInt32? preferredSizeInDips = null)
     {
         NativeRect targetWorkArea = default;
         EnumDisplayMonitors(0, 0, (monitor, _, _, _) =>
@@ -60,7 +56,17 @@ internal static class DisplayWindowPlacement
         if (window.AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Maximized } presenter)
             presenter.Restore();
         CenterInWorkArea(window.AppWindow, targetWorkArea, window.AppWindow.Size);
+        // Moving first gives a hidden window the destination monitor's DPI for its preferred size.
+        if (preferredSizeInDips is { } preferred)
+            CenterInWorkArea(window.AppWindow, targetWorkArea, PixelsAtWindowDpi(window, preferred));
         return IsOnDisplay(window, deviceName);
+    }
+
+    private static SizeInt32 PixelsAtWindowDpi(Window window, SizeInt32 size)
+    {
+        uint dpi = GetDpiForWindow(WindowNative.GetWindowHandle(window));
+        double scale = dpi == 0 ? 1 : dpi / 96d;
+        return new((int)Math.Round(size.Width * scale), (int)Math.Round(size.Height * scale));
     }
 
     private static void CenterInWorkArea(AppWindow window, NativeRect workArea, SizeInt32 requested)

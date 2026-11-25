@@ -110,6 +110,8 @@
   "FullScreen": "Full screen",
   "CalibrationPattern": "Calibration reference pattern",
   "MoveToDisplay": "Move to selected display",
+  "IdentifyDisplay": "Identify display",
+  "IdentifyMirroredDisplay": "Switch to an extended or single display to identify this screen.",
   "OpenDisplaySettings": "Open Windows display settings",
   "OpenHdrCalibrationStore": "Windows HDR Calibration in Microsoft Store",
   "HdrCalibrationGuidance": "Select this display in Windows Settings and open HDR. Use Windows HDR Calibration for HDR games and apps, or the HDR video calibration setting on supported built-in displays.",

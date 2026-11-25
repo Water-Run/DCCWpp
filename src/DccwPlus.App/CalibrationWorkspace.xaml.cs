@@ -25,6 +25,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private static readonly string[] StepLabelKeys = ["StepPrepare", "StepGamma", "StepBrightness", "StepContrast", "StepBalance", "StepReview"];
     private MainViewModel? _model;
     private Window? _window;
+    private DisplayIdentificationWindow? _displayIdentification;
     private Window? _fullScreenWindow;
     private Window? _activeWindow;
     private PatternSurface? _fullScreenPattern;
@@ -87,7 +88,11 @@ public sealed partial class CalibrationWorkspace : UserControl
         _displayRefresh.IsRepeating = false;
         _displayRefresh.Tick += RefreshDisplaysWhenIdle;
         DisplayPicker.DropDownClosed += (_, _) => ScheduleDisplayRefresh();
-        EventHandler displaySettingsChanged = (_, _) => dispatcher.TryEnqueue(RequestDisplayRefresh);
+        EventHandler displaySettingsChanged = (_, _) => dispatcher.TryEnqueue(() =>
+        {
+            CloseDisplayIdentification();
+            RequestDisplayRefresh();
+        });
         bool watchingDisplay = false;
         try
         {
@@ -97,6 +102,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         catch (Exception ex) when (ex is InvalidOperationException or ExternalException) { Debug.WriteLine(ex); }
         model.Text.LanguageChanged += (_, _) =>
         {
+            CloseDisplayIdentification();
             UpdateDisplayOptions(SelectedDisplay);
             UpdateStepLabels(); UpdateStep(); UpdateUi(); RefreshRecovery();
         };
@@ -105,6 +111,7 @@ public sealed partial class CalibrationWorkspace : UserControl
             _closed = true;
             if (watchingDisplay) SystemEvents.DisplaySettingsChanged -= displaySettingsChanged;
             _displayRefresh?.Stop();
+            CloseDisplayIdentification();
             CloseFullScreen();
         };
         window.Activated += (_, e) =>
@@ -127,6 +134,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (!visible)
         {
             _debounce?.Stop();
+            CloseDisplayIdentification();
             CloseFullScreen();
         }
         else
@@ -480,6 +488,8 @@ public sealed partial class CalibrationWorkspace : UserControl
         bool comparisonReady = IsReviewing && ReviewSelected && !_busy && !_pushing && !updatingComparison;
         bool remote = WindowsDisplaySession.IsRemote();
         DisplayPicker.IsEnabled = !Active && !_busy;
+        IdentifyDisplayButton.IsEnabled = display is not null && !Active && !_busy && CanIdentifyDisplay(display, _model.Displays);
+        if (!IdentifyDisplayButton.IsEnabled || StepPicker.SelectedIndex != 0) CloseDisplayIdentification();
         MoveDisplayButton.IsEnabled = hasDisplay && !Active && !_busy;
         RefreshDisplaysButton.IsEnabled = !Active && !_busy;
         RecoveryButton.IsEnabled = !Active && !_busy;
@@ -639,6 +649,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
     private void UpdateDisplaySelection()
     {
+        CloseDisplayIdentification();
         CloseFullScreen();
         _inspection = null;
         Outcome.IsOpen = false;
@@ -647,16 +658,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
     private void UpdateDisplayOptions(DisplayInfo? selected)
     {
-        var options = _model!.Displays.Select(display =>
-        {
-            List<string> details = [];
-            if (display.IsPrimary) details.Add(_model.Text["PrimaryDisplay"]);
-            if (display.PositionX is int x && display.PositionY is int y)
-                details.Add(string.Format(_model.Text["DisplayDesktopPosition"], x, y));
-            if (details.Count == 0)
-                details.Add(display.DeviceName.StartsWith(@"\\.\", StringComparison.Ordinal) ? display.DeviceName[4..] : display.DeviceName);
-            return new DisplayOption(display, string.Join(" · ", details));
-        }).ToArray();
+        var options = _model!.Displays.Select(DescribeDisplay).ToArray();
 
         var repeatedLabels = options.GroupBy(option => option.ToString(), StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -676,6 +678,18 @@ public sealed partial class CalibrationWorkspace : UserControl
             DisplayPicker.SelectedItem = options.FirstOrDefault(option => option.Display == selected);
         }
         finally { _setting = previousSetting; }
+    }
+
+    private DisplayOption DescribeDisplay(DisplayInfo display)
+    {
+        var text = _model!.Text;
+        List<string> details = [];
+        if (display.IsPrimary) details.Add(text["PrimaryDisplay"]);
+        if (display.PositionX is int x && display.PositionY is int y)
+            details.Add(string.Format(text["DisplayDesktopPosition"], x, y));
+        if (details.Count == 0)
+            details.Add(display.DeviceName.StartsWith(@"\\.\", StringComparison.Ordinal) ? display.DeviceName[4..] : display.DeviceName);
+        return new(display, string.Join(" · ", details));
     }
     private void UpdateDisplaySummary(bool remote)
     {
@@ -718,6 +732,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private void MoveDisplayClicked(object sender, RoutedEventArgs e)
     {
         if (_window is null || SelectedDisplay is not { } selected || Active) return;
+        CloseDisplayIdentification();
         try
         {
             var display = CheckSelectedDisplay(selected, new WindowsDisplayService().Enumerate());
@@ -725,6 +740,49 @@ public sealed partial class CalibrationWorkspace : UserControl
             if (!DisplayWindowPlacement.MoveToDisplay(_window, display.DeviceName)) Show("DisplayUnavailable", InfoBarSeverity.Warning);
         }
         catch (Exception ex) { ShowError(ex); }
+    }
+
+    private static bool CanIdentifyDisplay(DisplayInfo display, IEnumerable<DisplayInfo> displays) =>
+        display.Topology != "clone" && displays.Count(
+            other => string.Equals(other.DeviceName, display.DeviceName, StringComparison.OrdinalIgnoreCase)) == 1;
+
+    private void IdentifyDisplayClicked(object sender, RoutedEventArgs e)
+    {
+        if (_closed || _model is null || _busy || Active || SelectedDisplay is not { } selected) return;
+        CloseDisplayIdentification();
+        try
+        {
+            var connected = new WindowsDisplayService().Enumerate();
+            if (CheckSelectedDisplay(selected, connected) is not { } current) return;
+            if (!CanIdentifyDisplay(current, connected))
+            {
+                RequestDisplayRefresh();
+                Show("IdentifyMirroredDisplay", InfoBarSeverity.Warning);
+                return;
+            }
+            var option = DescribeDisplay(current);
+            var text = _model.Text;
+            var identification = new DisplayIdentificationWindow(text["IdentifyDisplay"], option.Name, option.Details,
+                string.Format(text["DisplayQueryId"], current.Id));
+            _displayIdentification = identification;
+            identification.Closed += (_, _) =>
+            {
+                if (ReferenceEquals(_displayIdentification, identification)) _displayIdentification = null;
+            };
+            if (!identification.ShowOn(current.DeviceName))
+            {
+                CloseDisplayIdentification();
+                Show("DisplayUnavailable", InfoBarSeverity.Warning);
+            }
+        }
+        catch (Exception ex) { CloseDisplayIdentification(); ShowError(ex); }
+    }
+
+    private void CloseDisplayIdentification()
+    {
+        var window = _displayIdentification;
+        _displayIdentification = null;
+        window?.Close();
     }
     private void RefreshClicked(object sender, RoutedEventArgs e)
     {
@@ -763,6 +821,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     {
         var selected = SelectedDisplay;
         if (!_model!.RefreshDisplays() && !manual) return;
+        CloseDisplayIdentification();
 
         var current = ResolveSelectedDisplay(selected, _model.Displays);
         UpdateDisplayOptions(current);
@@ -895,6 +954,7 @@ public sealed partial class CalibrationWorkspace : UserControl
 
     private void ShowFullScreen(FrameworkElement content, string title, Button launchButton)
     {
+        CloseDisplayIdentification();
         bool photo = content is Image;
         void Unavailable()
         {

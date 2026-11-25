@@ -99,6 +99,8 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 
 用 UI Automation 检查选屏控件展开和收起时的名称。三种语言均应读到显示器名称、主屏标识和可用的桌面坐标，刷新和切换语言后保留选中。用两台同型号显示器验证坐标能区分桌面位置。可见标签相同时核对各自附加的 ID 与 `displays list` 一致。[Windows 无障碍名称指引](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/basic-accessibility-information)
 
+在准备页选中非主屏后执行「识别显示器」。核对标识完整位于所选屏、显示器 ID 与 CLI 一致、键盘焦点留在向导。核对标识自动关闭，并在切换步骤、选屏或拓扑变化时立即消失。复制模式及向导预览期间应停用该按钮。
+
 依照 WinUI Gallery 的控件和交互习惯完善布局。实测浅色、深色、高对比度、窄窗口、键盘导航、Narrator、焦点和三种语言。新文案同步维护三个 catalog，CLI 的字段和原因码保持语言无关。[WinUI Gallery](https://github.com/microsoft/WinUI-Gallery)
 
 切换 Windows 对比主题时核对向导和全屏说明的文字、按钮及背景都使用系统配色。以每种主题下的画面采样比对 Gamma、亮度和对比度图案的渲染像素，另行在人工作业中验收物理显示效果。[Windows 对比主题指引](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/high-contrast-themes)

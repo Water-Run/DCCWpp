@@ -110,6 +110,8 @@
   "FullScreen": "全屏",
   "CalibrationPattern": "校准参考图",
   "MoveToDisplay": "移到所选显示器",
+  "IdentifyDisplay": "识别显示器",
+  "IdentifyMirroredDisplay": "请切换到扩展或单屏模式，再识别此显示器。",
   "OpenDisplaySettings": "打开 Windows 显示设置",
   "OpenHdrCalibrationStore": "在 Microsoft Store 中查看 Windows HDR 校准",
   "HdrCalibrationGuidance": "在 Windows 设置中选择此显示器并打开 HDR。使用 Windows HDR 校准来校准 HDR 游戏和应用，或在支持的内置屏幕上使用 HDR 视频校准设置。",
