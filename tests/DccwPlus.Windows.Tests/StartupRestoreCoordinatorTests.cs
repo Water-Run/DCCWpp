@@ -168,6 +168,32 @@ public sealed class StartupRestoreCoordinatorTests
     }
 
     [Theory]
+    [InlineData("resume", false, "resume", 15)]
+    [InlineData("display_changed", true, "display_changed", 15)]
+    [InlineData("display_changed", false, "sign_in", 0)]
+    public async Task OnlyANewResumeOrPathChangeRenewsAnExpiringBusyWindow(string signal, bool pathChanges,
+        string lastTrigger, int secondsPastOriginalDeadline)
+    {
+        var clock = new FakeTime();
+        TimeSpan originalDeadline = TimeSpan.FromMinutes(31);
+        TimeSpan eventAt = originalDeadline - TimeSpan.FromSeconds(1);
+        List<(TimeSpan Time, string Trigger)> attempts = [];
+        await RunAsync(clock, originalDeadline + TimeSpan.FromMinutes(1), (enabled, trigger) =>
+        {
+            Assert.True(enabled);
+            attempts.Add((clock.Now, trigger));
+            return Report(clock.Now <= originalDeadline ? "preview_busy" : "restore_finished");
+        }, wait =>
+        {
+            if (clock.Now >= eventAt || clock.Now + wait < eventAt) return clock.WaitAsync(wait);
+            clock.Advance(eventAt - clock.Now);
+            return Task.FromResult<string?>(signal);
+        }, readConfiguration: () => pathChanges && clock.Now >= eventAt ? "new-layout" : "old-layout");
+
+        Assert.Equal((originalDeadline + TimeSpan.FromSeconds(secondsPastOriginalDeadline), lastTrigger), attempts[^1]);
+    }
+
+    [Theory]
     [InlineData("recovery_required", null, 3)]
     [InlineData("startup_unavailable", null, 3)]
     [InlineData("restore_finished", "display_disconnected", 3)]
@@ -205,6 +231,31 @@ public sealed class StartupRestoreCoordinatorTests
         }, readConfiguration: () => clock.Now == TimeSpan.FromSeconds(15) ? null : "same-layout");
 
         Assert.Equal(new[] { (TimeSpan.Zero, "sign_in"), (TimeSpan.FromSeconds(30), "display_changed") }, attempts);
+    }
+
+    [Theory]
+    [InlineData("display_changed")]
+    [InlineData(null)]
+    public async Task AReconnectedPathGetsSettlingRetriesEvenWhenThePreviousAttemptWasAtItsLimit(string? signal)
+    {
+        var clock = new FakeTime();
+        TimeSpan reconnectedAt = TimeSpan.FromSeconds(5);
+        List<(TimeSpan Time, string Trigger)> attempts = [];
+        await RunAsync(clock, TimeSpan.FromSeconds(30), (enabled, trigger) =>
+        {
+            Assert.True(enabled);
+            attempts.Add((clock.Now, trigger));
+            return Report("restore_finished", clock.Now < reconnectedAt ? "display_disconnected"
+                : clock.Now < TimeSpan.FromSeconds(8) ? "profile_device_unavailable" : null);
+        }, wait =>
+        {
+            if (signal is null || clock.Now >= reconnectedAt || clock.Now + wait < reconnectedAt) return clock.WaitAsync(wait);
+            clock.Advance(reconnectedAt - clock.Now);
+            return Task.FromResult<string?>(signal);
+        }, readConfiguration: () => clock.Now < reconnectedAt ? "internal-only" : "extended");
+
+        Assert.Equal(new[] { (TimeSpan.Zero, "sign_in"), (TimeSpan.FromSeconds(3), "sign_in"),
+            (TimeSpan.FromSeconds(6), "display_changed"), (TimeSpan.FromSeconds(9), "display_changed") }, attempts);
     }
 
     [Fact]

@@ -73,12 +73,19 @@ public sealed class StartupRestoreCoordinator
             if (wait <= TimeSpan.Zero) continue;
             string? trigger = await waitForChange(wait);
             string? configuration = _readConfiguration();
-            if (trigger is null && configuration is not null && configuration != lastConfiguration)
-                trigger = "display_changed";
+            bool configurationChanged = configuration is not null && configuration != lastConfiguration;
             lastConfiguration = configuration;
 
-            if (pending is null && trigger is not null) pending = Start(trigger);
-            else if (pending is not null && trigger == "resume") pending = pending with { Trigger = trigger };
+            if (pending is null)
+            {
+                if (trigger is not null || configurationChanged) pending = Start(trigger ?? "display_changed");
+            }
+            else if (trigger == "resume" || configurationChanged)
+            {
+                // Give the new event a full retry budget while keeping the next attempt and permission backoff in place.
+                string reason = trigger == "resume" || pending.Trigger == "resume" ? "resume" : "display_changed";
+                pending = pending with { Trigger = reason, StartedAt = _time.GetTimestamp(), SettlingRetries = 0 };
+            }
         }
     }
 

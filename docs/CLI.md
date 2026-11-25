@@ -164,7 +164,7 @@ DCCW++ 设置页在状态为 `DisabledByUser` 时提供直达 Windows 启动应�
 
 逐屏报告以 `profile_file_unavailable` 标识 ICC 文件无法读取，以 `restore_data_unavailable` 标识预设等本机数据无法读取。后台遇到 ICC 文件、关联状态或逻辑曲线暂时不可读时，每隔 3 秒重试，最多两次。确认摘要不匹配后保留 `profile_file_changed`，等待后续显示事件或手动操作。
 
-后台收到 `preview_busy` 后每 15 秒重试，同一批请求最多等待 31 分钟。等待期间合并显示通知，保留 `resume` 作为优先触发原因。每次尝试前重新读取 Windows 自启动状态和当前绑定。关闭自启动会结束待处理请求，最近一条后台报告可显示 `startup_disabled`。手动执行 `bindings restore` 仍立即返回本次结果。[Windows 登录任务状态](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptaskstate?view=winrt-26100)
+后台收到 `preview_busy` 后每 15 秒重试，每个恢复事件最多等待 31 分钟。等待期间检测到新的活动路径变化或系统唤醒时，从新事件重新计算忙碌等待上限和短间隔重试次数，并保留已安排的下一次尝试时间。相同布局的重复显示通知沿用现有额度。合并后的触发原因优先记录 `resume`。每次尝试前重新读取 Windows 自启动状态和当前绑定。关闭自启动会结束待处理请求，最近一条后台报告可显示 `startup_disabled`。手动执行 `bindings restore` 仍立即返回本次结果。[Windows 登录任务状态](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptaskstate?view=winrt-26100)
 
 开始处理待恢复事件前，若 Windows 自启动状态读取失败或超过 3 秒，后台会报告 `startup_unavailable` 并保留事件。3 秒后重新查询，仍不可读时转为每 15 秒查询。等待期间可合并唤醒及显示器变更通知。Windows 确认启用后重新评估，确认禁用后停止后台。[Windows 启动任务查询](https://learn.microsoft.com/en-us/uwp/api/windows.applicationmodel.startuptask.getforcurrentpackageasync?view=winrt-26100)
 
