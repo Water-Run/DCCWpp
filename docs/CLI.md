@@ -142,7 +142,7 @@ dccwpp.exe calibration compare before.json after.json --json
 
 确认回执错误或超时后，`calibration confirm` 会核对会话日志。日志已记录 `confirmed` 时，返回该结果及当前 `bindingStatus`。需要再次检查本地记录时，使用同一会话 ID 查询或恢复。
 
-保存和撤回都在记录 `confirmed` 前核对 ICC 文件名、实际生效的作用域、Windows 选用的作用域及逻辑曲线。即使文件名和曲线相同，只要最终读回时作用域不匹配，也会尝试回滚并返回退出码 4。回滚完成时可报告 `profile_selection_changed`，用 `calibration status` 查看是否恢复完成或需要进一步恢复。[Windows 的作用域查询](https://learn.microsoft.com/windows/win32/api/icm/nf-icm-colorprofilegetdisplayuserscope)
+保存、撤回和逐屏恢复都在确认日志写入临时文件后、发布 `confirmed` 前核对目标、逻辑曲线、有效 ICC 及作用域，再核对预览期限与当前权限。核对还包括保存或恢复所用 ICC 的摘要。撤回同时核对每用户默认关联，即使 Windows 当前选用系统作用域。发现关联、文件或曲线变化时进入回滚。保存和撤回的 CLI 返回退出码 4，可能报告 `profile_selection_changed`、`profile_file_changed` 或 `profile_file_unavailable`。用 `calibration status` 查看是否仍需恢复。[Windows 的作用域查询](https://learn.microsoft.com/windows/win32/api/icm/nf-icm-colorprofilegetdisplayuserscope)
 
 Windows 重新分配活动路径后，本地记录恢复按唯一的持久显示身份查找设备，并核对 Windows 配置设备、有效 ICC、选用作用域及文件摘要。撤回后的补写同样会核对恢复到的 ICC，再移除旧绑定。该步骤用已有确认记录中的曲线保存或清理本地数据。实际重新应用曲线由独立的显示恢复步骤执行并读回验证。登录时若遇到正在加载的显示配置或 ICC，后台最多追加两次短间隔检查。
 

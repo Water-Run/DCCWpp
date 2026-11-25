@@ -238,6 +238,20 @@ public sealed class AssociationFingerprintTests
             () => throw new InvalidOperationException("An explicit per-user profile does not fall back to system-wide.")));
     }
 
+    [Theory]
+    [InlineData("user.icc", 0, "USER.ICC", true)]
+    [InlineData("user.icc", 0, "external.icc", false)]
+    [InlineData("user.icc", 1, "user.icc", false)]
+    [InlineData(null, 0, "SYSTEM.ICC", true)]
+    [InlineData(null, 0, null, true)]
+    [InlineData(null, 0, "external.icc", false)]
+    public void ConfirmingUndoChecksThePerUserDefaultEvenWhenSystemScopeIsSelected(string? originalUser,
+        int selectedScope, string? currentUser, bool matches)
+    {
+        var backup = new IccAssociationBackup(0, originalUser, 1, "test-target", "candidate.icc", "test-device", "system.icc");
+        Assert.Equal(matches, MatchesRestoredAssociation(backup, selectedScope, currentUser));
+    }
+
     [Fact]
     public void PreparationChecksTheDormantUserProfileAndBuildsTheExactInstallPayload()
     {

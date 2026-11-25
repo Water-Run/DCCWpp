@@ -168,6 +168,30 @@ public sealed class BindingRestoreTests
     }
 
     [Theory]
+    [InlineData(false, "profile_file_changed", "skipped")]
+    [InlineData(true, "profile_file_unavailable", "failed")]
+    public void RestoreRechecksTheInstalledFileAfterWritingTheConfirmationJournal(bool unreadable, string reason, string status)
+    {
+        var test = new Fixture();
+        var original = test.Backend.State.Ramp;
+        test.Journal.BeforeSave = session =>
+        {
+            if (session.Status != "confirmed") return;
+            test.ReadHash = () => unreadable ? throw new FileNotFoundException() : new string('F', 64);
+        };
+
+        var result = test.Restorer.Restore(test.Binding, dryRun: false);
+
+        Assert.Equal(status, result.Status);
+        Assert.Equal(reason, result.ReasonCode);
+        Assert.DoesNotContain(test.Journal.Sessions, session => session.Status == "confirmed");
+        Assert.Equal("reverted", test.Journal.Sessions[^1].Status);
+        Assert.Equal(reason, test.Journal.Sessions[^1].ReasonCode);
+        Assert.True(test.Backend.State.Ramp.Matches(original));
+        Assert.Equal(test.Binding.ProfileName, test.Backend.State.ProfileName);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void UnreadableIccIsReportedSeparatelyFromUnavailablePresetData(bool dryRun)
@@ -276,8 +300,10 @@ public sealed class BindingRestoreTests
     private sealed class Journal : IGammaCalibrationJournal
     {
         public List<GammaCalibrationSession> Sessions { get; } = [];
+        public Action<GammaCalibrationSession>? BeforeSave { get; set; }
         public void Save(GammaCalibrationSession session, Action? beforePublish = null)
         {
+            BeforeSave?.Invoke(session);
             beforePublish?.Invoke();
             Sessions.Add(session);
         }

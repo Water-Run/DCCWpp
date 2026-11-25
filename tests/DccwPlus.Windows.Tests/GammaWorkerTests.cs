@@ -90,6 +90,39 @@ public sealed class GammaWorkerTests : IDisposable
         Assert.Equal(0, workerExit);
     }
 
+    [Fact]
+    public async Task FailedIccRecheckLeavesNoConfirmationOrPendingBinding()
+    {
+        var backend = new SimulatedGammaBackend { AtCommit = _ => { } };
+        var store = new GammaCalibrationStore(_root);
+        var id = Guid.NewGuid();
+        var preset = CalibrationPreset.Create("Readback fixture", new() { RedGain = .9 });
+        WriteRequest(store, new(id, backend.State.DisplayId, preset, 30));
+        string? statusDuringReadback = null;
+        backend.BeforeConfirmation = () =>
+        {
+            statusDuringReadback = store.Load(id).Status;
+            throw new ProfilePreviewException("profile_file_changed", "The candidate ICC changed before confirmation.");
+        };
+        var worker = Task.Run(() => GammaPreviewHost.Run(_root, id, () => backend));
+        var preview = await WaitForPreviewAsync(store, id, worker);
+        var client = new GammaPreviewClient(_root, "unused");
+        try { await client.CommandAsync(id, "confirm"); }
+        catch (ProfilePreviewException ex) { Assert.Equal("profile_file_changed", ex.Code); }
+        Assert.Equal(0, await worker.WaitAsync(TimeSpan.FromSeconds(10)));
+
+        var final = client.Status(id);
+        Assert.Equal("committing", statusDuringReadback);
+        Assert.Equal("reverted", final.Status);
+        Assert.Equal("profile_file_changed", final.ReasonCode);
+        Assert.Null(final.BindingStatus);
+        Assert.False(final.NeedsBindingCompletion);
+        Assert.Equal(2, backend.AssociationWrites);
+        Assert.Equal(preview.Original.ProfileName, backend.State.ProfileName);
+        Assert.True(preview.Original.Ramp.Matches(backend.State.Ramp));
+        Assert.Empty(Directory.EnumerateFiles(store.DirectoryFor(id), "state.json.*.tmp"));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -840,6 +873,7 @@ public sealed class GammaWorkerTests : IDisposable
         public int AssociationWrites { get; private set; }
         public Action? BeforeWrite { get; set; }
         public Action<bool>? AtCommit { get; set; }
+        public Action? BeforeConfirmation { get; set; }
 
         public GammaDeviceState Read(string displayId) => State with { Ramp = State.Ramp.Copy() };
         public bool TryWrite(GammaDeviceState expected, GammaRamp ramp, Func<bool>? canWrite = null)
@@ -861,6 +895,8 @@ public sealed class GammaWorkerTests : IDisposable
             checkpoint(true);
             return new(candidate, "current-user", "current-user");
         }
+        public void VerifyCommittedProfile(GammaCalibrationSession session) => BeforeConfirmation?.Invoke();
+
         public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null)
         {
             if (AtCommit is null) throw new InvalidOperationException("This fixture only previews.");

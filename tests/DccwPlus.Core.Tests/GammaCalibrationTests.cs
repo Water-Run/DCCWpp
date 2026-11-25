@@ -870,6 +870,43 @@ public sealed class GammaCalibrationTests
     }
 
     [Theory]
+    [InlineData("scope")]
+    [InlineData("curve")]
+    [InlineData("topology")]
+    public void ChangesWhileTheConfirmationJournalIsWrittenPreventPublication(string change)
+    {
+        var fixture = new Fixture();
+        var preview = fixture.Begin();
+        var replacement = GammaRampMath.Compose(GammaRamp.Identity(), new() { BlueGain = .7 });
+        fixture.Journal.BeforeSave = session =>
+        {
+            if (session.Status != "confirmed") return;
+            fixture.Backend.State = change switch
+            {
+                "scope" => fixture.Backend.State with { SelectedProfileScope = "system-wide" },
+                "curve" => fixture.Backend.State with { Ramp = replacement },
+                _ => fixture.Backend.State with { SourceId = 2 }
+            };
+        };
+
+        if (change == "scope")
+            Assert.Equal("profile_selection_changed", Assert.Throws<ProfilePreviewException>(() => fixture.Engine.Confirm()).Code);
+        else
+            Assert.Throws<IOException>(() => fixture.Engine.Confirm());
+
+        var final = fixture.Engine.Session!;
+        Assert.Equal(change switch { "scope" => "reverted", "curve" => "superseded", _ => "recovery-pending" }, final.Status);
+        Assert.Null(final.BindingStatus);
+        Assert.Equal(change != "topology", fixture.Backend.ProfileRestoreCalled);
+        Assert.True(fixture.Backend.State.Ramp.Matches(change switch
+        {
+            "scope" => preview.Original.Ramp,
+            "curve" => replacement,
+            _ => preview.Candidate
+        }));
+    }
+
+    [Theory]
     [InlineData("matched")]
     [InlineData("device-changed")]
     [InlineData("hdr")]

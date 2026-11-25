@@ -1247,6 +1247,7 @@ public sealed partial class CalibrationWorkspace : UserControl
                 "profile_state_unavailable" or "profile_scope_unavailable" => "ProfileStateUnavailable",
                 "profile_device_unavailable" => "ProfileDeviceUnavailable",
                 "profile_file_unavailable" => "IccFileUnavailable",
+                "profile_file_changed" => "IccFileChanged",
                 "icc_base_unsupported" => "IccBaseUnsupported",
                 "curve_read_failed" => "CurveReadUnavailable",
                 "curve_candidate_invalid" => "CurveCandidateInvalid",

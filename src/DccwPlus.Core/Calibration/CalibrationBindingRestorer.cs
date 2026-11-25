@@ -78,6 +78,11 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
                 throw new ProfilePreviewException("profile_device_unavailable", new LocalizationService()["ProfileDeviceUnavailable"]);
             if (!_selection.Matches(state))
                 throw new ProfilePreviewException("profile_selection_changed", new LocalizationService()["RestoreProfileChanged"]);
+            VerifyInstalledFile();
+        }
+
+        private void VerifyInstalledFile()
+        {
             string hash;
             try { hash = hashInstalledProfile(binding.ProfileName); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
@@ -100,6 +105,8 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
             VerifyProfile(backend.Read(session.Original.DisplayId));
             return _selection;
         }
+
+        public void VerifyCommittedProfile(GammaCalibrationSession session) => VerifyInstalledFile();
 
         public bool RestoreProfile(GammaCalibrationSession session, GammaDeviceState expected, Action? beforeSelectionRestore = null) => false;
     }

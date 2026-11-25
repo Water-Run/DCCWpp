@@ -220,6 +220,23 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         return selection;
     }
 
+    public void VerifyCommittedProfile(GammaCalibrationSession session)
+    {
+        if (session.UndoOf is not Guid calibrationId)
+        {
+            var saved = ReadAssociationBackup(session);
+            VerifyProfileFingerprint(saved.CandidateName, saved.CandidateHash, InstalledProfileReader.ReadSha256);
+            return;
+        }
+
+        var previous = ReadAssociationBackup(_store.Load(calibrationId));
+        var adapter = Adapter(session.Original.TargetKey);
+        uint source = session.Original.SourceId!.Value;
+        if (!MatchesRestoredAssociation(previous, ReadScope(adapter, source), ReadDefault(adapter, source, CurrentUser)))
+            throw new ProfilePreviewException("profile_selection_changed", new LocalizationService()["ProfileChangedBeforeSave"]);
+        VerifyOriginalFingerprints(previous, InstalledProfileReader.ReadSha256);
+    }
+
     private void WriteCurveAfterAssociation(GammaCalibrationSession session, GammaDeviceState state, string conflictCode,
         AuthorizeCalibrationCommit authorize)
     {
@@ -376,12 +393,14 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         authorize?.Invoke();
         int restoredScope = ReadScope(adapter, backup.SourceId);
         string? restoredUserDefault = ReadDefault(adapter, backup.SourceId, 1);
-        bool defaultRestored = ProfilePreviewPolicy.EqualName(restoredUserDefault, backup.UserDefault)
-            || (backup.UserDefault is null && ProfilePreviewPolicy.EqualName(restoredUserDefault, backup.EffectiveDefault));
-        if (restoredScope != backup.Scope || !defaultRestored)
+        if (!MatchesRestoredAssociation(backup, restoredScope, restoredUserDefault))
             throw new IOException("The original color profile association or scope was not restored.");
         return changesAssociation;
     }
+
+    internal static bool MatchesRestoredAssociation(IccAssociationBackup backup, int currentScope, string? currentUserDefault) =>
+        currentScope == backup.Scope && (ProfilePreviewPolicy.EqualName(currentUserDefault, backup.UserDefault)
+            || (backup.UserDefault is null && ProfilePreviewPolicy.EqualName(currentUserDefault, backup.EffectiveDefault)));
 
     internal static void VerifyAssociationWriteState(GammaDeviceState expected, GammaDeviceState current,
         int expectedScope, int currentScope, string? expectedUserDefault, string? currentUserDefault)

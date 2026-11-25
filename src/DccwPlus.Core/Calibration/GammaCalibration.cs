@@ -62,6 +62,8 @@ public interface IGammaCalibrationBackend
     // Authorize each native write immediately before issuing it. Pass true for association and scope writes.
     // Return the intended ICC selection for the transaction's final readback.
     GammaProfileSelection Commit(GammaCalibrationSession session, AuthorizeCalibrationCommit authorize);
+    // Recheck installed ICC files and any additional association state just before publishing confirmation.
+    void VerifyCommittedProfile(GammaCalibrationSession session) { }
     // Returns true for a verified reversal of the session's ICC selection from the expected pre-restore state.
     // Call beforeSelectionRestore after validating that state and before changing the effective selection.
     // recovery_target_changed and previous_system_profile_changed reject the operation before an ICC write.
@@ -183,14 +185,20 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
             AuthorizeCommit();
             var selection = backend.Commit(Session!, AuthorizeCommit);
             Session = Session! with { InstalledProfile = selection.ProfileName };
-            var current = backend.Read(Session.Original.DisplayId);
-            AuthorizeCommit();
-            if (!SameTarget(Session.Original, current) || !current.Ramp.Matches(Session.Candidate, ReadbackTolerance))
-                throw new IOException("Calibration curve changed while saving the profile.");
-            if (!selection.Matches(current))
-                throw new ProfilePreviewException("profile_selection_changed", new LocalizationService()["ProfileChangedBeforeSave"]);
-            if (!Session.IsBindingRestore) Session = Session with { BindingStatus = "pending" };
-            Persist("confirmed", "confirmed", true, beforePublish: () => AuthorizeCommit());
+            var confirmed = Session with { Status = "confirmed", ReasonCode = "confirmed", CurveReadbackVerified = true,
+                BindingStatus = Session.IsBindingRestore ? null : "pending" };
+            journal.Save(confirmed, beforePublish: () =>
+            {
+                AuthorizeCommit();
+                backend.VerifyCommittedProfile(confirmed);
+                var current = backend.Read(confirmed.Original.DisplayId);
+                AuthorizeCommit();
+                if (!SameTarget(confirmed.Original, current) || !current.Ramp.Matches(confirmed.Candidate, ReadbackTolerance))
+                    throw new IOException("Calibration curve changed while saving the profile.");
+                if (!selection.Matches(current))
+                    throw new ProfilePreviewException("profile_selection_changed", new LocalizationService()["ProfileChangedBeforeSave"]);
+            });
+            Session = confirmed;
         }
         catch (CalibrationCommitStoppedException ex)
         {
@@ -201,7 +209,8 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
                 Session = Session with { ProfileCommitStarted = false, BindingIntent = null };
             return Revert(ex.ReasonCode);
         }
-        catch (ProfilePreviewException ex) when (ex.Code == "profile_selection_changed") { Revert(ex.Code); throw; }
+        catch (ProfilePreviewException ex) when (ex.Code is "profile_selection_changed" or "profile_file_changed" or "profile_file_unavailable")
+        { Revert(ex.Code); throw; }
         catch { Revert("commit_failed"); throw; }
         return Session!;
 
@@ -402,10 +411,10 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
     { Session = Session! with { Status = "recovery-pending", ReasonCode = reason, CurveReadbackVerified = false }; journal.Save(Session); return Session; }
     private GammaCalibrationSession Superseded(string reason)
     { Persist("superseded", reason); return Session!; }
-    private void Persist(string status, string reason, bool verified = false, Action? beforePublish = null)
+    private void Persist(string status, string reason, bool verified = false)
     {
         var next = Session! with { Status = status, ReasonCode = reason, CurveReadbackVerified = verified };
-        journal.Save(next, beforePublish);
+        journal.Save(next);
         Session = next;
     }
 
