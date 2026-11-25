@@ -11,6 +11,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.Win32;
 using Windows.Globalization.NumberFormatting;
 
@@ -21,7 +22,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private static readonly string[] StepLabelKeys = ["StepPrepare", "StepGamma", "StepBrightness", "StepContrast", "StepBalance", "StepReview"];
     private MainViewModel? _model;
     private Window? _window;
-    private Window? _patternWindow;
+    private Window? _fullScreenWindow;
     private Window? _activeWindow;
     private PatternSurface? _fullScreenPattern;
     private (Button Exit, Button Compare, Button Cancel, TextBlock Guide, TextBlock Countdown)? _fullScreenControls;
@@ -33,7 +34,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     private bool _setting, _busy, _pushing, _dirty, _timerBusy;
     private bool _displayRefreshPending, _closed;
     private readonly HashSet<string> _ambiguousDisplayIdentities = new(StringComparer.OrdinalIgnoreCase);
-    private bool _previewPatternLeftDisplay;
+    private bool _previewReferenceLeftDisplay;
     private bool _workerExited;
     private bool _calibrationPageVisible = true;
     private DateTimeOffset _lastHeartbeat;
@@ -44,10 +45,13 @@ public sealed partial class CalibrationWorkspace : UserControl
     private DisplayInfo? SelectedDisplay => (DisplayPicker.SelectedItem as DisplayOption)?.Display;
     private bool AnnounceWizardChanges => _calibrationPageVisible && ReferenceEquals(_activeWindow, _window);
     private bool PreviewUpdatePending => Active && !UndoActive && (_dirty || ReviewSelected != IsReviewing);
+    private bool HasFullScreenPhoto => _fullScreenWindow is not null && _fullScreenPattern is null;
     internal bool HasActivePreview => Active;
     internal bool CanCancelPreview => Active && !_busy;
+    internal bool CanOpenReferencePhoto => !_closed && !_busy && !_pushing;
     internal bool HasPendingPreviewRecovery => _session?.NeedsRecovery == true && (_workerExited || _session.Status == "recovery-pending");
     internal event Action? PreviewUiUpdated;
+    internal event Action? ReferencePhotoPlacementFailed;
 
     public CalibrationWorkspace() => InitializeComponent();
     public void Initialize(MainViewModel model, Window window)
@@ -95,7 +99,7 @@ public sealed partial class CalibrationWorkspace : UserControl
             _closed = true;
             if (watchingDisplay) SystemEvents.DisplaySettingsChanged -= displaySettingsChanged;
             _displayRefresh?.Stop();
-            ClosePatternWindow();
+            CloseFullScreen();
         };
         window.Activated += (_, e) =>
         {
@@ -117,7 +121,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (!visible)
         {
             _debounce?.Stop();
-            ClosePatternWindow();
+            CloseFullScreen();
         }
         else
         {
@@ -162,7 +166,7 @@ public sealed partial class CalibrationWorkspace : UserControl
             _draft = CurrentPreset() with { Id = Guid.NewGuid(), CreatedAt = DateTimeOffset.UtcNow };
             OriginalToggle.IsOn = false;
             _dirty = false;
-            _previewPatternLeftDisplay = false;
+            _previewReferenceLeftDisplay = false;
             _session = await _client.BeginAsync(display.Id, _draft, 60, windowOwned: true);
             if (Active) { _timer!.Start(); StepPicker.SelectedIndex = 1; Show("PreviewActive", InfoBarSeverity.Informational); }
             else ShowState();
@@ -170,9 +174,10 @@ public sealed partial class CalibrationWorkspace : UserControl
         catch (Exception ex) { ShowError(ex); RefreshRecovery(); }
         finally { _busy = false; UpdateUi(); }
     }
-    private async Task<bool> PushAsync()
+    private async Task<bool> PushAsync(bool fromFullScreenPhoto = false)
     {
-        if (_model is null || _client is null || !Active || UndoActive || _busy || _pushing || !_calibrationPageVisible) return false;
+        if (_model is null || _client is null || !Active || UndoActive || _busy || _pushing) return false;
+        if (!_calibrationPageVisible && !(fromFullScreenPhoto && HasFullScreenPhoto && IsReviewing && ReviewSelected)) return false;
         _debounce?.Stop();
         if (!PreviewUpdatePending) return true;
         _pushing = true; UpdateUi();
@@ -227,7 +232,7 @@ public sealed partial class CalibrationWorkspace : UserControl
                 if (!_pushing && !_busy) ReloadSession();
             }
             if (!Active && (_session?.NeedsRecovery != true || HasPendingPreviewRecovery))
-            { _timer!.Stop(); ClosePatternWindow(); ShowState(); RefreshRecovery(); }
+            { _timer!.Stop(); CloseFullScreen(); ShowState(); RefreshRecovery(); }
         }
         catch (Exception ex) { ShowError(ex); }
         finally { _timerBusy = false; UpdateUi(); }
@@ -244,7 +249,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         _busy = true; UpdateUi();
         try
         {
-            ClosePatternWindow();
+            CloseFullScreen();
             _session = await _client.CommandAsync(_session!.Id, "confirm");
             ShowState();
             if (_session.Status == "confirmed" && !undo)
@@ -322,7 +327,7 @@ public sealed partial class CalibrationWorkspace : UserControl
                 return;
             }
             OriginalToggle.IsOn = false;
-            _previewPatternLeftDisplay = false;
+            _previewReferenceLeftDisplay = false;
             _session = await _client.BeginUndoAsync(saved.Id, windowOwned: true, expectedDisplayId: display.Id);
             if (Active)
             {
@@ -344,7 +349,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         _busy = true; UpdateUi();
         try
         {
-            ClosePatternWindow();
+            CloseFullScreen();
             _session = await _client.CommandAsync(_session!.Id, "revert");
             if (targetMoved && _session.Status == "reverted") Show("PreviewMoved", InfoBarSeverity.Warning);
             else ShowState();
@@ -429,8 +434,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         SaveDraftButton.Visibility = Active ? Visibility.Collapsed : Visibility.Visible;
         CountdownText.Visibility = IsReviewing && ReviewSelected ? Visibility.Visible : Visibility.Collapsed;
         if (CountdownText.Visibility == Visibility.Visible)
-            CountdownText.Text = string.Format(_model.Text[undo ? "UndoCountdown" : "PreviewCountdown"],
-                Math.Max(0, (int)Math.Ceiling((_session!.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds)));
+            CountdownText.Text = PreviewCountdownText();
         UpdateStepInstructions(Math.Max(0, StepPicker.SelectedIndex));
         SetLiveText(ComparisonState, _model.Text[undo ? "ShowingPreviousSavedCurve" : !Active ? "ComparisonRequiresPreview"
             : updatingComparison ? "UpdatingComparison" : _session!.ShowingOriginal ? "ShowingOriginal" : "ShowingAdjusted"],
@@ -441,6 +445,9 @@ public sealed partial class CalibrationWorkspace : UserControl
         ScheduleDisplayRefresh();
         PreviewUiUpdated?.Invoke();
     }
+
+    private string PreviewCountdownText() => string.Format(_model!.Text[UndoActive ? "UndoCountdown" : "PreviewCountdown"],
+        Math.Max(0, (int)Math.Ceiling((_session!.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds)));
 
     private void UpdateStepInstructions(int step) => SetLiveText(StepInstructions,
         _model!.Text[UndoActive ? "UndoPreview" : "StepInstruction" + step], AnnounceWizardChanges);
@@ -494,7 +501,7 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
     private void UpdateDisplaySelection()
     {
-        ClosePatternWindow();
+        CloseFullScreen();
         Outcome.IsOpen = false;
         ClearTypeNotice.IsOpen = false;
         UpdateUi();
@@ -624,7 +631,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         if (manual || lostSelection) UpdateDisplaySelection();
         else
         {
-            if (selected != current) ClosePatternWindow();
+            if (selected != current) CloseFullScreen();
             UpdateUi();
         }
         if (lostSelection) Show("DisplaySelectionLost", InfoBarSeverity.Warning);
@@ -647,26 +654,64 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
     private void FullScreenClicked(object sender, RoutedEventArgs e)
     {
-        if (_model is null || SelectedDisplay is not { } selected) return;
+        if (_model is null) return;
+        var pattern = new PatternSurface();
+        pattern.SetPattern((ReferencePatternKind)Math.Max(0, StepPicker.SelectedIndex));
+        AutomationProperties.SetName(pattern, _model.Text["CalibrationPattern"]);
+        ShowFullScreen(pattern, _model.Text["CalibrationPattern"], FullScreenButton);
+    }
+
+    internal void OpenReferencePhoto(ImageSource source, string fileName, Button launchButton)
+    {
+        if (!CanOpenReferencePhoto) return;
+        var photo = new Image { Source = source, Stretch = Stretch.Uniform };
+        AutomationProperties.SetName(photo, fileName);
+        ShowFullScreen(photo, fileName, launchButton);
+    }
+
+    internal void CloseReferencePhoto()
+    {
+        if (HasFullScreenPhoto) CloseFullScreen();
+    }
+
+    private void ShowFullScreen(FrameworkElement content, string title, Button launchButton)
+    {
+        bool photo = content is Image;
+        void Unavailable()
+        {
+            CloseFullScreen();
+            ReportFullScreenPlacement(photo, "DisplayUnavailable");
+        }
+
         DisplayInfo? display;
-        try { display = CheckSelectedDisplay(selected, new WindowsDisplayService().Enumerate()); }
-        catch (Exception ex) { ShowError(ex); return; }
-        if (display is null) { ClosePatternWindow(); return; }
+        try
+        {
+            var selected = SelectedDisplay;
+            display = selected is null ? null : ResolveSelectedDisplay(selected, new WindowsDisplayService().Enumerate());
+            if (display is null || display.Id != selected!.Id)
+            {
+                RequestDisplayRefresh();
+                Unavailable();
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (photo) { Debug.WriteLine(ex); Unavailable(); }
+            else ShowError(ex);
+            return;
+        }
         if (Active && (!OnPreviewDisplay() || display.TargetKey != _session!.Original.TargetKey
             || display.SourceId != _session.Original.SourceId || display.DeviceName != _session.Original.DeviceName))
         {
-            _previewPatternLeftDisplay = true;
-            ClosePatternWindow();
-            Show("DisplayUnavailable", InfoBarSeverity.Warning);
+            _previewReferenceLeftDisplay = true;
+            Unavailable();
             return;
         }
-        if (_patternWindow is not null && DisplayWindowPlacement.IsFullScreenOnDisplay(_patternWindow, display.DeviceName))
-        { _patternWindow.Activate(); return; }
-        ClosePatternWindow();
-        var text = _model.Text;
-        var pattern = new PatternSurface();
-        pattern.SetPattern((ReferencePatternKind)Math.Max(0, StepPicker.SelectedIndex));
-        AutomationProperties.SetName(pattern, text["CalibrationPattern"]);
+        if (_fullScreenWindow is not null && HasFullScreenPhoto == photo
+            && DisplayWindowPlacement.IsFullScreenOnDisplay(_fullScreenWindow, display.DeviceName))
+        { _fullScreenWindow.Activate(); return; }
+        CloseFullScreen();
         var exit = new Button();
         var compare = new Button();
         var cancel = new Button();
@@ -690,74 +735,87 @@ public sealed partial class CalibrationWorkspace : UserControl
             Content = actions, HorizontalScrollMode = ScrollMode.Enabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollMode = ScrollMode.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled
         });
-        var root = new Grid();
+        var root = new Grid { Background = photo ? new SolidColorBrush(Microsoft.UI.Colors.Black) : null };
         root.RowDefinitions.Add(new RowDefinition());
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.Children.Add(pattern);
+        root.Children.Add(content);
         Grid.SetRow(footer, 1);
         root.Children.Add(footer);
-        var window = new Window { Title = text["CalibrationPattern"], Content = root };
-        _patternWindow = window;
-        _fullScreenPattern = pattern;
+        var window = new Window { Title = title, Content = root };
+        _fullScreenWindow = window;
+        _fullScreenPattern = content as PatternSurface;
         _fullScreenControls = (exit, compare, cancel, guide, countdown);
         UpdateFullScreenControls();
         window.Activated += (_, e) => TrackActiveWindow(window, e.WindowActivationState);
         window.Closed += (_, _) =>
         {
             if (ReferenceEquals(_activeWindow, window)) _activeWindow = null;
-            if (ReferenceEquals(_patternWindow, window))
+            if (ReferenceEquals(_fullScreenWindow, window))
             {
-                _patternWindow = null;
+                _fullScreenWindow = null;
                 _fullScreenPattern = null;
                 _fullScreenControls = null;
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (!_closed && _fullScreenWindow is null && launchButton.IsLoaded && launchButton.IsEnabled)
+                        launchButton.Focus(FocusState.Programmatic);
+                });
             }
         };
-        exit.Click += (_, _) => ClosePatternWindow();
+        exit.Click += (_, _) => window.Close();
         exit.Loaded += (_, _) => exit.Focus(FocusState.Programmatic);
         compare.Click += async (_, _) =>
         {
             if (!OriginalToggle.IsEnabled) return;
             if (!OnPreviewDisplay()) { await CancelAsync(targetMoved: true); return; }
             OriginalToggle.IsOn = !_session!.ShowingOriginal;
-            await PushAsync();
+            await PushAsync(fromFullScreenPhoto: photo);
         };
         cancel.Click += async (_, _) => await CancelAsync();
         root.KeyDown += (_, key) =>
         {
             if (key.Key != global::Windows.System.VirtualKey.Escape) return;
             key.Handled = true;
-            ClosePatternWindow();
+            window.Close();
         };
         try
         {
-            if (!DisplayWindowPlacement.MoveToDisplay(window, display.DeviceName))
-            { ClosePatternWindow(); Show("DisplayUnavailable", InfoBarSeverity.Warning); return; }
+            if (!DisplayWindowPlacement.MoveToDisplay(window, display.DeviceName)) { Unavailable(); return; }
             window.AppWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
-            if (!DisplayWindowPlacement.IsOnDisplay(window, display.DeviceName))
-            { ClosePatternWindow(); Show("DisplayUnavailable", InfoBarSeverity.Warning); return; }
+            if (!DisplayWindowPlacement.IsOnDisplay(window, display.DeviceName)) { Unavailable(); return; }
             window.Activate();
-            if (!DisplayWindowPlacement.IsFullScreenOnDisplay(window, display.DeviceName))
-            { ClosePatternWindow(); Show("DisplayUnavailable", InfoBarSeverity.Warning); return; }
+            if (!DisplayWindowPlacement.IsFullScreenOnDisplay(window, display.DeviceName)) { Unavailable(); return; }
             window.AppWindow.Changed += (_, change) =>
             {
                 if (change.DidPositionChange || change.DidSizeChange || change.DidPresenterChange)
-                    DispatcherQueue.TryEnqueue(() => CheckPatternPlacement(window, display.DeviceName));
+                    DispatcherQueue.TryEnqueue(() => CheckFullScreenPlacement(window, display.DeviceName));
             };
-            if (Outcome.Message == text["FullScreenLost"]) Outcome.IsOpen = false;
+            if (!photo && Outcome.Message == _model!.Text["FullScreenLost"]) Outcome.IsOpen = false;
         }
-        catch (Exception ex) { ClosePatternWindow(); ShowError(ex); }
+        catch (Exception ex)
+        {
+            if (photo) { Debug.WriteLine(ex); Unavailable(); }
+            else { CloseFullScreen(); ShowError(ex); }
+        }
     }
 
-    private void CheckPatternPlacement(Window window, string deviceName)
+    private void CheckFullScreenPlacement(Window window, string deviceName)
     {
-        if (!ReferenceEquals(_patternWindow, window)) return;
+        if (!ReferenceEquals(_fullScreenWindow, window)) return;
         bool onDisplay = DisplayWindowPlacement.IsFrameOnDisplay(window, deviceName, out bool fillsDisplay);
         if (onDisplay && fillsDisplay) return;
 
         bool cancelPreview = Active && !onDisplay;
-        if (cancelPreview) _previewPatternLeftDisplay = true;
-        ClosePatternWindow();
-        if (!cancelPreview) Show("FullScreenLost", InfoBarSeverity.Warning);
+        if (cancelPreview) _previewReferenceLeftDisplay = true;
+        bool photo = HasFullScreenPhoto;
+        CloseFullScreen();
+        if (!cancelPreview) ReportFullScreenPlacement(photo, "FullScreenLost");
+    }
+
+    private void ReportFullScreenPlacement(bool photo, string key)
+    {
+        if (photo) ReferencePhotoPlacementFailed?.Invoke();
+        else Show(key, InfoBarSeverity.Warning);
     }
     private void UpdateFullScreenControls()
     {
@@ -771,10 +829,12 @@ public sealed partial class CalibrationWorkspace : UserControl
         controls.Cancel.Content = text["CancelCalibration"];
         controls.Cancel.Visibility = CancelButton.Visibility;
         controls.Cancel.IsEnabled = CancelButton.IsEnabled;
-        SetLiveText(controls.Guide, reviewing ? ComparisonState.Text : StepInstructions.Text,
-            ReferenceEquals(_patternWindow, _activeWindow));
-        controls.Countdown.Visibility = CountdownText.Visibility;
-        controls.Countdown.Text = CountdownText.Text;
+        bool photo = HasFullScreenPhoto;
+        controls.Guide.Visibility = !photo || Active ? Visibility.Visible : Visibility.Collapsed;
+        SetLiveText(controls.Guide, photo || reviewing ? ComparisonState.Text : StepInstructions.Text,
+            ReferenceEquals(_fullScreenWindow, _activeWindow));
+        controls.Countdown.Visibility = photo && Active ? Visibility.Visible : CountdownText.Visibility;
+        if (controls.Countdown.Visibility == Visibility.Visible) controls.Countdown.Text = PreviewCountdownText();
     }
 
     private void TrackActiveWindow(Window window, WindowActivationState activation)
@@ -784,14 +844,14 @@ public sealed partial class CalibrationWorkspace : UserControl
     }
     private bool OnPreviewDisplay()
     {
-        return !_previewPatternLeftDisplay && _session is not null && _window is not null
+        return !_previewReferenceLeftDisplay && _session is not null && _window is not null
             && DisplayWindowPlacement.IsOnDisplay(_window, _session.Original.DeviceName)
-            && (_patternWindow is null || DisplayWindowPlacement.IsFrameOnDisplay(_patternWindow, _session.Original.DeviceName, out _));
+            && (_fullScreenWindow is null || DisplayWindowPlacement.IsFrameOnDisplay(_fullScreenWindow, _session.Original.DeviceName, out _));
     }
-    private void ClosePatternWindow()
+    private void CloseFullScreen()
     {
-        var window = _patternWindow;
-        _patternWindow = null;
+        var window = _fullScreenWindow;
+        _fullScreenWindow = null;
         _fullScreenPattern = null;
         _fullScreenControls = null;
         window?.Close();

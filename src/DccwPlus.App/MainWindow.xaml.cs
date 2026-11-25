@@ -34,6 +34,7 @@ public sealed partial class MainWindow : Window
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "App.ico"));
         Workspace.Initialize(Model, this);
         Workspace.PreviewUiUpdated += UpdateBackgroundPreview;
+        Workspace.ReferencePhotoPlacementFailed += () => ReferencePlacementWarning.IsOpen = true;
         Navigation.SelectedItem = CalibrationNav;
         UpdateLanguage(); _updating = false;
         Root.Loaded += async (_, _) => await RefreshStartupAsync();
@@ -47,6 +48,7 @@ public sealed partial class MainWindow : Window
     {
         if (Workspace is null || PageScroll is null) return;
         string page = args.IsSettingsSelected ? "settings" : (args.SelectedItem as NavigationViewItem)?.Tag as string ?? "calibration";
+        if (page != "references") Workspace.CloseReferencePhoto();
         _headingKey = page switch
         {
             "presets" => "Presets",
@@ -83,6 +85,7 @@ public sealed partial class MainWindow : Window
             BackgroundPreviewAction.IsEnabled = pending || Workspace.CanCancelPreview;
         }
         BackgroundPreview.IsOpen = show;
+        UpdateReferencePhotoAction();
     }
     private async void CancelPreviewKeyInvoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
@@ -221,8 +224,11 @@ public sealed partial class MainWindow : Window
     private async void PhotoChanged(object sender, SelectionChangedEventArgs e)
     {
         var request = ++_photoRequest;
+        Workspace.CloseReferencePhoto();
         ReferencePhoto.Source = null;
         ReferencePhotoError.IsOpen = false;
+        ReferencePlacementWarning.IsOpen = false;
+        UpdateReferencePhotoAction();
         if (PhotoPicker.SelectedItem is not StorageFile file) return;
         try
         {
@@ -231,16 +237,30 @@ public sealed partial class MainWindow : Window
             var image = new BitmapImage();
             image.ImageFailed += (_, _) => ShowReferencePhotoError(request);
             await image.SetSourceAsync(stream);
-            if (request == _photoRequest && !ReferencePhotoError.IsOpen) ReferencePhoto.Source = image;
+            if (request == _photoRequest && !ReferencePhotoError.IsOpen)
+            {
+                ReferencePhoto.Source = image;
+                UpdateReferencePhotoAction();
+            }
         }
         catch (Exception) { ShowReferencePhotoError(request); }
     }
     private void ShowReferencePhotoError(long request)
     {
         if (request != _photoRequest) return;
+        Workspace.CloseReferencePhoto();
         ReferencePhoto.Source = null;
         ReferencePhotoError.IsOpen = true;
+        UpdateReferencePhotoAction();
     }
+    private void ReferenceFullScreenClicked(object sender, RoutedEventArgs e)
+    {
+        if (ReferencePhoto.Source is not { } image || PhotoPicker.SelectedItem is not StorageFile file) return;
+        ReferencePlacementWarning.IsOpen = false;
+        Workspace.OpenReferencePhoto(image, file.Name, ReferenceFullScreenButton);
+    }
+    private void UpdateReferencePhotoAction() =>
+        ReferenceFullScreenButton.IsEnabled = ReferencePhoto.Source is not null && Workspace.CanOpenReferencePhoto;
     private async void LanguageChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_updatingLanguage || LanguagePicker.SelectedItem is not LanguageOption item || item.Code == Model.Text.Language) return;

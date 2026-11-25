@@ -61,13 +61,14 @@
             </StackPanel>
             <StackPanel x:Name="ReferencesPanel" Visibility="Collapsed" Spacing="20">
               <Border Style="{StaticResource Card}"><StackPanel Spacing="16">
-                <TextBlock Text="{Binding Text[ReferenceTitle]}" Style="{ThemeResource SubtitleTextBlockStyle}" />
                 <TextBlock Text="{Binding Text[ReferenceMessage]}" TextWrapping="Wrap" />
-                <TextBlock Text="{Binding Text[ReferenceCategories]}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <Button Content="{Binding Text[ChooseReferencePhotos]}" Click="ChoosePhotosClicked" />
                 <ComboBox x:Name="PhotoPicker" DisplayMemberPath="Name" SelectionChanged="PhotoChanged" HorizontalAlignment="Stretch" AutomationProperties.Name="{Binding Text[References]}" />
+                <Button x:Name="ReferenceFullScreenButton" Content="{Binding Text[FullScreen]}" IsEnabled="False" Click="ReferenceFullScreenClicked" />
                 <InfoBar x:Name="ReferencePhotoError" Severity="Error" IsOpen="False" IsClosable="False"
                          Title="{Binding Text[ReferencePhotoOpenFailed]}" />
+                <InfoBar x:Name="ReferencePlacementWarning" Severity="Warning" IsOpen="False" IsClosable="False"
+                         Title="{Binding Text[ReferenceDisplayUnavailable]}" />
                 <Image x:Name="ReferencePhoto" MaxHeight="540" Stretch="Uniform" />
               </StackPanel></Border>
             </StackPanel>
