@@ -177,7 +177,9 @@ public sealed class GammaCalibrationTests
     [Theory]
     [InlineData("recovery_target_changed", false, "superseded")]
     [InlineData("previous_system_profile_changed", false, "superseded")]
+    [InlineData("profile_device_unavailable", false, "superseded")]
     [InlineData("recovery_target_changed", true, "reverted")]
+    [InlineData("profile_device_unavailable", true, "reverted")]
     public void ARejectedIccRollbackRetainsOnlyEvidenceFromAnEarlierAttempt(string reason, bool earlierIntent, string expected)
     {
         var fixture = new Fixture();

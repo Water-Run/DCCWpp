@@ -107,6 +107,22 @@ public sealed class AssociationFingerprintTests
         Assert.Equal(State.TargetKey, backup.TargetKey);
     }
 
+    [Fact]
+    public void AssociationRecoveryRechecksDeviceUniquenessEvenForAnOldJournal()
+    {
+        var backup = new IccAssociationBackup(0, null, State.SourceId!.Value, State.TargetKey, "candidate.icc", Display.ProfileDeviceKey!);
+        var other = Display with
+        {
+            Id = "fedcba9876543210", DeviceName = @"\\.\DISPLAY2", TargetKey = "00000000:00000002:2",
+            SourceId = 2, ProfileDeviceKey = Display.ProfileDeviceKey!.ToLowerInvariant()
+        };
+
+        VerifyAssociationTarget(State, backup, State, [Display]);
+
+        var error = Assert.Throws<ProfilePreviewException>(() => VerifyAssociationTarget(State, backup, State, [Display, other]));
+        Assert.Equal("profile_device_unavailable", error.Code);
+    }
+
     [Theory]
     [InlineData("matched", null)]
     [InlineData("reused-path", "display_disconnected")]
@@ -229,7 +245,12 @@ public sealed class AssociationFingerprintTests
         byte[] userProfile = DisplayProfile();
         userProfile[8] = 4;
         Guid id = Guid.NewGuid();
-        var (backup, profile) = PrepareIcc(Display, State, State.Ramp, id,
+        var other = Display with
+        {
+            Id = "fedcba9876543210", DeviceName = @"\\.\DISPLAY2", TargetKey = "00000000:00000002:2",
+            SourceId = 2, ProfileDeviceKey = Display.ProfileDeviceKey + "2"
+        };
+        var (backup, profile) = PrepareIcc(Display, [Display, other], State, State.Ramp, id,
             name => name == "system.icc" ? systemProfile : userProfile,
             scope => scope == 0 ? "system.icc" : "user.icc", () => 0);
 
@@ -244,7 +265,7 @@ public sealed class AssociationFingerprintTests
     public void PreparationPreservesAbsenceOfTheOriginalAssociation()
     {
         var original = State with { ProfileName = null, ProfileScope = null };
-        var (backup, _) = PrepareIcc(Display, original, State.Ramp, Guid.Empty, name =>
+        var (backup, _) = PrepareIcc(Display, [Display], original, State.Ramp, Guid.Empty, name =>
         {
             Assert.Equal("sRGB Color Space Profile.icm", name);
             return DisplayProfile();
@@ -264,7 +285,7 @@ public sealed class AssociationFingerprintTests
     {
         var display = change == "device" ? Display with { ProfileDeviceKey = null } : Display;
         int scopeReads = 0;
-        var error = Assert.Throws<ProfilePreviewException>(() => PrepareIcc(display, State, State.Ramp, Guid.Empty,
+        var error = Assert.Throws<ProfilePreviewException>(() => PrepareIcc(display, [display], State, State.Ramp, Guid.Empty,
             name => (change, name) switch
             {
                 ("file", "user.icc") => throw new FileNotFoundException(),
@@ -274,6 +295,21 @@ public sealed class AssociationFingerprintTests
             scope => scope == 1 ? "user.icc" : change == "selection" ? "different.icc" : "system.icc",
             () => change == "scope" && ++scopeReads == 2 ? 1 : 0));
         Assert.Equal(reason, error.Code);
+    }
+
+    [Fact]
+    public void PreparationStopsBeforeReadingScopeWhenIndependentDisplaysShareAProfileDevice()
+    {
+        var other = Display with
+        {
+            Id = "fedcba9876543210", DeviceName = @"\\.\DISPLAY2", TargetKey = "00000000:00000002:2",
+            SourceId = 2, ProfileDeviceKey = Display.ProfileDeviceKey!.ToUpperInvariant()
+        };
+        var error = Assert.Throws<ProfilePreviewException>(() => PrepareIcc(Display, [Display, other], State, State.Ramp, Guid.Empty,
+            _ => throw new InvalidOperationException("The ICC file was read."),
+            _ => throw new InvalidOperationException("The default ICC was read."),
+            () => throw new InvalidOperationException("The display scope was read.")));
+        Assert.Equal("profile_device_unavailable", error.Code);
     }
 
     [Theory]

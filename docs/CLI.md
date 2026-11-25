@@ -180,6 +180,8 @@ dccwpp calibration undo <calibration-id> --seconds 30 --request-id <request-uuid
 
 `apply --dry-run` 与向导、CLI 的实际预览共用启动检查。检查未完成的显示事务、SDR 路径、逻辑曲线、默认 ICC 及作用域，并在内存中生成候选 ICC。`canPreview: true` 表示这些检查通过。驱动写入和 Windows 默认关联在实际操作后验证。HDR 或 MHC2 继续返回 `canApply: false` 与原因码。其他阻碍通过错误封装返回，例如 `recovery_required`、`profile_device_unavailable`、`profile_file_unavailable` 和 `icc_base_unsupported`。预演不占用请求 ID，也不生成磁盘 ICC。
 
+Gamma 校准要求目标屏的 Windows 配置设备在活动路径中唯一。多个活动路径共用设备时，预演返回 `profile_device_unavailable`。确认保存或恢复时，会在写入 ICC 关联和作用域前重新核对设备。[Windows WCS 配置作用域](https://learn.microsoft.com/en-us/windows/win32/wcs/wcs-registry-keys)
+
 Gamma、ICC 和撤回预演都先检查显示操作是否忙碌，以及是否有待处理的预览日志。忙碌时原因码为 `preview_busy`，有未结束的预览时为 `recovery_required`。撤回预演通过 `canPreview: false` 和 `reasonCode` 报告，Gamma 和 ICC 预演通过退出码 4 和 `error.code` 报告。实际预览会重新检查。
 
 `calibration preview` 使用同一套检查。Gamma 范围为 1–3，默认 2.2。`--red-gain`、`--green-gain` 和 `--blue-gain` 范围为 0.5–1.5，默认 1。预演通过或因色彩模式被阻止时，`data` 含 `displayId`、`calibration`、`canPreview`、`reasonCode`、`timeoutSeconds` 和 `changesDisplay`。直接输入只在事务中暂存，在确认保存后可出现在预设库。

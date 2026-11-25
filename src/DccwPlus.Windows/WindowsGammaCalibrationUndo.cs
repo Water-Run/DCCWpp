@@ -64,8 +64,7 @@ public sealed partial class WindowsGammaCalibrationBackend
         if (!CalibrationService.IsExplicitSdr(target) || target.Topology == "clone"
             || connected.Count(display => display.DeviceName == target.DeviceName) != 1 || target.Profile?.Mhc2Present == true
             || target.TargetKey is null || target.SourceId is null
-            || !string.Equals(target.ProfileDeviceKey, backup.DeviceKey, StringComparison.OrdinalIgnoreCase)
-            || connected.Count(display => string.Equals(display.ProfileDeviceKey, backup.DeviceKey, StringComparison.OrdinalIgnoreCase)) != 1)
+            || !string.Equals(WindowsDisplayService.GetUniqueProfileDeviceKey(target, connected), backup.DeviceKey, StringComparison.OrdinalIgnoreCase))
             throw new ProfilePreviewException("undo_target_changed", new LocalizationService()["UndoUnavailable"]);
 
         // WCS uses the current adapter/source pair. The saved scope belongs to the original profile device key.
@@ -84,7 +83,7 @@ public sealed partial class WindowsGammaCalibrationBackend
         RestoreSavedAssociation(undo.Original, backup, current, saved.Original.ProfileName, undo.Id);
 
         var selection = new GammaProfileSelection(saved.Original.ProfileName, saved.Original.ProfileScope, ScopeName(backup.Scope));
-        var restored = Read(undo.Original.DisplayId);
+        var restored = Read(undo.Original.DisplayId, backup.DeviceKey);
         if (!GammaCalibrationTransaction.SameTarget(undo.Original, restored) || !selection.Matches(restored))
             throw new ProfilePreviewException("undo_profile_not_verified", "Windows did not report the previous profile and scope.");
         if (NeedsCurveWriteAfterAssociation(undo, restored.Ramp, "undo_curve_changed")) TryWrite(restored, undo.Candidate);
@@ -96,8 +95,9 @@ public sealed partial class WindowsGammaCalibrationBackend
     {
         var saved = _store.Load(calibrationId);
         CalibrationUndoPolicy.VerifySource(saved);
-        var (_, backup) = ResolveUndoAssociation(saved.Original, ReadAssociationBackup(saved), new WindowsDisplayService().Enumerate());
-        VerifyAssociationTarget(expected, backup, current);
+        var connected = new WindowsDisplayService().Enumerate();
+        var (_, backup) = ResolveUndoAssociation(saved.Original, ReadAssociationBackup(saved), connected);
+        VerifyAssociationTarget(expected, backup, current, connected);
         if (!undo.Candidate.Matches(saved.Original.Ramp)
             || !ProfilePreviewPolicy.EqualName(undo.Original.ProfileName, backup.CandidateName)
             || undo.Original.ProfileScope != "current-user")
@@ -124,7 +124,7 @@ public sealed partial class WindowsGammaCalibrationBackend
         bool alreadyAssociated = WindowsProfileAssociationBackend.List(backup.TargetKey, backup.SourceId, 1)
             .Contains(backup.CandidateName, StringComparer.OrdinalIgnoreCase);
         beforeSelectionRestore?.Invoke();
-        VerifyAssociationWriteState(current, Read(current.DisplayId), scope, ReadScope(adapter, backup.SourceId),
+        VerifyAssociationWriteState(current, Read(current.DisplayId, backup.DeviceKey), scope, ReadScope(adapter, backup.SourceId),
             userDefault, ReadDefault(adapter, backup.SourceId, CurrentUser));
         if (alreadyAssociated)
             Check(ColorProfileSetDisplayDefaultAssociation(1, backup.CandidateName, 0, 4, adapter, backup.SourceId));

@@ -2,6 +2,12 @@
 
 验收条目保留测试时使用的构建 ID。历史合并前的构建 ID 对应当时的包和 CI 记录。
 
+## 2026-11-25 · 多屏 Gamma 保存和恢复核对配置设备
+
+- 向导和 CLI 的 Gamma 预演检查 Windows 配置设备是否只对应目标屏。共享时返回 `profile_device_unavailable`。ICC 保存和恢复在写入关联与作用域前重新核对。旧记录也须通过设备核对才能恢复 ICC。若最后一次核对拒绝回滚，本次未发生的写入不会成为后续恢复曲线的依据。[CLI 契约](CLI.md)
+- 374 项单元及模拟测试通过。覆盖独立 SDR 路径共用设备、旧记录的恢复检查，以及回滚在写入前被拒绝后对恢复依据的保留。x64 开发 MSIX 内容校验通过。
+- Windows build 26340 本地控制台的三条独立 SDR 路径均通过 CLI 只读预演。全桌面前后采样一致，未创建校准会话。报告位于 `artifacts/unique-profile-device/9a13f2be-1935-456e-a3ef-f77e553c6be8/summary.json`。设备共用分支使用模拟拓扑，实机写入仍待人工验收。
+
 ## 2026-11-25 · 实时校准核对检查原配置设备
 
 - `calibration verify` 在比较 ICC 和逻辑曲线前检查原 Windows 配置设备。缺失、不匹配或多个活动路径共用该设备时，报告 `inconclusive` 和 `profile_device_unavailable`。旧会话可使用已保存的 ICC 关联备份。[CLI 契约](CLI.md)

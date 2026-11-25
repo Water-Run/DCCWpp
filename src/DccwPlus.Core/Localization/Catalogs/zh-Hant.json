@@ -116,7 +116,7 @@
   "InvalidCaptureDocument": "每個輸入都必須是成功產生的校準取樣 JSON，檔案大小不得超過 256 KiB。",
   "IccFileUnavailable": "無法讀取已安裝的色彩描述檔。請在 Windows 色彩管理中檢查該檔案。",
   "IccBaseUnsupported": "DCCW++ 無法使用目前的 ICC 描述檔產生 SDR 校準。請在 Windows 色彩管理中檢查此顯示器的預設描述檔。",
-  "ProfileDeviceUnavailable": "Windows 未回報此顯示器的色彩描述檔裝置識別資訊。請重新整理顯示器清單後再試一次。",
+  "ProfileDeviceUnavailable": "無法在 Windows 中唯一識別此顯示器的色彩描述檔裝置。請重新整理顯示器清單後再試一次。",
   "ProfileChangedBeforeSave": "選用的色彩描述檔或其範圍已變更。請重新整理顯示器清單後再試一次。",
   "CurveReadUnavailable": "顯示驅動程式未提供可用的 Gamma 曲線表。",
   "CurveChangedDuringProfileSwitch": "切換描述檔期間曲線發生變化，DCCW++ 已停止校準。",

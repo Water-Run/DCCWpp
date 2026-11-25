@@ -25,12 +25,15 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
 {
     private readonly GammaCalibrationStore _store = new(root);
     private readonly PreviewRecoveryService _recovery = new(root);
-    public GammaDeviceState Read(string displayId)
+    public GammaDeviceState Read(string displayId) => Read(displayId, requiredProfileDevice: null);
+
+    private static GammaDeviceState Read(string displayId, string? requiredProfileDevice)
     {
         WindowsDisplaySession.RequireLocal();
         var displays = new WindowsDisplayService().Enumerate();
         var display = displays.SingleOrDefault(d => d.Id == displayId)
             ?? throw new ProfilePreviewException("display_disconnected", "The display is not connected.");
+        if (requiredProfileDevice is not null) RequireProfileDevice(display, displays, requiredProfileDevice);
         return ReadSnapshot(display, displays);
     }
 
@@ -95,7 +98,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         }
         var adapter = Adapter(device.TargetKey!);
         uint source = device.SourceId!.Value;
-        _ = PrepareIcc(device, current, ramp, Guid.Empty, InstalledProfileReader.ReadBytes,
+        _ = PrepareIcc(device, displays, current, ramp, Guid.Empty, InstalledProfileReader.ReadBytes,
             scope => ReadDefault(adapter, source, scope), () => ReadScope(adapter, source));
         return current;
     }
@@ -178,7 +181,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             throw new ProfilePreviewException("display_state_changed", "The display changed before the calibration could be saved.");
         var adapter = Adapter(device.TargetKey!);
         uint source = device.SourceId!.Value;
-        var (backup, profile) = PrepareIcc(device, now, session.Candidate, session.Id, InstalledProfileReader.ReadBytes,
+        var (backup, profile) = PrepareIcc(device, displays, now, session.Candidate, session.Id, InstalledProfileReader.ReadBytes,
             scope => ReadDefault(adapter, source, scope), () => ReadScope(adapter, source));
         string candidate = backup.CandidateName;
         var selection = new GammaProfileSelection(candidate, "current-user", "current-user");
@@ -191,7 +194,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
             throw new ProfilePreviewException("profile_install_failed", $"Windows could not install the calibration profile (Win32 {Marshal.GetLastWin32Error()}).");
         VerifyProfileFingerprint(candidate, backup.CandidateHash, InstalledProfileReader.ReadSha256);
         VerifyOriginalFingerprints(backup, InstalledProfileReader.ReadSha256);
-        var beforeAssociation = Read(device.Id);
+        var beforeAssociation = Read(device.Id, backup.DeviceKey);
         int beforeScope = ReadScope(adapter, source);
         if (!GammaCalibrationTransaction.SameTarget(session.Original, beforeAssociation)
             || !GammaCalibrationTransaction.SameProfile(session.Original, beforeAssociation)
@@ -201,7 +204,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         AtomicFile.Write(Path.Combine(directory, "association-mutation-started"), []);
         if (backup.Scope != CurrentUser) SetUserScope(backup.DeviceKey, true);
         Check(ColorProfileAddDisplayAssociation(1, candidate, adapter, source, true, false));
-        var associated = Read(device.Id);
+        var associated = Read(device.Id, backup.DeviceKey);
         if (!GammaCalibrationTransaction.SameTarget(session.Original, associated) || !selection.Matches(associated))
             throw new ProfilePreviewException("association_not_verified", "Windows did not report the saved calibration profile as default.");
         VerifyProfileFingerprint(candidate, backup.CandidateHash, InstalledProfileReader.ReadSha256);
@@ -217,12 +220,10 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         throw new ProfilePreviewException(conflictCode, new LocalizationService()["CurveChangedDuringProfileSwitch"]);
     }
 
-    internal static (IccAssociationBackup Backup, byte[] Profile) PrepareIcc(DisplayInfo device, GammaDeviceState current,
-        GammaRamp ramp, Guid id, Func<string, byte[]> readFile, Func<int, string?> readDefault, Func<int> readScope)
+    internal static (IccAssociationBackup Backup, byte[] Profile) PrepareIcc(DisplayInfo device, IReadOnlyList<DisplayInfo> displays,
+        GammaDeviceState current, GammaRamp ramp, Guid id, Func<string, byte[]> readFile, Func<int, string?> readDefault, Func<int> readScope)
     {
-        if (device.ProfileDeviceKey is not { } deviceKey
-            || !deviceKey.StartsWith(@"\Registry\Machine\System\", StringComparison.OrdinalIgnoreCase))
-            throw new ProfilePreviewException("profile_device_unavailable", new LocalizationService()["ProfileDeviceUnavailable"]);
+        string deviceKey = RequireProfileDevice(device, displays);
         int scope = readScope();
         string? userDefault = readDefault(CurrentUser);
         string? effective = (scope == CurrentUser ? userDefault : null) ?? readDefault(SystemWide);
@@ -302,7 +303,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
     private bool RestoreSavedAssociation(GammaDeviceState original, IccAssociationBackup backup, GammaDeviceState current,
         string? originalProfile, Guid? undoSession = null, Action? beforeSelectionRestore = null)
     {
-        VerifyAssociationTarget(original, backup, current);
+        VerifyAssociationTarget(original, backup, current, new WindowsDisplayService().Enumerate());
         var adapter = Adapter(backup.TargetKey);
         string? currentUser = ReadDefault(adapter, backup.SourceId, 1);
         int currentScope = ReadScope(adapter, backup.SourceId);
@@ -329,7 +330,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         if (changesAssociation)
         {
             beforeSelectionRestore?.Invoke();
-            VerifyAssociationWriteState(current, Read(current.DisplayId), currentScope, ReadScope(adapter, backup.SourceId),
+            VerifyAssociationWriteState(current, Read(current.DisplayId, backup.DeviceKey), currentScope, ReadScope(adapter, backup.SourceId),
                 currentUser, ReadDefault(adapter, backup.SourceId, CurrentUser));
             if (!PreviousSystemDefaultMatches(backup, originalProfile, () => ReadDefault(adapter, backup.SourceId, SystemWide)))
                 throw new ProfilePreviewException("previous_system_profile_changed", new LocalizationService()["OriginalSystemProfileChanged"]);
@@ -406,13 +407,23 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         return backup;
     }
 
-    private static void VerifyAssociationTarget(GammaDeviceState original, IccAssociationBackup backup, GammaDeviceState current)
+    internal static void VerifyAssociationTarget(GammaDeviceState original, IccAssociationBackup backup,
+        GammaDeviceState current, IReadOnlyList<DisplayInfo> displays)
     {
-        var device = new WindowsDisplayService().Enumerate().SingleOrDefault(d => d.Id == current.DisplayId);
+        var device = displays.SingleOrDefault(d => d.Id == current.DisplayId);
         if (!GammaCalibrationTransaction.SameRecoveryTarget(original, current) || current.SourceId != backup.SourceId
             || device is null || device.TargetKey != backup.TargetKey || device.SourceId != backup.SourceId
             || !string.Equals(device.ProfileDeviceKey, backup.DeviceKey, StringComparison.OrdinalIgnoreCase))
             throw new ProfilePreviewException("recovery_target_changed", "The original ICC association target is unavailable.");
+        RequireProfileDevice(device, displays);
+    }
+
+    private static string RequireProfileDevice(DisplayInfo display, IReadOnlyList<DisplayInfo> connected, string? expected = null)
+    {
+        string? key = WindowsDisplayService.GetUniqueProfileDeviceKey(display, connected);
+        if (key is null || (expected is not null && !string.Equals(key, expected, StringComparison.OrdinalIgnoreCase)))
+            throw new ProfilePreviewException("profile_device_unavailable", new LocalizationService()["ProfileDeviceUnavailable"]);
+        return key;
     }
 
     internal static GammaRamp ReadRamp(string deviceName)

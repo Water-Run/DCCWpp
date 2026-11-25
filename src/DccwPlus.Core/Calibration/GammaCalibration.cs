@@ -230,7 +230,7 @@ public sealed class GammaCalibrationTransaction(IGammaCalibrationBackend backend
                 bool previousResetIntent = Session.ProfileRollbackMayResetCurve;
                 try { selectionRestored = backend.RestoreProfile(Session, current, canRecordReset ? RecordProfileRollback : null); }
                 catch (ProfilePreviewException ex) when (!previousResetIntent && Session!.ProfileRollbackMayResetCurve
-                    && ex.Code is "recovery_target_changed" or "previous_system_profile_changed")
+                    && ex.Code is "recovery_target_changed" or "previous_system_profile_changed" or "profile_device_unavailable")
                 {
                     // The final check refused this attempt before a native write. Keep evidence from earlier attempts only.
                     Session = Session with { ProfileRollbackMayResetCurve = false };

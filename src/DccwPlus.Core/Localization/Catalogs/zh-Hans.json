@@ -116,7 +116,7 @@
   "InvalidCaptureDocument": "每个输入都必须是成功生成的校准采样 JSON，文件大小不得超过 256 KiB。",
   "IccFileUnavailable": "无法读取已安装的颜色配置文件。请在 Windows 颜色管理中检查该文件。",
   "IccBaseUnsupported": "DCCW++ 无法根据当前 ICC 配置生成 SDR 校准。请在 Windows 颜色管理中检查此显示器的默认配置。",
-  "ProfileDeviceUnavailable": "Windows 未报告此显示器的颜色配置设备标识。请刷新显示器列表后重试。",
+  "ProfileDeviceUnavailable": "无法在 Windows 中唯一识别此显示器的颜色配置设备。请刷新显示器列表后重试。",
   "ProfileChangedBeforeSave": "选用的颜色配置或作用域已变化。请刷新显示器列表后重试。",
   "CurveReadUnavailable": "显示驱动未提供可用的 Gamma 曲线表。",
   "CurveChangedDuringProfileSwitch": "切换配置文件期间曲线发生变化，DCCW++ 已停止校准。",

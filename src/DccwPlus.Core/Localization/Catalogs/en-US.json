@@ -116,7 +116,7 @@
   "InvalidCaptureDocument": "Each input must be a successful calibration capture report in a JSON file no larger than 256 KiB.",
   "IccFileUnavailable": "The installed color profile could not be read. Check the profile in Windows Color Management.",
   "IccBaseUnsupported": "DCCW++ cannot build an SDR calibration from the selected ICC profile. Check the display's default profile in Windows Color Management.",
-  "ProfileDeviceUnavailable": "Windows did not report a color profile device for this display. Refresh the display list and try again.",
+  "ProfileDeviceUnavailable": "Windows could not identify a unique color profile device for this display. Refresh the display list and try again.",
   "ProfileChangedBeforeSave": "The selected color profile or its scope changed. Refresh the display list and try again.",
   "CurveReadUnavailable": "The display driver did not provide a usable gamma table.",
   "CurveChangedDuringProfileSwitch": "The display curve changed during the profile switch. DCCW++ stopped the calibration.",

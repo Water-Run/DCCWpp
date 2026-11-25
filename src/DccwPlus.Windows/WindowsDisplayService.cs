@@ -9,6 +9,8 @@ namespace DccwPlus.Windows;
 
 public sealed class WindowsDisplayService : IDisplayService
 {
+    private const string ProfileDevicePrefix = @"\Registry\Machine\System\";
+
     public DisplayProbe Probe()
     {
         try
@@ -46,12 +48,19 @@ public sealed class WindowsDisplayService : IDisplayService
     }
 
     internal static string? HashProfileDeviceKey(string? key) =>
-        key?.StartsWith(@"\Registry\Machine\System\", StringComparison.OrdinalIgnoreCase) == true
+        key?.StartsWith(ProfileDevicePrefix, StringComparison.OrdinalIgnoreCase) == true
             ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key.ToUpperInvariant()))) : null;
 
+    internal static string? GetUniqueProfileDeviceKey(DisplayInfo target, IEnumerable<DisplayInfo> connected)
+    {
+        if (target.ProfileDeviceKey is not { } key || !key.StartsWith(ProfileDevicePrefix, StringComparison.OrdinalIgnoreCase))
+            return null;
+        return connected.Count(display => string.Equals(display.ProfileDeviceKey, key, StringComparison.OrdinalIgnoreCase)) == 1
+            ? key : null;
+    }
+
     internal static bool HasUniqueProfileDevice(DisplayInfo target, IEnumerable<DisplayInfo> connected, string profileDeviceSha256) =>
-        string.Equals(HashProfileDeviceKey(target.ProfileDeviceKey), profileDeviceSha256, StringComparison.OrdinalIgnoreCase)
-        && connected.Count(display => string.Equals(display.ProfileDeviceKey, target.ProfileDeviceKey, StringComparison.OrdinalIgnoreCase)) == 1;
+        string.Equals(HashProfileDeviceKey(GetUniqueProfileDeviceKey(target, connected)), profileDeviceSha256, StringComparison.OrdinalIgnoreCase);
 
     internal static DisplayInfo ResolveRecoveryDisplay(IReadOnlyList<DisplayInfo> connected, string originalId,
         string? persistenceKey, string? profileDeviceSha256)
