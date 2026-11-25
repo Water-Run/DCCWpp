@@ -36,7 +36,7 @@ python ./scripts/verify_package.py ./artifacts/packages/DccwPlus.App_0.2.0.0_x64
 
 开发包未签名。需在测试设备侧载时，以与开发包 Publisher 匹配的开发签名签包，并在测试设备上信任相应证书。测试签名私钥、密码和正式 Store 关联文件保存在本地。
 
-在支持 Windows Sandbox CLI 的 Windows 11 上，可以验证开发包签名和系统预配。脚本只映射当次的构建输入及报告目录。临时签名证书及信任只存在于沙盒中。[Windows Sandbox CLI](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli) · [MSIX 系统预配](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/sideload-apps-with-dism-s14)
+在支持 Windows Sandbox CLI 的 Windows 11 上，可以验证开发包签名和系统预配。脚本只映射当次的构建输入及报告目录。临时签名证书及信任只存在于沙盒中。当前用户已有运行中的沙盒时，脚本保留该实例并停止新建。[Windows Sandbox CLI](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli) · [MSIX 系统预配](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/sideload-apps-with-dism-s14)
 
 ```powershell
 ./scripts/Test-PackageInSandbox.ps1 -Package $x64DevelopmentMsix
@@ -47,6 +47,18 @@ python ./scripts/verify_package.py ./artifacts/packages/DccwPlus.App_0.2.0.0_x64
 GUI 冷启动验收需要已登录的交互桌面。用沙盒复测时，先通过 `wsb connect` 建立该次沙盒的交互会话。随后可用 `wsb exec --run-as ExistingLogin` 在同一会话中启动验收。200% 缩放的 x64 沙盒已检查默认页面、紧凑布局、从 CLI 创建的预设、语言切换及全屏图案。普通用户已验收 WinUI 冷启动和 GUI 导入后通过 CLI 查验。扩展桌面仍需核对移屏和全屏图案的位置。[Windows Sandbox CLI 的交互会话要求](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli#exec)
 
 验收 CLI 别名时，用普通用户运行 `dccwpp.exe status --json`，核对 `data.packaged`。在 Windows 设置的“应用执行别名”关闭 DCCW++，核对命令不可用且开始菜单仍能打开应用。重新启用后核对包身份和原有预设。另在缺少 WindowsApps `PATH` 项的终端复测通过完整别名路径启动。[排查步骤](CLI.md#windows-执行别名)
+
+用同一个检查器验收已安装的包。登录交互桌面，在 PowerShell 7 中使用已保存的预设 UUID。省略 `-DisplayId` 时，检查器优先选择可用的非主屏。检查会打开并关闭这次启动的向导，核对原生进程、包身份、CLI 回执和校准会话列表。
+
+```powershell
+Import-Module Appx -UseWindowsPowerShell
+Import-Module ./scripts/PackageRuntimeChecks.psm1
+$installed = Get-AppxPackage -Name DCCWPlus.Development
+$aliasPath = Join-Path $env:LOCALAPPDATA 'Microsoft/WindowsApps/dccwpp.exe'
+Test-DccwWizardHandoff -InstalledPackage $installed -Executable $aliasPath -PresetId $presetId -RequireNonElevated
+```
+
+Windows 11 x64 build 26340 已通过非提升权限桌面上的开发布局注册与交接。标准用户账户的签名 MSIX 安装后交接在发布验收中单列。[运行记录](STATUS.md)
 
 登录启动复测从安装后的 `Disabled` 状态开始。在设置启用任务并关闭主窗口，注销测试用户并重新登录。先检查桌面是否弹出向导，再运行 `dccwpp startup last-restore --json`。报告应晚于新会话的登录时间，`trigger` 应为 `sign_in`，系统进程列表应有后台实例。没有启用绑定时检查 `no_bindings_enabled`。如有针对断开显示器的测试绑定，检查其状态为 `skipped`，原因为 `display_disconnected`。随后用设置关闭启动任务，确认后台退出；再次注销并登录，核对后台没有重启且报告时间未变化。[桌面应用 StartupTask](https://learn.microsoft.com/en-us/windows/uwp/porting/desktop-to-uwp-extensions#start-an-executable-file-when-users-log-into-windows)
 

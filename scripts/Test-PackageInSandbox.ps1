@@ -48,6 +48,32 @@ function Read-DevelopmentVersion([string]$Path) {
     finally { $archive.Dispose() }
 }
 
+function Assert-SandboxAvailable {
+    $running = & $wsb list --raw
+    if ($LASTEXITCODE -ne 0) { throw 'Windows Sandbox could not report running instances.' }
+    $status = $running | ConvertFrom-Json
+    if (@($status.WindowsSandboxEnvironments).Count -gt 0) {
+        throw 'A Windows Sandbox instance is already running. The package check left it undisturbed.'
+    }
+}
+
+function Start-PackageSandbox([string]$Id, [string]$Configuration) {
+    $gate = [Threading.Mutex]::new($false, 'Local\DCCWPlus.PackageSandboxStart')
+    $acquired = $false
+    try {
+        try { $acquired = $gate.WaitOne(0) }
+        catch [Threading.AbandonedMutexException] { $acquired = $true }
+        if (!$acquired) { throw 'Another package check is starting Windows Sandbox.' }
+        Assert-SandboxAvailable
+        & $wsb start --id $Id --config $Configuration --raw
+        if ($LASTEXITCODE -ne 0) { throw 'Windows Sandbox could not start.' }
+    }
+    finally {
+        if ($acquired) { $gate.ReleaseMutex() }
+        $gate.Dispose()
+    }
+}
+
 $packageVersion = Read-DevelopmentVersion $packagePath
 $upgradeVersion = $null
 if ($upgradePath) {
@@ -55,6 +81,7 @@ if ($upgradePath) {
     if ($upgradeVersion -le $packageVersion) { throw 'The upgrade package must have a higher version.' }
 }
 
+Assert-SandboxAvailable
 $sandboxId = [Guid]::NewGuid().ToString('D')
 $run = Join-Path $workspace "artifacts\sandbox-smoke\$sandboxId"
 $inputDirectory = Join-Path $run 'input'
@@ -88,9 +115,10 @@ $config = @"
 $resultPath = Join-Path $resultDirectory 'result.json'
 Write-Output "Sandbox run: $sandboxId"
 $guest = $null
+$started = $false
 try {
-    & $wsb start --id $sandboxId --config $config --raw
-    if ($LASTEXITCODE -ne 0) { throw 'Windows Sandbox could not start.' }
+    Start-PackageSandbox $sandboxId $config
+    $started = $true
     $guestCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\DccwInput\SandboxPackageGuest.ps1'
     if ($StandardUser) { $guestCommand += ' -StandardUser' }
     $processInfo = [Diagnostics.ProcessStartInfo]::new($wsb)
@@ -131,6 +159,6 @@ try {
     }
 }
 finally {
-    & $wsb stop --id $sandboxId --raw | Out-Null
+    if ($started) { & $wsb stop --id $sandboxId --raw | Out-Null }
     if ($guest) { $guest.Dispose() }
 }
