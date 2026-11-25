@@ -107,6 +107,8 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 
 在亮度或对比度页用键盘执行跳过，核对焦点移到灰阶页的红色滑块，并可立即用方向键微调。在 Gamma 页用 Tab 进入全屏按钮后打开参考图，分别用 Escape、退出按钮和 Alt+F4 返回，核对焦点回到全屏按钮并保留所选步骤。[Windows 键盘焦点指引](https://learn.microsoft.com/en-us/windows/apps/develop/input/keyboard-interactions)
 
+在亮度和对比度页分别记录调整前的显示器菜单值。核对普通与全屏窗口同步、跳过后仍可查看、切换显示器与语言时记录归属正确。取消预览后可从「显示器原始设置」查看或复制原值，然后在显示器菜单手动还原。记录在关闭向导窗口时清除。
+
 在 Gamma 和灰阶页全屏调整滑块及数值框，退出全屏核对向导中的值。分别用草稿和活动预览验证调值、重置与取消。进入亮度、对比度或比较时隐藏曲线编辑控件。验证显示器更换时沿用原路径校验，全屏调值与向导共享同一预览会话。
 
 订阅 Windows UI Automation 的 `LiveRegionChanged`，核对前台向导的步骤说明和比较状态。全屏比较使用当前全屏说明作为事件来源。同一段文字在界面定时刷新时应保持安静，隐藏的向导页也不应播报。另行用 Narrator 核对实际播报内容和时机。[Windows 实时区域示例](https://learn.microsoft.com/en-us/accessibility-tools-docs/items/uwpxaml/text_livesetting)

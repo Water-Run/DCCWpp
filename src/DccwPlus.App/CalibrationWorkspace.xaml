@@ -61,6 +61,14 @@
         </InfoBar>
         <local:PatternSurface x:Name="Pattern" Height="242" AutomationProperties.Name="{Binding Text[CalibrationPattern]}" />
         <TextBlock x:Name="StepInstructions" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+        <TextBox x:Name="OriginalBrightnessNote" Visibility="Collapsed" HorizontalAlignment="Left" MinWidth="220" MaxWidth="360"
+                 Header="{Binding Text[OriginalBrightness]}" Description="{Binding Text[HardwareNotesDescription]}"
+                 AutomationProperties.Name="{Binding Text[OriginalBrightness]}"
+                 MaxLength="64" IsSpellCheckEnabled="False" IsTextPredictionEnabled="False" TextChanging="HardwareNoteChanging" />
+        <TextBox x:Name="OriginalContrastNote" Visibility="Collapsed" HorizontalAlignment="Left" MinWidth="220" MaxWidth="360"
+                 Header="{Binding Text[OriginalContrast]}" Description="{Binding Text[HardwareNotesDescription]}"
+                 AutomationProperties.Name="{Binding Text[OriginalContrast]}"
+                 MaxLength="64" IsSpellCheckEnabled="False" IsTextPredictionEnabled="False" TextChanging="HardwareNoteChanging" />
         <StackPanel x:Name="GammaControls" Visibility="Collapsed" Spacing="12">
           <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="120" /></Grid.ColumnDefinitions>
             <Slider x:Name="GammaSlider" Header="{Binding Text[GammaAdjustment]}" Minimum="1" Maximum="3" Value="2.2"
@@ -110,6 +118,14 @@
           <TextBox x:Name="PresetName" Header="{Binding Text[PresetName]}" MaxLength="100" TextChanged="NameChanged" AutomationProperties.Name="{Binding Text[PresetName]}" />
           <CheckBox x:Name="ClearTypeOption" Content="{Binding Text[OpenClearType]}" />
         </StackPanel>
+        <Expander x:Name="OriginalMonitorSettings" Header="{Binding Text[OriginalMonitorSettings]}" Visibility="Collapsed"
+                  HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+          <StackPanel Spacing="6">
+            <TextBlock x:Name="OriginalMonitorValues" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+            <TextBlock Text="{Binding Text[RestoreMonitorSettingsManually]}" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+          </StackPanel>
+        </Expander>
         <Button x:Name="SaveDraftButton" Content="{Binding Text[SaveDraft]}" Click="SaveDraftClicked" />
         <Button x:Name="UndoCalibrationButton" Content="{Binding Text[UndoCalibration]}" Click="UndoCalibrationClicked" />
       </StackPanel>

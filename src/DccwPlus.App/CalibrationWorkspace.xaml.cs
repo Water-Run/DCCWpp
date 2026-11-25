@@ -38,6 +38,8 @@ public sealed partial class CalibrationWorkspace : UserControl
     private bool _setting, _busy, _pushing, _dirty, _timerBusy;
     private bool _displayRefreshPending, _closed;
     private readonly HashSet<string> _ambiguousDisplayIdentities = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, HardwareNotes> _hardwareNotes = new(StringComparer.Ordinal);
+    private string? _hardwareNoteTarget;
     private bool _previewReferenceLeftDisplay;
     private bool _workerExited;
     private bool _calibrationPageVisible = true;
@@ -511,6 +513,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         SetLiveText(ComparisonState, _model.Text[undo ? "ShowingPreviousSavedCurve" : !Active ? "ComparisonRequiresPreview"
             : updatingComparison ? "UpdatingComparison" : _session!.ShowingOriginal ? "ShowingOriginal" : "ShowingAdjusted"],
             AnnounceWizardChanges && ReviewSelected);
+        UpdateHardwareNotes();
         UpdateFullScreenControls();
         UpdateDisplaySummary(remote);
         ResetButton.Visibility = StepPicker.SelectedIndex is 1 or 4 ? Visibility.Visible : Visibility.Collapsed;
@@ -523,6 +526,63 @@ public sealed partial class CalibrationWorkspace : UserControl
 
     private void UpdateStepInstructions(int step) => SetLiveText(StepInstructions,
         _model!.Text[UndoActive ? "UndoPreview" : "StepInstruction" + step], AnnounceWizardChanges);
+
+    private void UpdateHardwareNotes()
+    {
+        // Use the active target, source and device evidence also checked for a CLI-to-wizard handoff.
+        string? target = SelectedDisplay is { TargetKey: not null, SourceId: not null } display
+            ? WizardLaunchRequest.Stamp(display) : null;
+        if (!string.Equals(target, _hardwareNoteTarget, StringComparison.Ordinal))
+        {
+            _hardwareNoteTarget = null;
+            var notes = target is null ? null : _hardwareNotes.GetValueOrDefault(target);
+            OriginalBrightnessNote.Text = notes?.Brightness ?? string.Empty;
+            OriginalContrastNote.Text = notes?.Contrast ?? string.Empty;
+            OriginalMonitorSettings.IsExpanded = false;
+            _hardwareNoteTarget = target;
+        }
+
+        OriginalBrightnessNote.Visibility = target is not null && StepPicker.SelectedIndex == 2 && !UndoActive
+            ? Visibility.Visible : Visibility.Collapsed;
+        OriginalContrastNote.Visibility = target is not null && StepPicker.SelectedIndex == 3 && !UndoActive
+            ? Visibility.Visible : Visibility.Collapsed;
+        UpdateHardwareNotesSummary();
+    }
+
+    private void HardwareNoteChanging(TextBox sender, TextBoxTextChangingEventArgs args)
+    {
+        if (_hardwareNoteTarget is not { } target) return;
+        var notes = new HardwareNotes(OriginalBrightnessNote.Text, OriginalContrastNote.Text);
+        if (notes.IsEmpty) _hardwareNotes.Remove(target);
+        else _hardwareNotes[target] = notes;
+        UpdateHardwareNotesSummary();
+    }
+
+    private void UpdateHardwareNotesSummary()
+    {
+        var notes = _hardwareNoteTarget is { } target ? _hardwareNotes.GetValueOrDefault(target) : null;
+        if (notes is null || UndoActive)
+        {
+            OriginalMonitorSettings.Visibility = Visibility.Collapsed;
+            OriginalMonitorValues.Text = string.Empty;
+            return;
+        }
+
+        var text = _model!.Text;
+        List<string> lines = [];
+        if (!string.IsNullOrWhiteSpace(notes.Brightness))
+            lines.Add($"{text["OriginalBrightness"]} · {notes.Brightness.Trim()}");
+        if (!string.IsNullOrWhiteSpace(notes.Contrast))
+            lines.Add($"{text["OriginalContrast"]} · {notes.Contrast.Trim()}");
+        string values = string.Join(Environment.NewLine, lines);
+        if (OriginalMonitorValues.Text != values) OriginalMonitorValues.Text = values;
+        OriginalMonitorSettings.Visibility = Visibility.Visible;
+    }
+
+    private sealed record HardwareNotes(string Brightness, string Contrast)
+    {
+        internal bool IsEmpty => string.IsNullOrWhiteSpace(Brightness) && string.IsNullOrWhiteSpace(Contrast);
+    }
 
     private static void SetLiveText(TextBlock element, string text, bool announce)
     {
@@ -897,6 +957,8 @@ public sealed partial class CalibrationWorkspace : UserControl
         {
             footerContent.Children.Add(adjustments.Gamma);
             footerContent.Children.Add(adjustments.Balance);
+            footerContent.Children.Add(adjustments.BrightnessNote);
+            footerContent.Children.Add(adjustments.ContrastNote);
         }
         footerContent.Children.Add(new ScrollViewer
         {
@@ -936,6 +998,8 @@ public sealed partial class CalibrationWorkspace : UserControl
             var initialFocus = adjustments is null ? exit : StepPicker.SelectedIndex switch
             {
                 1 => (Control)adjustments.GammaSlider,
+                2 when adjustments.BrightnessNote.Visibility == Visibility.Visible => adjustments.BrightnessNote,
+                3 when adjustments.ContrastNote.Visibility == Visibility.Visible => adjustments.ContrastNote,
                 4 => adjustments.RedSlider,
                 _ => exit
             };
@@ -1008,8 +1072,23 @@ public sealed partial class CalibrationWorkspace : UserControl
         var reset = new Button();
         AutomationProperties.SetAutomationId(reset, "FullScreenReset");
         reset.Click += ResetClicked;
-        return new(gamma, balance, reset, gammaSlider, redSlider,
+        var brightness = CreateFullScreenNote(OriginalBrightnessNote, "FullScreenOriginalBrightnessNote");
+        var contrast = CreateFullScreenNote(OriginalContrastNote, "FullScreenOriginalContrastNote");
+        return new(gamma, balance, reset, gammaSlider, redSlider, brightness, contrast,
             [gammaSlider, gammaNumber, redSlider, redNumber, greenSlider, greenNumber, blueSlider, blueNumber, reset]);
+    }
+
+    private static TextBox CreateFullScreenNote(TextBox source, string automationId)
+    {
+        var note = new TextBox { MaxLength = source.MaxLength, IsSpellCheckEnabled = false, IsTextPredictionEnabled = false,
+            MaxWidth = source.MaxWidth, MinWidth = source.MinWidth, HorizontalAlignment = HorizontalAlignment.Left };
+        note.SetBinding(TextBox.HeaderProperty, new Binding { Source = source, Path = new(nameof(TextBox.Header)) });
+        note.SetBinding(TextBox.DescriptionProperty, new Binding { Source = source, Path = new(nameof(TextBox.Description)) });
+        note.SetBinding(AutomationProperties.NameProperty, new Binding { Source = source, Path = new(nameof(TextBox.Header)) });
+        note.SetBinding(TextBox.TextProperty, new Binding { Source = source, Path = new(nameof(TextBox.Text)),
+            Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged });
+        AutomationProperties.SetAutomationId(note, automationId);
+        return note;
     }
 
     private static (Grid Row, Slider Slider, NumberBox Number) CreateAdjustmentRow(Slider source, NumberBox sourceNumber,
@@ -1083,6 +1162,8 @@ public sealed partial class CalibrationWorkspace : UserControl
             bool balance = StepPicker.SelectedIndex == 4 && !UndoActive;
             adjustments.Gamma.Visibility = gamma ? Visibility.Visible : Visibility.Collapsed;
             adjustments.Balance.Visibility = balance ? Visibility.Visible : Visibility.Collapsed;
+            adjustments.BrightnessNote.Visibility = OriginalBrightnessNote.Visibility;
+            adjustments.ContrastNote.Visibility = OriginalContrastNote.Visibility;
             adjustments.Reset.Content = text["ResetStep"];
             adjustments.Reset.Visibility = gamma || balance ? Visibility.Visible : Visibility.Collapsed;
             foreach (Control editor in adjustments.Editors) editor.IsEnabled = !_busy;
@@ -1103,7 +1184,7 @@ public sealed partial class CalibrationWorkspace : UserControl
         FullScreenAdjustments? Adjustments);
 
     private sealed record FullScreenAdjustments(Grid Gamma, StackPanel Balance, Button Reset, Slider GammaSlider, Slider RedSlider,
-        IReadOnlyList<Control> Editors);
+        TextBox BrightnessNote, TextBox ContrastNote, IReadOnlyList<Control> Editors);
     private bool OnPreviewDisplay()
     {
         return !_previewReferenceLeftDisplay && _session is not null && _window is not null
@@ -1203,6 +1284,12 @@ public sealed partial class CalibrationWorkspace : UserControl
         };
         Show(key, (_session.NeedsRecovery && !Active) || key == "ProfileChangedBeforeSave"
             ? InfoBarSeverity.Warning : InfoBarSeverity.Informational);
+        if (!Active && _session.UndoOf is null && SelectedDisplay?.Id == _session.Original.DisplayId
+            && OriginalMonitorSettings.Visibility == Visibility.Visible)
+        {
+            OriginalMonitorSettings.IsExpanded = true;
+            Outcome.Message += Environment.NewLine + _model!.Text["RestoreMonitorSettingsReminder"];
+        }
     }
     private void ShowConfirmedOutcome(GammaCalibrationSession session)
     {
