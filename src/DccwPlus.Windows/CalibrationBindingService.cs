@@ -67,7 +67,9 @@ public sealed class CalibrationBindingService(string root)
         var results = new List<BindingRestoreResult>(bindings.Length);
         foreach (var binding in bindings)
         {
-            var result = restorer.Restore(binding, dryRun, getCancellationReason);
+            var identified = binding.ProfileDeviceSha256 is null && _completion.ReadBindingProfileDevice(binding) is { } device
+                ? binding with { ProfileDeviceSha256 = device } : binding;
+            var result = restorer.Restore(identified, dryRun, getCancellationReason);
             results.Add(result);
             // Stop if a restore created a new incomplete transaction.
             if (!dryRun && gammaStore.Sessions().Any(s => s.NeedsRecovery))

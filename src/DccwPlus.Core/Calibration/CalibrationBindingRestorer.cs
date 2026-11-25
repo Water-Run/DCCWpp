@@ -56,7 +56,8 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
         }
         catch (ProfilePreviewException ex)
         {
-            return Result(ex.Code is "profile_selection_changed" or "profile_file_changed" or "remote_session_blocked" ? "skipped" : "failed", ex.Code);
+            return Result(ex.Code is "profile_device_unavailable" or "profile_selection_changed" or "profile_file_changed" or "remote_session_blocked"
+                ? "skipped" : "failed", ex.Code);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or KeyNotFoundException or InvalidDataException)
         {
@@ -73,6 +74,8 @@ public sealed class CalibrationBindingRestorer(IDisplayService displays, IGammaC
 
         public void VerifyProfile(GammaDeviceState state)
         {
+            if (binding.ProfileDeviceSha256 is { } device && !string.Equals(device, state.ProfileDeviceSha256, StringComparison.OrdinalIgnoreCase))
+                throw new ProfilePreviewException("profile_device_unavailable", new LocalizationService()["ProfileDeviceUnavailable"]);
             if (!_selection.Matches(state))
                 throw new ProfilePreviewException("profile_selection_changed", new LocalizationService()["RestoreProfileChanged"]);
             string hash;

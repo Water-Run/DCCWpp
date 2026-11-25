@@ -25,6 +25,35 @@ public sealed class BindingRestoreTests
         Assert.Equal(writes, test.Backend.Writes);
     }
 
+    [Theory]
+    [InlineData(false, null)]
+    [InlineData(false, 'A')]
+    [InlineData(true, 'A')]
+    public void AMatchingIccCannotAuthorizeAnUnverifiedProfileDevice(bool dryRun, char? deviceDigit)
+    {
+        var test = new Fixture();
+        var binding = test.Binding with { ProfileDeviceSha256 = new string('B', 64) };
+        test.Backend.State = test.Backend.State with { ProfileDeviceSha256 = deviceDigit is char digit ? new string(digit, 64) : null };
+
+        var result = test.Restorer.Restore(binding, dryRun);
+
+        Assert.Equal("skipped", result.Status);
+        Assert.Equal("profile_device_unavailable", result.ReasonCode);
+        Assert.Equal(0, test.Backend.Writes);
+        Assert.Empty(test.Journal.Sessions);
+    }
+
+    [Fact]
+    public void ARecordedProfileDeviceCanRestoreItsOwnCurve()
+    {
+        var test = new Fixture();
+        var binding = test.Binding with { ProfileDeviceSha256 = new string('B', 64) };
+        test.Backend.State = test.Backend.State with { ProfileDeviceSha256 = binding.ProfileDeviceSha256.ToLowerInvariant() };
+
+        Assert.Equal("restored", test.Restorer.Restore(binding, dryRun: false).Status);
+        Assert.True(test.Backend.State.Ramp.Matches(binding.Ramp));
+    }
+
     [Fact]
     public void StartupAlreadyDisabledDoesNotPrepareARestore()
     {

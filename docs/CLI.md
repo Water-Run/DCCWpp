@@ -144,6 +144,8 @@ DCCW++ 设置页在状态为 `DisabledByUser` 时提供直达 Windows 启动应�
 
 `bindings restore --dry-run` 生成恢复报告。去掉 `--dry-run` 会先尝试恢复中断预览，再为已启用且符合条件的绑定写回已确认的绝对曲线。只有原目标可唯一识别、当前为独立 SDR 路径、已确认的用户 ICC 仍被选用且摘要一致、当前曲线匹配已知基线时才写入。最后一次读回若发现 ICC 或作用域变化，所选显示器报告 `skipped` 和 `profile_selection_changed`。报告通过 `reason` 和每屏 `status` 表示结果，退出码 0 表示已生成报告。Windows 登录任务使用同一路径。`startup last-restore` 返回后台最近一次报告及触发原因，尚无报告时为 `null`。
 
+新保存的绑定还记录 Windows 配置设备的摘要。若当前配置设备不同或暂不可读，恢复及预演以 `profile_device_unavailable` 跳过该屏。旧绑定可从匹配的确认会话和 ICC 关联备份读取该摘要。缺少这些记录时，旧绑定仍按既有的显示身份和 ICC 核对规则恢复。保存新的校准时，原绑定的恢复开关只有在能核对为同一配置设备时才会沿用。[Windows 配置关联作用域](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-wcsgetuseperuserprofiles)
+
 后台定期只读检查活动路径、分辨率、桌面位置、刷新率和色彩模式。即使系统未发通知，检测到变化也会触发 `display_changed` 并重新核对绑定。路径查询短暂不可用后重新可读时，原布局也会重新检查。SDR 路径检测到 MHC2 时，预演和实际恢复都会报告 `mhc2_profile_blocked`。[Windows 显示路径与模式](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/relationship-of-mode-information-to-path-information)
 
 逐屏报告以 `profile_file_unavailable` 标识 ICC 文件无法读取，以 `restore_data_unavailable` 标识预设等本机数据无法读取。后台遇到 ICC 文件、关联状态或逻辑曲线暂时不可读时，每隔 3 秒重试，最多两次。确认摘要不匹配后保留 `profile_file_changed`，等待后续显示事件或手动操作。

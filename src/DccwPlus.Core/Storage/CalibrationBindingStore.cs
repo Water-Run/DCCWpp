@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using DccwPlus.Core.Calibration;
 
 namespace DccwPlus.Core.Storage;
@@ -14,6 +15,8 @@ public sealed record CalibrationBinding
     public required Guid PresetId { get; init; }
     public required string ProfileName { get; init; }
     public required string ProfileSha256 { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ProfileDeviceSha256 { get; init; }
     public required GammaRamp Ramp { get; init; }
     public GammaRamp? OriginalRamp { get; init; }
     public bool RestoreEnabled { get; init; }
@@ -53,6 +56,7 @@ public sealed class CalibrationBindingStore(string root)
         if (binding.SchemaVersion != 1 || !MonitorIdentity.IsPersistenceKey(binding.PersistenceKey)
             || binding.IdentityKind != (binding.PersistenceKey.StartsWith("edid:", StringComparison.Ordinal) ? "edid-serial" : "device-path")
             || binding.PresetId == Guid.Empty || string.IsNullOrWhiteSpace(binding.DisplayName) || binding.DisplayName.Length > 128
+            || (binding.ProfileDeviceSha256 is { } profileDevice && !ProfilePreviewPolicy.IsHash(profileDevice))
             || !ProfilePreviewPolicy.IsHash(binding.ProfileSha256) || binding.SavedAt.Year is < 2020 or > 2100)
             throw new InvalidDataException("Invalid display calibration binding.");
         IccProfileInspector.ValidateFileName(binding.ProfileName);

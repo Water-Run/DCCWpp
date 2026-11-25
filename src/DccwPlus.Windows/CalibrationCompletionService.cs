@@ -94,23 +94,53 @@ internal sealed class CalibrationCompletionService(string root, IDisplayService 
         }
 
         var backup = readAssociation(session);
-        VerifyProfileDevice(display, backup);
+        string profileDevice = VerifyProfileDevice(display, backup);
         string hash = WindowsGammaCalibrationBackend.VerifyProfileFingerprint(profile, backup.CandidateHash, readInstalledHash);
         RequireStableTarget(session, replay, display);
         if (alreadySaved && (previous!.PresetId != session.Preset.Id || !previous.Ramp.Matches(session.Candidate)
-            || !string.Equals(previous.ProfileSha256, hash, StringComparison.OrdinalIgnoreCase)))
+            || !string.Equals(previous.ProfileSha256, hash, StringComparison.OrdinalIgnoreCase)
+            || (previous.ProfileDeviceSha256 is { } savedDevice && !string.Equals(savedDevice, profileDevice, StringComparison.OrdinalIgnoreCase))))
             return ("unchanged", "binding_changed");
         if (replay) EnsurePreset(session.Preset);
-        if (alreadySaved) return ("saved", null);
+        if (alreadySaved)
+        {
+            if (previous!.ProfileDeviceSha256 is null) _bindings.Save(previous with { ProfileDeviceSha256 = profileDevice });
+            return ("saved", null);
+        }
 
         _bindings.Save(new()
         {
             PersistenceKey = display.PersistenceKey!, IdentityKind = display.PersistenceKind!, DisplayName = display.Name,
-            PresetId = session.Preset.Id, ProfileName = profile, ProfileSha256 = hash,
+            PresetId = session.Preset.Id, ProfileName = profile, ProfileSha256 = hash, ProfileDeviceSha256 = profileDevice,
             Ramp = session.Candidate.Copy(), OriginalRamp = session.Original.Ramp.Copy(),
-            RestoreEnabled = previous?.RestoreEnabled ?? false, SavedAt = DateTimeOffset.UtcNow
+            RestoreEnabled = previous is { RestoreEnabled: true }
+                && string.Equals(ReadBindingProfileDevice(previous), profileDevice, StringComparison.OrdinalIgnoreCase),
+            SavedAt = DateTimeOffset.UtcNow
         });
         return ("saved", null);
+    }
+
+    internal string? ReadBindingProfileDevice(CalibrationBinding binding)
+    {
+        if (binding.ProfileDeviceSha256 is { } device) return device;
+
+        // Legacy bindings can recover the fingerprint from the verified calibration that created their ICC.
+        const string prefix = "DCCWPlus-";
+        string stem = Path.GetFileNameWithoutExtension(binding.ProfileName);
+        if (!stem.StartsWith(prefix, StringComparison.Ordinal) || !Guid.TryParseExact(stem.AsSpan(prefix.Length), "N", out Guid id)) return null;
+        try
+        {
+            var saved = _sessions.Find(id);
+            if (saved is not { Status: "confirmed", IsBindingRestore: false, UndoOf: null, ProfileCommitStarted: true, CurveReadbackVerified: true }
+                || saved.Preset.Id != binding.PresetId || !saved.Candidate.Matches(binding.Ramp)
+                || !MonitorIdentity.SamePersistentIdentity(saved.Original.PersistenceKey, binding.PersistenceKey)
+                || !ProfilePreviewPolicy.EqualName(saved.InstalledProfile, binding.ProfileName)) return null;
+
+            var backup = readAssociation(saved);
+            return string.Equals(backup.CandidateHash, binding.ProfileSha256, StringComparison.OrdinalIgnoreCase)
+                ? WindowsDisplayService.HashProfileDeviceKey(backup.DeviceKey) : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException) { return null; }
     }
 
     private (string Status, string? Reason) CompleteUndo(GammaCalibrationSession undo, GammaCalibrationSession source, bool replay)
@@ -122,6 +152,14 @@ internal sealed class CalibrationCompletionService(string root, IDisplayService 
         if (!MonitorIdentity.SamePersistentIdentity(source.Original.PersistenceKey, undo.Original.PersistenceKey)
             || !ProfilePreviewPolicy.EqualName(undo.Original.ProfileName, source.InstalledProfile))
             throw new InvalidDataException("The undo record does not match the saved calibration.");
+
+        IccAssociationBackup? association = null;
+        if (binding.ProfileDeviceSha256 is { } device)
+        {
+            string? sourceDevice = source.Original.ProfileDeviceSha256
+                ?? WindowsDisplayService.HashProfileDeviceKey((association = readAssociation(source)).DeviceKey);
+            if (!string.Equals(device, sourceDevice, StringComparison.OrdinalIgnoreCase)) return ("unchanged", "binding_changed");
+        }
         if (replay)
         {
             var display = ReadTarget(undo, replay: true);
@@ -130,7 +168,7 @@ internal sealed class CalibrationCompletionService(string root, IDisplayService 
                 || (previous.SelectedProfileScope is not null && display.SelectedProfileScope != previous.SelectedProfileScope)
                 || !ProfilePreviewPolicy.EqualName(display.ProfileName, undo.InstalledProfile))
                 return ("unchanged", "profile_selection_changed");
-            var backup = readAssociation(source);
+            var backup = association ?? readAssociation(source);
             VerifyProfileDevice(display, backup);
             if (!ProfilePreviewPolicy.EqualName(backup.EffectiveDefault, previous.ProfileName))
                 throw new InvalidDataException("The restored profile does not match the saved association.");
@@ -181,10 +219,12 @@ internal sealed class CalibrationCompletionService(string root, IDisplayService 
             throw new ProfilePreviewException("display_state_changed", new LocalizationService()["DisplayUnavailable"]);
     }
 
-    private static void VerifyProfileDevice(DisplayInfo display, IccAssociationBackup backup)
+    private static string VerifyProfileDevice(DisplayInfo display, IccAssociationBackup backup)
     {
-        if (!string.Equals(display.ProfileDeviceKey, backup.DeviceKey, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(display.ProfileDeviceKey, backup.DeviceKey, StringComparison.OrdinalIgnoreCase)
+            || WindowsDisplayService.HashProfileDeviceKey(backup.DeviceKey) is not { } device)
             throw new ProfilePreviewException("profile_device_unavailable", new LocalizationService()["ProfileDeviceUnavailable"]);
+        return device;
     }
 
     private CalibrationBinding? FindBinding(string? key) => key is null ? null : _bindings.List().SingleOrDefault(binding => binding.PersistenceKey == key);

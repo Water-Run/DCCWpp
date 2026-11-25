@@ -61,6 +61,7 @@ public sealed class CalibrationCompletionTests : IDisposable
         Assert.Equal(_session.Preset, _presets.Get(_session.Preset.Id));
         var binding = Assert.Single(_bindings.List());
         Assert.Equal(_session.InstalledProfile, binding.ProfileName);
+        Assert.Equal(WindowsDisplayService.HashProfileDeviceKey(DeviceKey), binding.ProfileDeviceSha256);
         Assert.True(binding.Ramp.Matches(_session.Candidate));
         Assert.False(binding.RestoreEnabled);
         Assert.Empty(new PreviewRecoveryService(_root).List());
@@ -77,7 +78,58 @@ public sealed class CalibrationCompletionTests : IDisposable
         var actual = Assert.Single(_bindings.List());
         Assert.Equal(binding.SavedAt, actual.SavedAt);
         Assert.True(actual.RestoreEnabled);
+        Assert.Equal(WindowsDisplayService.HashProfileDeviceKey(DeviceKey), actual.ProfileDeviceSha256);
         Assert.Equal("User renamed", _presets.Get(_session.Preset.Id).Name);
+    }
+
+    [Theory]
+    [InlineData("same-device", true)]
+    [InlineData("other-device", false)]
+    [InlineData("legacy-with-journal", true)]
+    [InlineData("legacy-with-different-icc", false)]
+    [InlineData("legacy-without-journal", false)]
+    public void ReplacementOnlyInheritsOptInFromTheVerifiedPreviousDevice(string evidence, bool keepOptIn)
+    {
+        var previousId = Guid.NewGuid();
+        string previousName = $"DCCWPlus-{previousId:N}.icc";
+        if (evidence is "legacy-with-journal" or "legacy-with-different-icc")
+            _sessions.Save(_session with { Id = previousId, InstalledProfile = previousName, BindingStatus = "saved" });
+        _bindings.Save(Existing(previousName) with
+        {
+            ProfileDeviceSha256 = evidence switch
+            {
+                "same-device" => WindowsDisplayService.HashProfileDeviceKey(DeviceKey),
+                "other-device" => WindowsDisplayService.HashProfileDeviceKey(DeviceKey + "-other"),
+                _ => null
+            },
+            ProfileSha256 = evidence == "legacy-with-different-icc" ? new string('D', 64) : ProfileHash,
+            RestoreEnabled = true
+        });
+        var session = _session with { BindingIntent = _service.CaptureIntent(_session) };
+
+        Assert.Equal("saved", _service.CompleteLocked(session, replay: true).BindingStatus);
+        var binding = Assert.Single(_bindings.List());
+        Assert.Equal(_session.InstalledProfile, binding.ProfileName);
+        Assert.Equal(keepOptIn, binding.RestoreEnabled);
+    }
+
+    [Fact]
+    public void CompletingUndoKeepsABindingThatRecordsADifferentProfileDevice()
+    {
+        _sessions.Save(_session with { BindingStatus = "saved" });
+        _bindings.Save(Existing(_session.InstalledProfile!) with
+        {
+            ProfileDeviceSha256 = WindowsDisplayService.HashProfileDeviceKey(DeviceKey + "-other"), RestoreEnabled = true
+        });
+        var beforeUndo = _session.Original with { ProfileName = _session.InstalledProfile, ProfileScope = "current-user", SelectedProfileScope = "current-user" };
+        var undo = _session with { Id = Guid.NewGuid(), Original = beforeUndo, UndoOf = _session.Id,
+            Candidate = _session.Original.Ramp, InstalledProfile = _session.Original.ProfileName, BindingIntent = null };
+
+        var result = _service.CompleteLocked(undo, replay: false);
+
+        Assert.Equal("unchanged", result.BindingStatus);
+        Assert.Equal("binding_changed", result.BindingReasonCode);
+        Assert.True(Assert.Single(_bindings.List()).RestoreEnabled);
     }
 
     [Fact]
