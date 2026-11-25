@@ -79,7 +79,7 @@ public sealed class CalibrationVerificationTests : IDisposable
     [InlineData("logical_curve_changed")]
     public void DistinguishesChangedAssociationFileAndLogicalCurve(string reason)
     {
-        var saved = Saved();
+        var saved = SavedWithProfileDevice();
         var display = Connected(saved);
         if (reason == "profile_selection_changed") display = display with { SelectedProfileScope = "system-wide" };
         string expectedHash = reason == "profile_file_changed" ? new string('A', 64) : IccHash;
@@ -97,7 +97,7 @@ public sealed class CalibrationVerificationTests : IDisposable
     [Fact]
     public void RemoteProfileEvidenceDoesNotProveThePhysicalCurve()
     {
-        var saved = Saved();
+        var saved = SavedWithProfileDevice();
         var result = Verify(saved, [Connected(saved)], null, remote: true);
         Assert.Equal("inconclusive", result.Status);
         Assert.Equal("remote_session_blocked", result.ReasonCode);
@@ -109,7 +109,7 @@ public sealed class CalibrationVerificationTests : IDisposable
     [Fact]
     public void MissingEvidenceAndAmbiguousDisplaysRemainInconclusive()
     {
-        var saved = Saved();
+        var saved = SavedWithProfileDevice();
         var display = Connected(saved);
         Assert.Equal("profile_fingerprint_unavailable", Verify(saved, [display], saved.Candidate, savedHash: "").ReasonCode);
         Assert.Equal("display_disconnected", Verify(saved, [], null).ReasonCode);
@@ -214,7 +214,7 @@ public sealed class CalibrationVerificationTests : IDisposable
     }
 
     [Fact]
-    public void AJournalWithoutADeviceKeyNeedsItsOriginalPathForDisplayInspection()
+    public void AJournalWithoutADeviceKeyNeedsItsOriginalPathForVerificationAndInspection()
     {
         var saved = Saved();
         var display = Connected(saved);
@@ -223,11 +223,17 @@ public sealed class CalibrationVerificationTests : IDisposable
         var verifier = new CalibrationVerification(_root.FullName, capture.ReadEvidence, _ => throw new FileNotFoundException(), () => false);
 
         Assert.Equal("profile_device_unavailable", verifier.InspectDisplay(display.Id).ReasonCode);
+        var relocated = verifier.Read(saved.Id);
+        Assert.Equal("inconclusive", relocated.Status);
+        Assert.Equal("profile_device_unavailable", relocated.ReasonCode);
+        Assert.Null(relocated.ProfileSelectionMatches);
+        Assert.Null(relocated.LogicalCurveMatches);
         display = display with { Id = saved.Original.DisplayId, TargetKey = saved.Original.TargetKey,
             DeviceName = saved.Original.DeviceName, SourceId = saved.Original.SourceId };
         var originalPath = verifier.InspectDisplay(display.Id);
         Assert.Equal("profile_fingerprint_unavailable", originalPath.ReasonCode);
         Assert.Equal(saved.Id, originalPath.Verification?.CalibrationId);
+        Assert.Equal(originalPath.Verification?.ReasonCode, verifier.Read(saved.Id).ReasonCode);
     }
 
     private CalibrationVerification Service(CalibrationCapture capture) => new(_root.FullName, capture.ReadEvidence,

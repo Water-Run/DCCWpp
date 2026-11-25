@@ -34,6 +34,7 @@ public sealed class CalibrationCapture
     {
         bool remote = _isRemoteSession();
         var before = _probe();
+        if (_isRemoteSession() != remote) throw CaptureStateChanged();
         var displays = before.Displays.OrderBy(display => display.Id, StringComparer.Ordinal).ToArray();
         var selected = Select(displays, displayId);
         if (displayId is not null && selected.Length == 0)
@@ -41,18 +42,28 @@ public sealed class CalibrationCapture
 
         var evidence = selected.Select(display => ReadDisplay(display, displays, remote)).ToArray();
         var samples = evidence.Select(item => item.Sample).ToArray();
-        var after = _probe();
-        var current = after.Displays.OrderBy(display => display.Id, StringComparer.Ordinal).ToArray();
-        if (before.Topology != after.Topology || !displays.SequenceEqual(current)
-            || !samples.SequenceEqual(Select(current, displayId).Select(display => ReadDisplay(display, current, remote).Sample))
-            || _isRemoteSession() != remote)
-            throw new ProfilePreviewException("capture_state_changed", new LocalizationService()["CaptureStateChanged"]);
+        RequireUnchangedDisplayState(before.Topology, displays, remote);
+        if (!samples.SequenceEqual(selected.Select(display => ReadDisplay(display, displays, remote).Sample)))
+            throw CaptureStateChanged();
+        // Equal file and ramp samples can still belong to an outdated path or default association.
+        RequireUnchangedDisplayState(before.Topology, displays, remote);
 
         var report = new CalibrationCaptureReport(1, DateTimeOffset.UtcNow, Environment.OSVersion.Version.Build,
             RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant(), before.Topology, samples,
             WindowsDisplayService.ComputeTopologyHash(before.Topology, displays), remote, displays.Length);
         return new(report, evidence, displays);
     }
+
+    private void RequireUnchangedDisplayState(string topology, IReadOnlyList<DisplayInfo> displays, bool remote)
+    {
+        var current = _probe();
+        if (topology != current.Topology || !displays.SequenceEqual(current.Displays.OrderBy(display => display.Id, StringComparer.Ordinal))
+            || _isRemoteSession() != remote)
+            throw CaptureStateChanged();
+    }
+
+    private static ProfilePreviewException CaptureStateChanged() =>
+        new("capture_state_changed", new LocalizationService()["CaptureStateChanged"]);
 
     private static DisplayInfo[] Select(DisplayInfo[] displays, string? id) =>
         id is null ? displays : displays.Where(display => display.Id == id).ToArray();

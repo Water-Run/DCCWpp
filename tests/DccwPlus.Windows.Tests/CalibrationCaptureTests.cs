@@ -81,6 +81,52 @@ public sealed class CalibrationCaptureTests
         Assert.Equal("capture_state_changed", Assert.Throws<ProfilePreviewException>(() => capture.Read(display.Id)).Code);
     }
 
+    [Theory]
+    [InlineData("other-disconnected")]
+    [InlineData("other-refresh-rate")]
+    [InlineData("selected-profile")]
+    [InlineData("selected-profile-device")]
+    public void CaptureRejectsDisplayChangesDuringTheLastCurveReadEvenWhenTheCurveStillMatches(string change)
+    {
+        var selected = Display();
+        var other = selected with { Id = "fedcba9876543210", DeviceName = "Secondary", IsPrimary = false, RefreshMillihertz = 60_000 };
+        DisplayProbe current = new("extend", [selected, other]);
+        DisplayProbe changed = change switch
+        {
+            "other-disconnected" => new("internal", [selected]),
+            "other-refresh-rate" => new("extend", [selected, other with { RefreshMillihertz = 120_000 }]),
+            "selected-profile" => new("extend", [selected with { ProfileName = "new.icc" }, other]),
+            "selected-profile-device" => new("extend", [selected with { ProfileDeviceKey = "new-device" }, other]),
+            _ => throw new ArgumentOutOfRangeException(nameof(change))
+        };
+        int reads = 0;
+        var capture = new CalibrationCapture(() => current, device =>
+        {
+            Assert.Equal(selected.DeviceName, device);
+            if (++reads == 2) current = changed;
+            return GammaRamp.Identity();
+        }, _ => [1]);
+
+        Assert.Equal("capture_state_changed", Assert.Throws<ProfilePreviewException>(() => capture.Read(selected.Id)).Code);
+        Assert.Equal(2, reads);
+    }
+
+    [Fact]
+    public void CaptureDetectsTheRemoteTransitionBeforeReadingAnotherCurve()
+    {
+        bool remote = false;
+        int reads = 0;
+        var capture = new CalibrationCapture(() => new("extend", [Display()]), _ =>
+        {
+            reads++;
+            remote = true;
+            return GammaRamp.Identity();
+        }, _ => [1], () => remote);
+
+        Assert.Equal("capture_state_changed", Assert.Throws<ProfilePreviewException>(() => capture.Read()).Code);
+        Assert.Equal(1, reads);
+    }
+
     [Fact]
     public void TopologyHashCoversAllPathsEvenWithOneDisplaySampled()
     {

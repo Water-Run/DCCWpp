@@ -65,6 +65,8 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 
 每个步骤前后都可用 `dccwpp calibration capture --json` 保存全桌面的只读报告。用 `dccwpp calibration compare <before.json> <after.json> --json` 核对拓扑、ICC 摘要、作用域及逻辑曲线。检查未选屏时要求 `fullDesktopCoverage: true`，并检查该屏的结果。记录不可读或不支持的目标、会话原因码、Windows 设置所示配置及视觉观察。[采样与比对命令](CLI.md)
 
+在最后一次曲线读回时模拟另一屏断开或改变刷新率，以及所选屏切换 ICC 或配置设备。即使两次曲线读回相同，也应重新采样。用缺少配置设备证据的旧校准记录同时核对 `verify` 和向导，验证两者都只在原活动路径上比较。
+
 开始实机验收前核对 `isRemoteSession: false`。远程采样可核对 Windows 读回的 ICC 关联和文件摘要。物理屏幕的曲线读回、显示效果和重新登录后加载使用本地交互会话验收。[Windows Gamma Ramp 读取条件](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getdevicegammaramp)
 
 确认后及重新登录后可对同一会话运行 `dccwpp calibration verify <calibration-id> --json`。分别检查当前 ICC 选择、文件摘要和逻辑曲线，并记录 Windows 加载器设置。中断另一场可能已写入的预览，核对命令是否报告 `recovery_required`，再在回滚后重新检查同一会话。多屏验收继续用全桌面采样核对其他目标。[实时核对命令](CLI.md)

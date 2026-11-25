@@ -81,12 +81,7 @@ public sealed class CalibrationVerification
                 return inspection;
 
             var association = ReadSavedAssociation(session);
-            string? profileDevice = SavedProfileDevice(session, association);
-            // Older journals without a device key can only identify the original active path here.
-            bool deviceMatches = profileDevice is null
-                ? MonitorIdentity.MatchesSavedDisplay(session.Original with { PersistenceKey = null }, display)
-                : WindowsDisplayService.HasUniqueProfileDevice(display, connected, profileDevice);
-            if (!deviceMatches)
+            if (!MatchesSavedProfileDevice(session, association, display, connected))
             {
                 reason = "profile_device_unavailable";
                 continue;
@@ -110,8 +105,7 @@ public sealed class CalibrationVerification
 
         var evidence = matches[0];
         var association = ReadSavedAssociation(session);
-        string? profileDevice = SavedProfileDevice(session, association);
-        if (profileDevice is not null && !WindowsDisplayService.HasUniqueProfileDevice(evidence.Display, capture.Connected, profileDevice))
+        if (!MatchesSavedProfileDevice(session, association, evidence.Display, capture.Connected))
             return report with { ReasonCode = "profile_device_unavailable" };
 
         return Compare(session, evidence, association, report);
@@ -159,8 +153,15 @@ public sealed class CalibrationVerification
     private static bool IsSavedCalibration(GammaCalibrationSession session) =>
         session.Status == "confirmed" && !session.IsBindingRestore && session.UndoOf is null && session.InstalledProfile is not null;
 
-    private static string? SavedProfileDevice(GammaCalibrationSession session, IccAssociationBackup? association) =>
-        session.Original.ProfileDeviceSha256 ?? WindowsDisplayService.HashProfileDeviceKey(association?.DeviceKey);
+    private static bool MatchesSavedProfileDevice(GammaCalibrationSession session, IccAssociationBackup? association,
+        DisplayInfo display, IReadOnlyList<DisplayInfo> connected)
+    {
+        string? device = session.Original.ProfileDeviceSha256 ?? WindowsDisplayService.HashProfileDeviceKey(association?.DeviceKey);
+        // Older journals without device evidence can only identify the original active path.
+        return device is null
+            ? MonitorIdentity.MatchesSavedDisplay(session.Original with { PersistenceKey = null }, display)
+            : WindowsDisplayService.HasUniqueProfileDevice(display, connected, device);
+    }
 
     // A stopped worker can leave a temporary curve or ICC selected after its lock is released.
     private bool HasInterruptedPreview(IReadOnlyList<GammaCalibrationSession> sessions) =>

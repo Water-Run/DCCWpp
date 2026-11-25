@@ -107,6 +107,8 @@ dccwpp bindings restore --dry-run --json
 
 Windows 提供足够的活动路径和桌面几何信息时，采样还会记录 `topologySha256`。摘要涵盖全桌面的目标和源、分辨率、位置、刷新率及色彩模式，即使只返回某一屏的采样。旧采样没有该字段时仍可比较逐屏证据。
 
+两轮 ICC 文件和逻辑曲线读回之间、以及最后一轮读回之后，采样都会重新核对全桌面的活动路径、配置设备、ICC 关联及会话类型。即使两次曲线或文件摘要相同，检测到上述变化也会返回退出码 4 和 `capture_state_changed`。按会话和按屏核对已保存校准都使用这套采样逻辑。[Windows 活动显示路径](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-querydisplayconfig)
+
 `activeDisplayCount` 是此次探测到的活动显示器总数。使用 `--display` 时，`displays` 只包含指定目标，`activeDisplayCount` 仍记录总数。请用新版比较命令读取含此字段的采样。新版也支持缺少此字段的旧采样。
 
 采样的 `isRemoteSession` 记录 Windows 是否将当前会话识别为远程桌面。远程采样保留可读取的 ICC 关联、作用域及文件摘要，曲线状态为 `remote_session_blocked`，曲线摘要为 `null`。如果采样期间会话类型改变，命令返回 `capture_state_changed`。
@@ -128,7 +130,7 @@ dccwpp.exe calibration compare before.json after.json --json
 
 `calibration verify <calibration-id>` 只读核对已确认的 SDR 校准。`calibration-id` 是已确认会话的 `sessionId`。命令将历史 `savedStatus` 与实时 `status` 分开报告。保存记录含持久显示身份时，命令用唯一匹配的当前路径进行核对。没有持久身份的旧记录继续要求原显示路径。
 
-会话或 ICC 关联备份记录的 Windows 配置设备也必须唯一匹配。设备不符、不可读或被其他显示路径共用时，返回 `inconclusive` 和 `profile_device_unavailable`，目标 ID 与比较标志为空。较早的会话可以从关联备份获得设备信息。[Windows 默认 ICC 查询](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-colorprofilegetdisplaydefault)
+会话或 ICC 关联备份记录的 Windows 配置设备也必须唯一匹配。设备不符、不可读或被其他显示路径共用时，返回 `inconclusive` 和 `profile_device_unavailable`，目标 ID 与比较标志为空。较早的会话可以从关联备份获得设备信息。两处都缺少配置设备证据时，按会话核对与向导一样，只在原活动路径上做比较。[Windows 默认 ICC 查询](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-colorprofilegetdisplaydefault)
 
 如果本机正在执行其他显示操作，已确认校准的核对返回退出码 4 和 `preview_busy`。显示操作结束后，若还有可能已经写入的 Gamma 或 ICC 预览等待回滚，核对返回 `inconclusive` 和 `recovery_required`，`capturedAt` 为空。用 `recovery status` 查找未结束的会话。只留下 `prepared` 日志或只待补写本地绑定时，仍可核对当前显示状态。
 
