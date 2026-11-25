@@ -2,6 +2,12 @@
 
 验收条目保留测试时使用的构建 ID。历史合并前的构建 ID 对应当时的包和 CI 记录。
 
+## 2026-11-25 · 按预设名识别已保存的 ICC
+
+- 新 ICC 描述包含预设名和会话短编号。保存反馈列出预设名和 ICC 文件名，并提供 Windows 显示设置入口。撤回预演根据当前 ICC 查找会话，沿用后端校验，并对曲线或配置发生变化给出具体提示。[ICC 描述格式](https://www.color.org/icc_specs2/)
+- 378 项单元及模拟测试通过，x64 开发 MSIX 内容校验通过。使用 Windows `OpenColorProfileW`、`IsColorProfileValid` 和 `GetColorProfileElement` 验证三份临时文件的描述及三通道 `vcgt`。测试涵盖英文 ICC v2、简中 ICC v2 Unicode 字段及繁中 ICC v4。报告位于 `artifacts/saved-profile-label/5a7b162f-5623-4d7c-84bf-c712b60d1d73/windows-icc-report.json`。[Windows ICC 读回 API](https://learn.microsoft.com/en-us/windows/win32/api/icm/nf-icm-getcolorprofileelement)
+- 本地 CLI 的三个命名预设预演均通过，三条活动显示路径的全桌面前后采样一致，没有新校准会话。报告位于 `artifacts/saved-profile-label/9c64d623-2b72-4dd2-a578-fb6d910d63b7/summary.json`。真实保存后在 Windows 设置中显示的名称及实际撤回仍待实机核对。
+
 ## 2026-11-25 · 全屏参考照片与曲线对比
 
 - 照片按原比例在所选显示器上全屏显示。进入“对比与保存”后，可在同一张照片上切换原始和候选曲线，查看原会话的倒计时并取消。退出全屏保留预览，切换页面或照片会关闭全屏窗口。

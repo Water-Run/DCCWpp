@@ -1,13 +1,14 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
+using DccwPlus.Core.Presets;
 
 namespace DccwPlus.Core.Calibration;
 
 public static class IccCalibrationWriter
 {
     // Preserve the source characterization. Replace only the calibration and display name.
-    public static byte[] Build(ReadOnlySpan<byte> original, GammaRamp ramp, Guid id)
+    public static byte[] Build(ReadOnlySpan<byte> original, GammaRamp ramp, Guid id, string? presetName = null)
     {
         ramp.Validate();
         var report = IccProfileInspector.Inspect("source.icc", original);
@@ -34,7 +35,7 @@ public static class IccCalibrationWriter
                 throw new InvalidDataException("The calibrated ICC exceeds the supported size.");
             tags.Add((signature, original.Slice(offset, length).ToArray()));
         }
-        tags.Add(("desc", Description("DCCW++ " + id.ToString("N")[..12], original[8] == 4)));
+        tags.Add(("desc", Description(id, presetName, original[8] == 4)));
         tags.Add(("vcgt", Vcgt(ramp)));
         int position = Align(132 + tags.Count * 12);
         int outputBytes = position + tags.Sum(t => Align(t.Data.Length));
@@ -76,19 +77,34 @@ public static class IccCalibrationWriter
             { BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(offset), value); offset += 2; }
         return data;
     }
-    private static byte[] Description(string name, bool version4)
+    private static byte[] Description(Guid id, string? presetName, bool version4)
     {
+        string identity = "DCCW++ " + id.ToString("N")[..12];
+        string label = identity;
+        if (presetName is { Length: > 0 })
+        {
+            if (presetName.Length > PresetCodec.MaxNameLength) throw new InvalidDataException("The ICC preset name is too long.");
+            var characters = presetName.Select(character => char.IsControl(character) ? ' ' : character).ToArray();
+            string name = string.Join(' ', new string(characters).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            if (name.Length > 0) label += " - " + name;
+        }
         if (version4)
         {
-            byte[] text = Encoding.BigEndianUnicode.GetBytes(name);
+            byte[] text = Encoding.BigEndianUnicode.GetBytes(label);
             var data = new byte[28 + text.Length];
             "mluc"u8.CopyTo(data); Write(data, 8, 1); Write(data, 12, 12);
             "enUS"u8.CopyTo(data.AsSpan(16)); Write(data, 20, (uint)text.Length); Write(data, 24, 28);
             text.CopyTo(data, 28); return data;
         }
-        byte[] ascii = Encoding.ASCII.GetBytes(name + "\0");
-        var result = new byte[90 + ascii.Length];
+        // The v2 invariant field is ASCII. Keep the complete name in the Unicode field for capable readers.
+        bool asciiOnly = label.All(char.IsAscii);
+        byte[] ascii = Encoding.ASCII.GetBytes((asciiOnly ? label : identity) + "\0");
+        byte[] unicode = asciiOnly ? [] : Encoding.BigEndianUnicode.GetBytes(label + "\0");
+        int unicodeHeader = 12 + ascii.Length;
+        var result = new byte[unicodeHeader + 8 + unicode.Length + 70];
         "desc"u8.CopyTo(result); Write(result, 8, (uint)ascii.Length); ascii.CopyTo(result, 12);
+        Write(result, unicodeHeader + 4, (uint)(unicode.Length / sizeof(char)));
+        unicode.CopyTo(result, unicodeHeader + 8);
         return result;
     }
     private static int Align(int value) => checked((value + 3) & ~3);

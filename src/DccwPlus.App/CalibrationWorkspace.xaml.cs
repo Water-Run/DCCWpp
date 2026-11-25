@@ -300,11 +300,12 @@ public sealed partial class CalibrationWorkspace : UserControl
         {
             var display = CheckSelectedDisplay(selected, new WindowsDisplayService().Enumerate());
             if (display is null) return;
+            if (display.ProfileQueryStatus == "unavailable")
+            { Show("ProfileStateUnavailable", InfoBarSeverity.Warning); return; }
             var backend = new WindowsGammaCalibrationBackend(DataPaths.DefaultRoot);
-            var current = backend.Read(display.Id);
             var saved = new GammaCalibrationStore(DataPaths.DefaultRoot).Sessions().FirstOrDefault(s =>
                 s.Status == "confirmed" && !s.IsBindingRestore && s.UndoOf is null && MonitorIdentity.MatchesSavedDisplay(s.Original, display)
-                && s.InstalledProfile is not null && ProfilePreviewPolicy.EqualName(s.InstalledProfile, current.ProfileName));
+                && s.InstalledProfile is not null && ProfilePreviewPolicy.EqualName(s.InstalledProfile, display.ProfileName));
             if (saved is null)
             {
                 Show("NoUndoCalibration", InfoBarSeverity.Informational);
@@ -313,15 +314,10 @@ public sealed partial class CalibrationWorkspace : UserControl
             var plan = backend.PlanUndo(saved.Id);
             if (!plan.CanPreview || plan.DisplayId != display.Id)
             {
-                Show(plan.ReasonCode switch
-                {
-                    "preview_busy" => "DisplayOperationBusy",
-                    "recovery_required" => "RecoveryMessage",
-                    _ => "UndoUnavailable"
-                }, InfoBarSeverity.Warning);
+                ShowUndoBlocked(plan.ReasonCode);
                 return;
             }
-            if (!DisplayWindowPlacement.MoveToDisplay(_window, current.DeviceName))
+            if (!DisplayWindowPlacement.MoveToDisplay(_window, display.DeviceName))
             {
                 Show("DisplayUnavailable", InfoBarSeverity.Warning);
                 return;
@@ -338,10 +334,23 @@ public sealed partial class CalibrationWorkspace : UserControl
             else ShowState();
         }
         catch (ProfilePreviewException ex) when (ex.Code.StartsWith("undo_", StringComparison.Ordinal))
-        { Show("UndoUnavailable", InfoBarSeverity.Warning); }
+        { ShowUndoBlocked(ex.Code); }
         catch (Exception ex) { ShowError(ex); }
         finally { _busy = false; UpdateUi(); RefreshRecovery(); }
     }
+
+    private void ShowUndoBlocked(string reason) => Show(reason switch
+    {
+        "preview_busy" => "DisplayOperationBusy",
+        "recovery_required" => "RecoveryMessage",
+        "remote_session_blocked" => "RemoteCalibrationBlocked",
+        "profile_state_unavailable" => "ProfileStateUnavailable",
+        "profile_device_unavailable" => "ProfileDeviceUnavailable",
+        "undo_profile_changed" => "UndoProfileChanged",
+        "undo_curve_changed" => "UndoCurveChanged",
+        _ => "UndoUnavailable"
+    }, InfoBarSeverity.Warning);
+
     private async void CancelClicked(object sender, RoutedEventArgs e) => await CancelAsync();
     private async Task CancelAsync(bool targetMoved = false)
     {
@@ -957,12 +966,17 @@ public sealed partial class CalibrationWorkspace : UserControl
             _ => "CalibrationSavedWithoutBinding"
         };
         Show(key, session.BindingStatus == "saved" ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
-        if (session.InstalledProfile is { } profile) Outcome.Message += " " + profile;
+        if (session.InstalledProfile is { } profile)
+        {
+            Outcome.Message += Environment.NewLine + string.Format(_model!.Text["SavedProfileDetails"], session.Preset.Name, profile);
+            SavedDisplaySettingsLink.Visibility = Visibility.Visible;
+        }
     }
     private void Show(string key, InfoBarSeverity severity)
     {
         if (_model is null) return;
         ClearTypeNotice.IsOpen = false;
+        SavedDisplaySettingsLink.Visibility = Visibility.Collapsed;
         Outcome.Message = _model.Text[key];
         Outcome.Severity = severity;
         Outcome.IsOpen = true;
@@ -991,6 +1005,7 @@ public sealed partial class CalibrationWorkspace : UserControl
             if (guidance is not null) { Show(guidance, InfoBarSeverity.Warning); return; }
         }
         ClearTypeNotice.IsOpen = false;
+        SavedDisplaySettingsLink.Visibility = Visibility.Collapsed;
         Outcome.Message = _model.Text["Error"] + " " + ex.Message;
         Outcome.Severity = InfoBarSeverity.Error;
         Outcome.IsOpen = true;

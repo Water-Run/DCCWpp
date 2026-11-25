@@ -6,6 +6,7 @@ namespace DccwPlus.Core.Presets;
 public static class PresetCodec
 {
     public const int MaxBytes = 1024 * 1024;
+    public const int MaxNameLength = 100;
     public static JsonSerializerOptions JsonOptions { get; } = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -32,7 +33,7 @@ public static class PresetCodec
     {
         if (preset.SchemaVersion != 1) throw new InvalidDataException("Unsupported preset schema version.");
         if (preset.Id == Guid.Empty) throw new InvalidDataException("Preset ID must not be empty.");
-        if (string.IsNullOrWhiteSpace(preset.Name) || preset.Name.Length > 100)
+        if (string.IsNullOrWhiteSpace(preset.Name) || preset.Name.Length > MaxNameLength)
             throw new InvalidDataException("Preset name must contain 1–100 characters.");
         if (preset.Description is null || preset.Description.Length > 2000 || preset.Author is null || preset.Author.Length > 200)
             throw new InvalidDataException("Invalid preset metadata.");

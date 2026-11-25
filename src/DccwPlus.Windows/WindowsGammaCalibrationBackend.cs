@@ -99,7 +99,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         var adapter = Adapter(device.TargetKey!);
         uint source = device.SourceId!.Value;
         _ = PrepareIcc(device, displays, current, ramp, Guid.Empty, InstalledProfileReader.ReadBytes,
-            scope => ReadDefault(adapter, source, scope), () => ReadScope(adapter, source));
+            scope => ReadDefault(adapter, source, scope), () => ReadScope(adapter, source), preset.Name);
         return current;
     }
     public SdrCalibrationDiagnostics Diagnose(string displayId)
@@ -182,7 +182,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         var adapter = Adapter(device.TargetKey!);
         uint source = device.SourceId!.Value;
         var (backup, profile) = PrepareIcc(device, displays, now, session.Candidate, session.Id, InstalledProfileReader.ReadBytes,
-            scope => ReadDefault(adapter, source, scope), () => ReadScope(adapter, source));
+            scope => ReadDefault(adapter, source, scope), () => ReadScope(adapter, source), session.Preset.Name);
         string candidate = backup.CandidateName;
         var selection = new GammaProfileSelection(candidate, "current-user", "current-user");
         string directory = _store.DirectoryFor(session.Id);
@@ -221,7 +221,8 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
     }
 
     internal static (IccAssociationBackup Backup, byte[] Profile) PrepareIcc(DisplayInfo device, IReadOnlyList<DisplayInfo> displays,
-        GammaDeviceState current, GammaRamp ramp, Guid id, Func<string, byte[]> readFile, Func<int, string?> readDefault, Func<int> readScope)
+        GammaDeviceState current, GammaRamp ramp, Guid id, Func<string, byte[]> readFile, Func<int, string?> readDefault, Func<int> readScope,
+        string? presetName = null)
     {
         string deviceKey = RequireProfileDevice(device, displays);
         int scope = readScope();
@@ -233,7 +234,7 @@ public sealed partial class WindowsGammaCalibrationBackend(string root) : IGamma
         string baseName = effective ?? "sRGB Color Space Profile.icm";
         byte[] original = ReadIccForSave(baseName, readFile);
         byte[] profile;
-        try { profile = IccCalibrationWriter.Build(original, ramp, id); }
+        try { profile = IccCalibrationWriter.Build(original, ramp, id, presetName); }
         catch (InvalidDataException)
         {
             throw new ProfilePreviewException("icc_base_unsupported", new LocalizationService()["IccBaseUnsupported"]);

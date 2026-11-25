@@ -872,6 +872,39 @@ public sealed class GammaCalibrationTests
         Assert.True(current.Matches(fixture.Backend.State.Ramp));
         Assert.False(fixture.Backend.ProfileRestoreCalled);
     }
+
+    [Theory]
+    [InlineData(2, "Desk\tneutral", "DCCW++ 0123456789ab - Desk neutral", null)]
+    [InlineData(2, "书桌\n中性", "DCCW++ 0123456789ab", "DCCW++ 0123456789ab - 书桌 中性")]
+    [InlineData(4, "書桌\0中性", null, "DCCW++ 0123456789ab - 書桌 中性")]
+    [InlineData(2, null, "DCCW++ 0123456789ab", null)]
+    public void IccDescriptionIdentifiesThePresetAndSession(int version, string? presetName, string? ascii, string? unicode)
+    {
+        byte[] source = Profile();
+        source[8] = (byte)version;
+        byte[] calibrated = IccCalibrationWriter.Build(source, GammaRamp.Identity(),
+            Guid.Parse("01234567-89ab-4def-8123-456789abcdef"), presetName);
+        byte[] description = Tag(calibrated, "desc");
+
+        if (version == 4)
+        {
+            Assert.Equal("mluc", Encoding.ASCII.GetString(description, 0, 4));
+            int length = BinaryPrimitives.ReadInt32BigEndian(description.AsSpan(20));
+            int offset = BinaryPrimitives.ReadInt32BigEndian(description.AsSpan(24));
+            Assert.Equal(unicode, Encoding.BigEndianUnicode.GetString(description, offset, length));
+            return;
+        }
+
+        Assert.Equal("desc", Encoding.ASCII.GetString(description, 0, 4));
+        int asciiCount = BinaryPrimitives.ReadInt32BigEndian(description.AsSpan(8));
+        Assert.Equal(ascii + "\0", Encoding.ASCII.GetString(description, 12, asciiCount));
+        int unicodeCount = BinaryPrimitives.ReadInt32BigEndian(description.AsSpan(16 + asciiCount));
+        Assert.Equal(unicode?.Length + 1 ?? 0, unicodeCount);
+        if (unicode is not null)
+            Assert.Equal(unicode + "\0", Encoding.BigEndianUnicode.GetString(description, 20 + asciiCount, unicodeCount * 2));
+        Assert.Equal(70, description.Length - (20 + asciiCount + unicodeCount * 2));
+    }
+
     [Fact] public void IccWriterRejectsMalformedAndMhc2Bases()
     {
         Assert.Throws<InvalidDataException>(() => IccCalibrationWriter.Build(new byte[10], GammaRamp.Identity(), Guid.NewGuid()));

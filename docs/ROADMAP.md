@@ -85,6 +85,8 @@ DCCW++ 是面向 Windows 11 的独立 WinUI 3 应用。首发目标是用户能�
 
 保存后核对 ICC 确认状态和本地绑定的进度。模拟确认回执丢失、预设刷新失败和 ClearType 启动失败，确认提示仍显示已选用的 ICC。ClearType 的重试应只重开调谐器。
 
+用英文、简体中文和繁体中文预设名验证 ICC 描述。确认保存提示列出预设名和可用于 CLI 的 ICC 文件名，并可打开 Windows 显示设置。分别核对 ICC v2 普通描述与 Unicode 描述、ICC v4 Unicode 描述和已有文件的撤回。只读取 v2 ASCII 字段的应用以短编号显示非 ASCII 配置。[ICC v2](https://www.color.org/v2spec/) · [ICC v4](https://www.color.org/icc-1_specification/) · [Windows 颜色配置页](https://support.microsoft.com/en-us/windows/hardware/display-graphics/change-display-brightness-and-color-in-windows)
+
 选择非主屏后刷新列表。核对原屏重建路径且持久身份唯一时保留选中，原屏掉线或身份不明确时清空选中。向导运行期间记住重复的持久身份。已见重复时，即使只剩一个匹配设备，也要核对完整的原活动路径和配置设备。移动、全屏和启动预览前重新核对活动路径。[Windows 显示器设备路径](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-displayconfig_target_device_name)
 
 将全屏图案移到另一屏或使其退回普通窗口。核对图案在实际可见边界不再覆盖所选屏时关闭，同屏缩小时可重新打开。活动预览中若图案越出所选屏，应使用原会话的取消与回滚路径。向导发送新的曲线更新前再核对窗口仍在目标屏。[窗口变更通知](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.windowing.appwindowchangedeventargs) · [可见窗口边界](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowrect)

@@ -252,12 +252,13 @@ public sealed class AssociationFingerprintTests
         };
         var (backup, profile) = PrepareIcc(Display, [Display, other], State, State.Ramp, id,
             name => name == "system.icc" ? systemProfile : userProfile,
-            scope => scope == 0 ? "system.icc" : "user.icc", () => 0);
+            scope => scope == 0 ? "system.icc" : "user.icc", () => 0, presetName: "Desk neutral");
 
         Assert.Equal($"DCCWPlus-{id:N}.icc", backup.CandidateName);
         Assert.Equal(Convert.ToHexString(SHA256.HashData(systemProfile)), backup.EffectiveDefaultHash);
         Assert.Equal(Convert.ToHexString(SHA256.HashData(userProfile)), backup.UserDefaultHash);
         Assert.Equal(Convert.ToHexString(SHA256.HashData(profile)), backup.CandidateHash);
+        Assert.Equal(IccCalibrationWriter.Build(systemProfile, State.Ramp, id, "Desk neutral"), profile);
         Assert.True(IccProfileInspector.Inspect(backup.CandidateName, profile).VcgtPresent);
     }
 

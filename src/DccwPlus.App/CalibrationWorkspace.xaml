@@ -115,7 +115,12 @@
     <Border Grid.Row="2" Margin="24,0,24,0" Padding="0,8,0,12"
             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
       <StackPanel Spacing="8">
-        <InfoBar x:Name="Outcome" IsOpen="False" IsClosable="True" Severity="Informational" />
+        <InfoBar x:Name="Outcome" IsOpen="False" IsClosable="True" Severity="Informational">
+          <InfoBar.ActionButton>
+            <HyperlinkButton x:Name="SavedDisplaySettingsLink" Content="{Binding Text[OpenDisplaySettings]}"
+                             NavigateUri="ms-settings:display" Visibility="Collapsed" />
+          </InfoBar.ActionButton>
+        </InfoBar>
         <InfoBar x:Name="ClearTypeNotice" IsOpen="False" IsClosable="True" Severity="Warning" Message="{Binding Text[ClearTypeLaunchFailed]}">
           <InfoBar.ActionButton><Button Content="{Binding Text[RetryOpenClearType]}" Click="RetryClearTypeClicked" /></InfoBar.ActionButton>
         </InfoBar>
